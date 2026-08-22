@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./out/.tsbuildinfo/web",
+    "exactOptionalPropertyTypes": true,
+    "noEmit": true
+  },
+  "include": ["src/renderer/**/*.ts", "src/shared/**/*.ts"]
+}

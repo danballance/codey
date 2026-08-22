@@ -1,0 +1,25 @@
+{
+  "name": "@codey/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --build --pretty false"
+  },
+  "dependencies": {
+    "@codey/editor-core": "workspace:*",
+    "@codey/msgpack-rpc": "workspace:*",
+    "@codey/nvim-session": "workspace:*",
+    "@codey/transport": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^43.4.1",
+    "electron-vite": "^5.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.1.3"
+  }
+}

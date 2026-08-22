@@ -1,0 +1,175 @@
+import type { MessagePackRpcClient } from "@codey/msgpack-rpc";
+
+export type RedrawCall = readonly unknown[];
+
+export type RedrawEvent = readonly [
+  name: string,
+  ...calls: RedrawCall[],
+];
+
+export type RedrawBatch = readonly RedrawEvent[];
+
+export type RedrawListener = (batch: RedrawBatch) => void;
+
+export interface MouseInput {
+  readonly button: string;
+  readonly action: string;
+  readonly modifier?: string;
+  readonly gridId?: number;
+  readonly row: number;
+  readonly column: number;
+}
+
+export interface NvimSession {
+  connect(): Promise<void>;
+  attach(width: number, height: number): Promise<void>;
+  input(keys: string): Promise<void>;
+  resize(width: number, height: number): Promise<void>;
+  inputMouse(mouse: MouseInput): Promise<void>;
+  onRedraw(listener: RedrawListener): () => void;
+  close(): Promise<void>;
+}
+
+/**
+ * UI extensions intentionally enabled for the first vertical slice.
+ *
+ * Line-grid is the only externalized UI. Neovim continues to draw the command
+ * line, popup menu, messages, tabline, and wildmenu into the main grid.
+ */
+export const BASIC_UI_OPTIONS = Object.freeze({
+  rgb: true,
+  ext_linegrid: true,
+});
+
+export class NvimSessionClient implements NvimSession {
+  readonly #redrawListeners = new Set<RedrawListener>();
+  readonly #unsubscribeNotification: () => void;
+  #connected = false;
+  #closed = false;
+
+  public constructor(private readonly rpc: MessagePackRpcClient) {
+    this.#unsubscribeNotification = rpc.onNotification((method, params) => {
+      if (method !== "redraw") {
+        return;
+      }
+
+      if (!isRedrawBatch(params)) {
+        return;
+      }
+
+      for (const listener of [...this.#redrawListeners]) {
+        listener(params);
+      }
+    });
+  }
+
+  public async connect(): Promise<void> {
+    this.#assertOpen();
+    if (this.#connected) {
+      return;
+    }
+
+    await this.rpc.connect();
+    this.#connected = true;
+  }
+
+  public async attach(width: number, height: number): Promise<void> {
+    this.#assertOpen();
+    assertDimension("width", width);
+    assertDimension("height", height);
+
+    await this.rpc.request("nvim_ui_attach", [
+      width,
+      height,
+      BASIC_UI_OPTIONS,
+    ]);
+  }
+
+  public async input(keys: string): Promise<void> {
+    this.#assertOpen();
+    await this.rpc.request("nvim_input", [keys]);
+  }
+
+  public async resize(width: number, height: number): Promise<void> {
+    this.#assertOpen();
+    assertDimension("width", width);
+    assertDimension("height", height);
+
+    await this.rpc.request("nvim_ui_try_resize", [width, height]);
+  }
+
+  public async inputMouse(mouse: MouseInput): Promise<void> {
+    this.#assertOpen();
+    assertCoordinate("row", mouse.row);
+    assertCoordinate("column", mouse.column);
+    assertCoordinate("gridId", mouse.gridId ?? 0);
+
+    await this.rpc.request("nvim_input_mouse", [
+      mouse.button,
+      mouse.action,
+      mouse.modifier ?? "",
+      mouse.gridId ?? 0,
+      mouse.row,
+      mouse.column,
+    ]);
+  }
+
+  public onRedraw(listener: RedrawListener): () => void {
+    if (this.#closed) {
+      return () => undefined;
+    }
+
+    this.#redrawListeners.add(listener);
+    return () => {
+      this.#redrawListeners.delete(listener);
+    };
+  }
+
+  public async close(): Promise<void> {
+    if (this.#closed) {
+      return;
+    }
+
+    this.#closed = true;
+    this.#connected = false;
+    this.#unsubscribeNotification();
+    this.#redrawListeners.clear();
+    await this.rpc.close();
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) {
+      throw new Error("Neovim session is closed");
+    }
+  }
+}
+
+export function createNvimSession(
+  rpc: MessagePackRpcClient,
+): NvimSessionClient {
+  return new NvimSessionClient(rpc);
+}
+
+export function isRedrawBatch(value: unknown): value is RedrawBatch {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (event) =>
+        Array.isArray(event) &&
+        typeof event[0] === "string" &&
+        event.slice(1).every((call) => Array.isArray(call)),
+    )
+  );
+}
+
+function assertDimension(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive integer`);
+  }
+}
+
+function assertCoordinate(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative integer`);
+  }
+}
