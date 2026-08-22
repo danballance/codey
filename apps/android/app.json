@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Codey",
+    "slug": "codey-android",
+    "version": "0.1.0",
+    "platforms": ["android"],
+    "orientation": "landscape",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#090b10",
+    "scheme": "codey",
+    "android": {
+      "package": "dev.codey.android",
+      "versionCode": 1,
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": ["INTERNET"],
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "./plugins/with-android16-landscape-compatibility",
+      "./plugins/with-dark-android-splash",
+      "expo-system-ui",
+      [
+        "expo-status-bar",
+        {
+          "hidden": false,
+          "style": "light"
+        }
+      ],
+      [
+        "expo-dev-client",
+        {
+          "launchMode": "most-recent"
+        }
+      ]
+    ]
+  }
+}

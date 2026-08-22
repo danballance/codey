@@ -3,5 +3,6 @@ packages:
   - packages/*
 
 allowBuilds:
+  '@shopify/react-native-skia': true
   electron: true
   esbuild: true

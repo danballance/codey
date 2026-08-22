@@ -9,12 +9,21 @@
   },
   "scripts": {
     "dev": "pnpm --filter @codey/desktop dev",
+    "android:metro": "pnpm --filter @codey/android run start",
+    "android:install": "pnpm --filter @codey/android run android",
+    "android:doctor": "pnpm --filter @codey/android run doctor",
+    "android:bundle": "pnpm --filter @codey/android run export:android",
+    "android:prebuild": "pnpm --filter @codey/android run prebuild:clean",
+    "android:test": "pnpm --filter @codey/android run test",
+    "android:test:native": "pnpm --filter @codey/android run native:test",
+    "android:assemble": "pnpm --filter @codey/android run assemble:debug",
     "build": "pnpm --filter @codey/desktop build",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "vitest run",
+    "test": "vitest run && pnpm android:test",
     "test:watch": "vitest",
     "test:live-nvim": "CODEY_LIVE_NVIM=1 vitest run tests/live-nvim.test.ts",
-    "check": "pnpm typecheck && pnpm test && pnpm build"
+    "check:android:native": "pnpm android:prebuild && pnpm android:test:native && pnpm android:assemble",
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm android:doctor && pnpm android:bundle && pnpm check:android:native"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

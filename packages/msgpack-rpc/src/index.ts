@@ -2,7 +2,7 @@ import { decode, encode } from "@msgpack/msgpack";
 
 import type { DuplexTransport } from "@codey/transport";
 
-import { findMessagePackValueEnd } from "./framing.js";
+import { findMessagePackValueEnd } from "./framing";
 
 export type RpcParams = readonly unknown[];
 export type RpcNotificationListener = (

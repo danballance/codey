@@ -1,0 +1,55 @@
+{
+  "name": "@codey/android",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Android tablet development client for Codey",
+  "main": "index.ts",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "expo start --dev-client --lan",
+    "android": "expo run:android --device",
+    "prebuild:clean": "expo prebuild --clean --platform android",
+    "export:android": "expo export --platform android --output-dir dist",
+    "doctor": "expo-doctor",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch",
+    "typecheck": "tsc --noEmit",
+    "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-tcp:testDebugUnitTest",
+    "assemble:debug": "NODE_ENV=development ./android/gradlew -p android assembleDebug"
+  },
+  "dependencies": {
+    "@codey/editor-core": "workspace:*",
+    "@codey/msgpack-rpc": "workspace:*",
+    "@codey/nvim-session": "workspace:*",
+    "@codey/transport": "workspace:*",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@shopify/react-native-skia": "2.6.2",
+    "expo": "~57.0.15",
+    "expo-dev-client": "~57.0.14",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.2",
+    "react": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-reanimated": "4.5.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-worklets": "0.10.1"
+  },
+  "devDependencies": {
+    "@react-native/jest-preset": "0.86.2",
+    "@testing-library/react-native": "^13.3.3",
+    "@types/jest": "^29.5.14",
+    "@types/react": "~19.2.2",
+    "expo-doctor": "^1.20.2",
+    "jest": "^29.7.0",
+    "jest-expo": "~57.0.4",
+    "react-test-renderer": "19.2.3",
+    "typescript": "~6.0.3"
+  },
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "./modules"
+    }
+  }
+}
