@@ -11,7 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@codey/msgpack-rpc": "workspace:*"
+    "@codey/msgpack-rpc": "workspace:*",
+    "@codey/perf": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

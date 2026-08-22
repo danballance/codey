@@ -3,6 +3,11 @@ import { StyleSheet } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react-native'
 import type { RedrawBatch } from '@codey/nvim-session'
+import {
+  clearPerformanceRecords,
+  configurePerformanceDiagnostics,
+  getPerformanceRecords
+} from '@codey/perf'
 import type { DuplexTransport } from '@codey/transport'
 
 import { TabletClient } from '../TabletClient'
@@ -22,8 +27,17 @@ jest.mock('../editor/EditorCanvas', () => {
   const React = require('react')
   const { View } = require('react-native')
   return {
-    EditorCanvas: ({ onLayout }: { onLayout: unknown }) =>
-      React.createElement(View, { onLayout, testID: 'mock-editor-canvas' })
+    EditorCanvas: ({
+      onLayout,
+      performanceSamples
+    }: {
+      onLayout: unknown
+      performanceSamples: readonly unknown[]
+    }) => React.createElement(View, {
+      onLayout,
+      performanceSamples,
+      testID: 'mock-editor-canvas'
+    })
   }
 })
 
@@ -32,34 +46,50 @@ jest.mock('../native/CodeyIme', () => {
   const { View } = require('react-native')
   const focus = jest.fn(async () => undefined)
   const blur = jest.fn(async () => undefined)
-  const sendKey = jest.fn()
+  const sendOrderedInput = jest.fn()
+  let orderedPrefix: unknown[] = []
+  let sequence = 1
   return {
     CodeyIme: React.forwardRef(
       (
         props: {
           onCommittedText: (text: string) => void
           onKey: (event: unknown) => void
+          onOrderedInput: (event: unknown) => void
         },
         ref: unknown
       ) => {
         React.useImperativeHandle(ref, () => ({
           focus,
           blur,
-          sendKey: async (event: unknown) => {
-            sendKey(event)
-            props.onKey(event)
+          sendOrderedInput: async (keys: string) => {
+            sendOrderedInput(keys)
+            const prefix = orderedPrefix
+            orderedPrefix = []
+            props.onOrderedInput({
+              sequence: sequence++,
+              receivedAtUptimeMs: 10,
+              nativeDurationMs: 0.1,
+              connectionGeneration: 1,
+              compositionDrained: prefix.length > 0,
+              segments: [...prefix, { type: 'input', keys }]
+            })
           }
         }))
         return React.createElement(View, {
           onCommittedText: props.onCommittedText,
           onKey: props.onKey,
+          onOrderedInput: props.onOrderedInput,
           testID: 'mock-codey-ime'
         })
       }
     ),
     __focus: focus,
     __blur: blur,
-    __sendKey: sendKey
+    __sendOrderedInput: sendOrderedInput,
+    __setOrderedPrefix: (segments: unknown[]) => {
+      orderedPrefix = segments
+    }
   }
 })
 
@@ -107,7 +137,11 @@ function connectionDouble(connectError?: Error): ConnectionDouble {
   }
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  configurePerformanceDiagnostics({ enabled: false })
+  clearPerformanceRecords()
+})
 
 beforeEach(() => {
   getItem.mockResolvedValue(null)
@@ -115,11 +149,13 @@ beforeEach(() => {
   const nativeIme = jest.requireMock('../native/CodeyIme') as {
     __focus: jest.Mock
     __blur: jest.Mock
-    __sendKey: jest.Mock
+    __sendOrderedInput: jest.Mock
+    __setOrderedPrefix: (segments: unknown[]) => void
   }
   nativeIme.__focus.mockClear()
   nativeIme.__blur.mockClear()
-  nativeIme.__sendKey.mockClear()
+  nativeIme.__sendOrderedInput.mockClear()
+  nativeIme.__setOrderedPrefix([])
 })
 
 describe('tablet client shell', () => {
@@ -139,7 +175,27 @@ describe('tablet client shell', () => {
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
   })
 
-  it('connects at measured grid size, focuses IME, displays flushed mode, and applies Ctrl once', async () => {
+  it('preserves two usable action rows when the software keyboard reduces height', async () => {
+    const screen = render(
+      <TabletClient capability={tabletCapability(800, 600)} />
+    )
+
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(213)
+    fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
+      persist: jest.fn(),
+      nativeEvent: { layout: { width: 800, height: 430, x: 0, y: 0 } }
+    })
+
+    await waitFor(() => {
+      expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(4)
+      expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
+    })
+    expect(StyleSheet.flatten(screen.getByLabelText('Neovim editor').props.style).minHeight).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-2').props.style).height).toBe(48)
+  })
+
+  it('keeps one-shot Ctrl for the requested Action Pad action across IME and hardware input', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(
@@ -161,7 +217,7 @@ describe('tablet client shell', () => {
         ['flush', []]
       ])
     })
-    expect(screen.getByText('INSERT')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('INSERT')).toBeTruthy())
 
     fireEvent.press(screen.getByLabelText('Neovim editor'))
     const nativeIme = jest.requireMock('../native/CodeyIme') as { __focus: jest.Mock }
@@ -171,26 +227,152 @@ describe('tablet client shell', () => {
     act(() => {
       const ime = screen.getByTestId('mock-codey-ime')
       ime.props.onCommittedText('c')
-      ime.props.onCommittedText('x')
-    })
-    await waitFor(() => {
-      expect(double.session.input).toHaveBeenNthCalledWith(1, '<C-c>')
-      expect(double.session.input).toHaveBeenNthCalledWith(2, 'x')
-    })
-
-    fireEvent.press(screen.getByText('Esc'))
-    const imeWithKey = jest.requireMock('../native/CodeyIme') as { __sendKey: jest.Mock }
-    await waitFor(() => {
-      expect(imeWithKey.__sendKey).toHaveBeenCalledWith({
-        key: 'Escape',
+      ime.props.onKey({
+        key: 'ArrowLeft',
         ctrl: false,
         alt: false,
         shift: false,
         meta: false,
-        repeat: false
+        repeat: false,
+        sequence: 1,
+        receivedAtUptimeMs: 10,
+        connectionGeneration: 1
       })
-      expect(double.session.input).toHaveBeenNthCalledWith(3, '<Esc>')
     })
+    await waitFor(() => {
+      expect(double.session.input).toHaveBeenNthCalledWith(1, 'c')
+      expect(double.session.input).toHaveBeenNthCalledWith(2, '<Left>')
+    })
+
+    fireEvent.press(screen.getByText('Esc'))
+    const actionIme = jest.requireMock('../native/CodeyIme') as { __sendOrderedInput: jest.Mock }
+    await waitFor(() => {
+      expect(actionIme.__sendOrderedInput).toHaveBeenCalledWith('<C-Esc>')
+      expect(double.session.input).toHaveBeenNthCalledWith(3, '<C-Esc>')
+    })
+
+    fireEvent.press(screen.getByText('Tab'))
+    await waitFor(() => {
+      expect(actionIme.__sendOrderedInput).toHaveBeenLastCalledWith('<Tab>')
+      expect(double.session.input).toHaveBeenNthCalledWith(4, '<Tab>')
+    })
+  })
+
+  it('orders composition before a Ctrl action and enters the controller exactly once', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+
+    const nativeIme = jest.requireMock('../native/CodeyIme') as {
+      __sendOrderedInput: jest.Mock
+      __setOrderedPrefix: (segments: unknown[]) => void
+    }
+    nativeIme.__setOrderedPrefix([{ type: 'text', text: 'ready' }])
+    fireEvent.press(screen.getByText('Ctrl'))
+    fireEvent.press(screen.getByText('Esc'))
+
+    await waitFor(() => {
+      expect(nativeIme.__sendOrderedInput).toHaveBeenCalledWith('<C-Esc>')
+      expect(double.session.input).toHaveBeenCalledTimes(1)
+      expect(double.session.input).toHaveBeenCalledWith('ready<C-Esc>')
+    })
+  })
+
+  it('carries one sanitized input sample from native receipt to the published flush', async () => {
+    configurePerformanceDiagnostics({ enabled: true, log: false, build: 'release' })
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+
+    act(() => {
+      screen.getByTestId('mock-codey-ime').props.onCommittedText('private', {
+        sequence: 9,
+        receivedAtUptimeMs: 10,
+        connectionGeneration: 1
+      })
+    })
+    await waitFor(() => expect(double.session.input).toHaveBeenCalledWith('private'))
+    act(() => {
+      double.redraw([['flush', []]])
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-editor-canvas').props.performanceSamples).toHaveLength(1)
+    })
+
+    const records = getPerformanceRecords()
+    const receipt = records.find((record) => record.stage === 'input_receipt')
+    const published = screen.getByTestId('mock-editor-canvas').props.performanceSamples[0]
+    expect(published).toMatchObject({
+      sampleId: receipt?.tags.sampleId,
+      source: 'ime',
+      inputLength: 7,
+      connectionGeneration: 1,
+      sequence: 9,
+      flushCount: 1
+    })
+    expect(JSON.stringify(records)).not.toContain('private')
+  })
+
+  it('drills into Leader search, sends one complete mapping, and returns to root', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+
+    fireEvent.press(screen.getByTestId('action-pad-leader'))
+    expect(screen.queryByText('Esc')).toBeNull()
+    expect(screen.getByText('› Leader')).toBeTruthy()
+
+    fireEvent.press(screen.getByTestId('action-pad-search'))
+    expect(screen.getByText('› Leader / Search')).toBeTruthy()
+    fireEvent.press(screen.getByText('Grep (Live)'))
+
+    const nativeIme = jest.requireMock('../native/CodeyIme') as { __sendOrderedInput: jest.Mock }
+    await waitFor(() => {
+      expect(nativeIme.__sendOrderedInput).toHaveBeenCalledWith('<Space>sg')
+      expect(double.session.input).toHaveBeenCalledWith('<Space>sg')
+    })
+    expect(screen.getByText('Esc')).toBeTruthy()
+    expect(screen.queryByText('› Leader / Search')).toBeNull()
+  })
+
+  it('opens navigation on hold, keeps it open for repeated moves, and backs out locally', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+
+    fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
+    expect(screen.getByText('› Up Arrow – Navigation')).toBeTruthy()
+    expect(screen.getByText('gg Top')).toBeTruthy()
+
+    fireEvent.press(screen.getByText('+5 Lines'))
+    const nativeIme = jest.requireMock('../native/CodeyIme') as {
+      __sendOrderedInput: jest.Mock
+    }
+    await waitFor(() => expect(double.session.input).toHaveBeenCalledWith('5k'))
+    expect(nativeIme.__sendOrderedInput).toHaveBeenCalledWith('5k')
+    expect(screen.getByText('+5 Lines')).toBeTruthy()
+
+    fireEvent.press(screen.getByTestId('action-pad-back'))
+    expect(screen.getByText('Esc')).toBeTruthy()
+    expect(double.session.input).toHaveBeenCalledTimes(1)
   })
 
   it('shows connection failures and leaves reconnection explicit', async () => {

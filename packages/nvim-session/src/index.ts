@@ -1,4 +1,9 @@
 import type { MessagePackRpcClient } from "@codey/msgpack-rpc";
+import {
+  performanceDiagnosticsEnabled,
+  performanceNow,
+  recordPerformance,
+} from "@codey/perf";
 
 export type RedrawCall = readonly unknown[];
 
@@ -151,15 +156,47 @@ export function createNvimSession(
 }
 
 export function isRedrawBatch(value: unknown): value is RedrawBatch {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (event) =>
-        Array.isArray(event) &&
-        typeof event[0] === "string" &&
-        event.slice(1).every((call) => Array.isArray(call)),
-    )
-  );
+  const diagnosticsEnabled = performanceDiagnosticsEnabled();
+  const validationStartedAt = diagnosticsEnabled ? performanceNow() : 0;
+  let valid = false;
+
+  if (Array.isArray(value)) {
+    valid = true;
+    for (let eventIndex = 0; eventIndex < value.length; eventIndex += 1) {
+      // Array#every, used by the previous validator, skips sparse entries.
+      if (!(eventIndex in value)) {
+        continue;
+      }
+      const event = value[eventIndex];
+      if (!Array.isArray(event) || typeof event[0] !== "string") {
+        valid = false;
+        break;
+      }
+      for (let callIndex = 1; callIndex < event.length; callIndex += 1) {
+        if (!(callIndex in event)) {
+          continue;
+        }
+        if (!Array.isArray(event[callIndex])) {
+          valid = false;
+          break;
+        }
+      }
+      if (!valid) {
+        break;
+      }
+    }
+  }
+
+  if (diagnosticsEnabled) {
+    recordPerformance("redraw_validation", {
+      startedAtMs: validationStartedAt,
+      tags: {
+        source: "redraw",
+        eventCount: Array.isArray(value) ? value.length : 0,
+      },
+    });
+  }
+  return valid;
 }
 
 function assertDimension(name: string, value: number): void {

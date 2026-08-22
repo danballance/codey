@@ -5,6 +5,23 @@ export interface KeyModifiers {
   readonly meta?: boolean
 }
 
+export type NvimSpecialKeyName =
+  | 'Backspace'
+  | 'Delete'
+  | 'Enter'
+  | 'Escape'
+  | 'Tab'
+  | 'ArrowLeft'
+  | 'ArrowRight'
+  | 'ArrowUp'
+  | 'ArrowDown'
+  | 'Home'
+  | 'End'
+  | 'PageUp'
+  | 'PageDown'
+  | 'Insert'
+  | `F${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12}`
+
 export interface NativeSpecialKey {
   readonly key: string
   readonly modifiers?: KeyModifiers
@@ -26,6 +43,10 @@ const SPECIAL_KEYS: Readonly<Record<string, string>> = Object.freeze({
   PageDown: 'PageDown',
   Insert: 'Insert'
 })
+
+export function isNvimSpecialKeyName(key: string): key is NvimSpecialKeyName {
+  return Object.prototype.hasOwnProperty.call(SPECIAL_KEYS, key) || functionKey(key) !== null
+}
 
 export function escapeNvimText(text: string): string {
   return text.replaceAll('<', '<lt>')

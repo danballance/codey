@@ -1,22 +1,36 @@
 package dev.codey.tcp
 
+import android.os.Trace
+import android.os.SystemClock
 import java.io.IOException
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 internal interface TcpEventSink {
-  fun onData(connectionId: Int, bytes: ByteArray)
+  fun onData(
+    connectionId: Int,
+    bytes: ByteArray,
+    receivedAtUptimeMs: Double,
+    nativeDurationMs: Double
+  )
 
   fun onClose(connectionId: Int, code: String? = null, message: String? = null)
 }
+
+internal data class TcpWriteMeasurement(
+  val nativeEntryUptimeMs: Double,
+  val lockWaitStartedAtUptimeMs: Double,
+  val lockWaitDurationMs: Double,
+  val socketWriteStartedAtUptimeMs: Double,
+  val socketWriteDurationMs: Double
+)
 
 /**
  * Owns the socket lifecycle independently of React Native. Keeping the transport
@@ -24,6 +38,7 @@ internal interface TcpEventSink {
  */
 internal class TcpClientManager(
   private val eventSink: TcpEventSink,
+  private val uptimeMillis: () -> Double = ::tcpUptimeMillis,
   private val socketFactory: () -> Socket = { Socket() }
 ) {
   private val lifecycleLock = Any()
@@ -59,6 +74,7 @@ internal class TcpClientManager(
         connectionId = connectionId,
         socket = socket,
         eventSink = eventSink,
+        uptimeMillis = uptimeMillis,
         onTerminal = { terminalConnection ->
           connections.remove(terminalConnection.connectionId, terminalConnection)
         }
@@ -86,7 +102,17 @@ internal class TcpClientManager(
   fun write(connectionId: Int, bytes: ByteArray) {
     val connection = connections[connectionId]
       ?: throw IllegalStateException("TCP connection $connectionId is not open")
-    connection.write(bytes.copyOf())
+    connection.write(bytes)
+  }
+
+  fun writeMeasured(
+    connectionId: Int,
+    bytes: ByteArray,
+    nativeEntryUptimeMs: Double
+  ): TcpWriteMeasurement {
+    val connection = connections[connectionId]
+      ?: throw IllegalStateException("TCP connection $connectionId is not open")
+    return connection.writeMeasured(bytes, nativeEntryUptimeMs)
   }
 
   fun close(connectionId: Int) {
@@ -121,14 +147,14 @@ private class TcpConnection(
   val connectionId: Int,
   private val socket: Socket,
   private val eventSink: TcpEventSink,
+  private val uptimeMillis: () -> Double,
   private val onTerminal: (TcpConnection) -> Unit
 ) {
   private val terminal = AtomicBoolean(false)
+  private val writeLock = Any()
+  private val output: OutputStream = socket.getOutputStream()
   private val readerExecutor = Executors.newSingleThreadExecutor(
     namedDaemonThreadFactory("codey-tcp-reader-$connectionId")
-  )
-  private val writerExecutor = Executors.newSingleThreadExecutor(
-    namedDaemonThreadFactory("codey-tcp-writer-$connectionId")
   )
 
   fun startReading() {
@@ -137,13 +163,21 @@ private class TcpConnection(
       try {
         val input = socket.getInputStream()
         while (!terminal.get()) {
-          val byteCount = input.read(buffer)
+          val readStartedAtUptimeMs = uptimeMillis()
+          val byteCount = traceSection("Codey/TCP/SocketRead") { input.read(buffer) }
+          val readFinishedAtUptimeMs = uptimeMillis()
           if (byteCount < 0) {
             finish()
             return@execute
           }
           if (byteCount > 0 && !terminal.get()) {
-            eventSink.onData(connectionId, buffer.copyOf(byteCount))
+            eventSink.onData(
+              connectionId = connectionId,
+              bytes = buffer.copyOf(byteCount),
+              receivedAtUptimeMs = readFinishedAtUptimeMs,
+              nativeDurationMs =
+                (readFinishedAtUptimeMs - readStartedAtUptimeMs).coerceAtLeast(0.0)
+            )
           }
         }
       } catch (error: SocketException) {
@@ -161,25 +195,72 @@ private class TcpConnection(
     if (bytes.isEmpty()) return
 
     try {
-      writerExecutor.submit {
+      synchronized(writeLock) {
         check(!terminal.get()) { "TCP connection $connectionId is closed" }
-        socket.getOutputStream().apply {
-          write(bytes)
-          flush()
+        traceSection("Codey/TCP/SocketWrite") {
+          output.apply {
+            write(bytes)
+            flush()
+          }
         }
-      }.get()
-    } catch (error: RejectedExecutionException) {
-      throw IllegalStateException("TCP connection $connectionId is closed", error)
-    } catch (error: InterruptedException) {
-      Thread.currentThread().interrupt()
-      throw IOException("TCP write was interrupted", error)
-    } catch (error: ExecutionException) {
-      val cause = error.cause ?: error
-      if (!terminal.get()) {
-        finish("E_TCP_WRITE", cause.message ?: "TCP write failed")
       }
-      if (cause is IOException) throw cause
-      throw IOException(cause.message ?: "TCP write failed", cause)
+    } catch (error: IOException) {
+      if (!terminal.get()) {
+        finish("E_TCP_WRITE", error.message ?: "TCP write failed")
+      }
+      throw error
+    } catch (error: RuntimeException) {
+      if (!terminal.get()) {
+        finish("E_TCP_WRITE", error.message ?: "TCP write failed")
+      }
+      throw IOException(error.message ?: "TCP write failed", error)
+    }
+  }
+
+  /** Diagnostics-only twin of [write]; ordinary writes avoid every clock read. */
+  fun writeMeasured(
+    bytes: ByteArray,
+    nativeEntryUptimeMs: Double
+  ): TcpWriteMeasurement {
+    check(!terminal.get()) { "TCP connection $connectionId is closed" }
+    if (bytes.isEmpty()) {
+      val now = uptimeMillis()
+      return TcpWriteMeasurement(nativeEntryUptimeMs, now, 0.0, now, 0.0)
+    }
+
+    val lockWaitStartedAtUptimeMs = uptimeMillis()
+    try {
+      synchronized(writeLock) {
+        val lockAcquiredAtUptimeMs = uptimeMillis()
+        check(!terminal.get()) { "TCP connection $connectionId is closed" }
+        val socketWriteStartedAtUptimeMs = uptimeMillis()
+        traceSection("Codey/TCP/SocketWrite") {
+          output.apply {
+            write(bytes)
+            flush()
+          }
+        }
+        val socketWriteFinishedAtUptimeMs = uptimeMillis()
+        return TcpWriteMeasurement(
+          nativeEntryUptimeMs = nativeEntryUptimeMs,
+          lockWaitStartedAtUptimeMs = lockWaitStartedAtUptimeMs,
+          lockWaitDurationMs =
+            (lockAcquiredAtUptimeMs - lockWaitStartedAtUptimeMs).coerceAtLeast(0.0),
+          socketWriteStartedAtUptimeMs = socketWriteStartedAtUptimeMs,
+          socketWriteDurationMs =
+            (socketWriteFinishedAtUptimeMs - socketWriteStartedAtUptimeMs).coerceAtLeast(0.0)
+        )
+      }
+    } catch (error: IOException) {
+      if (!terminal.get()) {
+        finish("E_TCP_WRITE", error.message ?: "TCP write failed")
+      }
+      throw error
+    } catch (error: RuntimeException) {
+      if (!terminal.get()) {
+        finish("E_TCP_WRITE", error.message ?: "TCP write failed")
+      }
+      throw IOException(error.message ?: "TCP write failed", error)
     }
   }
 
@@ -191,7 +272,6 @@ private class TcpConnection(
     if (!terminal.compareAndSet(false, true)) return
 
     runCatching { socket.close() }
-    writerExecutor.shutdownNow()
     readerExecutor.shutdownNow()
     onTerminal(this)
     eventSink.onClose(connectionId, code, message)
@@ -200,4 +280,20 @@ private class TcpConnection(
 
 private fun namedDaemonThreadFactory(name: String): ThreadFactory = ThreadFactory { runnable ->
   Thread(runnable, name).apply { isDaemon = true }
+}
+
+/** Android performance.now() uses the uptime timebase, which excludes deep sleep. */
+internal fun tcpUptimeMillis(
+  androidUptimeMillis: () -> Long = { SystemClock.uptimeMillis() },
+  fallbackNanos: () -> Long = { System.nanoTime() }
+): Double = runCatching { androidUptimeMillis().toDouble() }
+  .getOrElse { fallbackNanos() / 1_000_000.0 }
+
+private inline fun <T> traceSection(name: String, callback: () -> T): T {
+  val tracing = runCatching { Trace.beginSection(name) }.isSuccess
+  return try {
+    callback()
+  } finally {
+    if (tracing) runCatching { Trace.endSection() }
+  }
 }

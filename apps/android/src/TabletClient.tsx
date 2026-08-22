@@ -9,7 +9,17 @@ import {
   View,
   type LayoutChangeEvent
 } from 'react-native'
+import {
+  createPerformanceInputSample,
+  performanceDiagnosticsEnabled,
+  performanceNow,
+  recordPerformance,
+  withPerformanceTags,
+  type PerformanceInputSample,
+  type PerformanceTags
+} from '@codey/perf'
 
+import { ActionPad, ACTION_PAD_MENU } from './action-pad'
 import { TabletClientController } from './controller'
 import { EditorCanvas } from './editor/EditorCanvas'
 import { endpointStore } from './endpoint-store'
@@ -19,7 +29,13 @@ import {
   committedTextToNvimInput,
   specialKeyToNvimInput
 } from './input'
-import { CodeyIme, type CodeyImeHandle, type CodeyImeKeyEvent } from './native/CodeyIme'
+import {
+  CodeyIme,
+  type CodeyImeEventMetadata,
+  type CodeyImeHandle,
+  type CodeyImeKeyEvent,
+  type CodeyImeOrderedInputEvent
+} from './native/CodeyIme'
 import { createRuntimeConnection } from './runtime-connection'
 import type { TabletCapability } from './tablet'
 
@@ -32,16 +48,19 @@ interface CanvasBounds {
   readonly height: number
 }
 
-const KEY_ROW = [
-  ['Esc', 'Escape'],
-  ['Tab', 'Tab'],
-  ['Enter', 'Enter'],
-  ['⌫', 'Backspace'],
-  ['←', 'ArrowLeft'],
-  ['↓', 'ArrowDown'],
-  ['↑', 'ArrowUp'],
-  ['→', 'ArrowRight']
-] as const
+interface PendingActionInput {
+  readonly startedAtMs: number
+  readonly inputLength: number
+  readonly firstKeyAfterFocus: boolean
+  readonly sample?: PerformanceInputSample
+}
+
+interface NativeInputTiming {
+  readonly deliveredAtMs?: number
+  readonly sample?: PerformanceInputSample
+}
+
+const KEYBOARD_COMPACT_THRESHOLD = 120
 
 export function TabletClient({ capability }: TabletClientProps) {
   const [controller] = useState(() => new TabletClientController(createRuntimeConnection))
@@ -52,7 +71,10 @@ export function TabletClient({ capability }: TabletClientProps) {
   const [control, setControl] = useState(false)
   const controlRef = useRef(false)
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds>({ width: 0, height: 0 })
+  const [availableHeight, setAvailableHeight] = useState(capability.height)
   const imeRef = useRef<CodeyImeHandle>(null)
+  const pendingActionInputs = useRef<PendingActionInput[]>([])
+  const firstKeyAfterFocus = useRef(false)
 
   useEffect(() => {
     let mounted = true
@@ -78,6 +100,11 @@ export function TabletClient({ capability }: TabletClientProps) {
     [controller]
   )
 
+  const onScreenLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout
+    setAvailableHeight((previous) => previous === height ? previous : height)
+  }, [])
+
   const toggleConnection = useCallback(() => {
     setFormError('')
     if (client.phase === 'connected') {
@@ -94,62 +121,153 @@ export function TabletClient({ capability }: TabletClientProps) {
     }
   }, [client.phase, controller, host, port])
 
-  const submitCommittedText = useCallback(
-    (text: string) => {
-      if (text.length === 0) return
-      const applyControl = controlRef.current
-      const keys = committedTextToNvimInput(text, applyControl)
-      if (applyControl) {
-        controlRef.current = false
-        setControl(false)
-      }
-      void controller.input(keys)
+  const submitControllerInput = useCallback(
+    (keys: string, tags: PerformanceTags) => {
+      if (keys.length === 0) return
+      recordPerformance('controller_input_entry', { durationMs: 0, tags })
+      withPerformanceTags(tags, () => {
+        void controller.input(keys)
+      })
     },
     [controller]
   )
 
+  const submitCommittedText = useCallback(
+    (text: string, metadata?: CodeyImeEventMetadata) => {
+      if (text.length === 0) return
+      const isFirstKeyAfterFocus = consumeFirstKeyAfterFocus(firstKeyAfterFocus)
+      const timing = nativeInputTiming(metadata?.receivedAtUptimeMs)
+      const tags: PerformanceTags = {
+        ...timing.sample,
+        source: 'ime',
+        inputLength: text.length,
+        connectionGeneration: metadata?.connectionGeneration,
+        sequence: metadata?.sequence,
+        firstKeyAfterFocus: isFirstKeyAfterFocus
+      }
+      recordPerformance('input_receipt', {
+        startedAtMs: timing.sample?.inputStartedAtMs,
+        durationMs: 0,
+        tags
+      })
+      recordNativeToJsDelivery(metadata?.receivedAtUptimeMs, tags, timing.deliveredAtMs)
+      const keys = committedTextToNvimInput(text)
+      submitControllerInput(keys, tags)
+    },
+    [submitControllerInput]
+  )
+
   const submitHardwareKey = useCallback(
     (event: CodeyImeKeyEvent) => {
-      const applyControl = controlRef.current
+      const isFirstKeyAfterFocus = consumeFirstKeyAfterFocus(firstKeyAfterFocus)
+      const timing = nativeInputTiming(event.receivedAtUptimeMs)
+      const tags: PerformanceTags = {
+        ...timing.sample,
+        source: 'hardware',
+        inputLength: Array.from(event.key).length,
+        connectionGeneration: event.connectionGeneration,
+        sequence: event.sequence,
+        firstKeyAfterFocus: isFirstKeyAfterFocus
+      }
+      recordPerformance('input_receipt', {
+        startedAtMs: timing.sample?.inputStartedAtMs,
+        durationMs: 0,
+        tags
+      })
+      recordNativeToJsDelivery(event.receivedAtUptimeMs, tags, timing.deliveredAtMs)
       const keys = specialKeyToNvimInput({
         key: event.key,
         modifiers: {
-          ctrl: event.ctrl || applyControl,
+          ctrl: event.ctrl,
           alt: event.alt,
           shift: event.shift,
           meta: event.meta
         }
       })
       if (keys === null) return
-      if (applyControl) {
-        controlRef.current = false
-        setControl(false)
-      }
-      void controller.input(keys)
+      submitControllerInput(keys, tags)
     },
-    [controller]
+    [submitControllerInput]
   )
+
+  const submitOrderedInput = useCallback(
+    (event: CodeyImeOrderedInputEvent) => {
+      const pending = pendingActionInputs.current.shift()
+      const keys = orderedBatchToNvimInput(event)
+      const tags: PerformanceTags = {
+        ...pending?.sample,
+        source: 'action-pad',
+        inputLength: keys.length,
+        connectionGeneration: event.connectionGeneration,
+        sequence: event.sequence,
+        segmentCount: event.segments.length,
+        firstKeyAfterFocus: pending?.firstKeyAfterFocus ?? false
+      }
+      recordPerformance('native_ime_ordered_dispatch', {
+        durationMs: event.nativeDurationMs,
+        tags
+      })
+      if (pending !== undefined) {
+        recordPerformance('action_pad_to_native_event_delivery', {
+          startedAtMs: pending.startedAtMs,
+          tags: { ...tags, inputLength: pending.inputLength }
+        })
+      }
+      recordNativeToJsDelivery(event.receivedAtUptimeMs, tags)
+      submitControllerInput(keys, tags)
+    },
+    [submitControllerInput]
+  )
+
+  const sendOrderedActionInput = useCallback((keys: string) => {
+    if (keys.length === 0) return
+    const startedAtMs = performanceNow()
+    const pending = {
+      startedAtMs,
+      inputLength: keys.length,
+      firstKeyAfterFocus: consumeFirstKeyAfterFocus(firstKeyAfterFocus),
+      sample: performanceDiagnosticsEnabled()
+        ? createPerformanceInputSample(startedAtMs)
+        : undefined
+    }
+    pendingActionInputs.current.push(pending)
+    recordPerformance('input_receipt', {
+      durationMs: 0,
+      tags: {
+        ...pending.sample,
+        source: 'action-pad',
+        inputLength: keys.length,
+        firstKeyAfterFocus: pending.firstKeyAfterFocus
+      }
+    })
+    void imeRef.current?.sendOrderedInput(keys).catch(() => {
+      const index = pendingActionInputs.current.indexOf(pending)
+      if (index >= 0) pendingActionInputs.current.splice(index, 1)
+    })
+  }, [])
 
   const submitKeyRow = useCallback(
     (key: string) => {
       const applyControl = controlRef.current
+      const keys = specialKeyToNvimInput({
+        key,
+        modifiers: applyControl ? { ctrl: true } : undefined
+      })
+      if (keys === null) return
       if (applyControl) {
         controlRef.current = false
         setControl(false)
       }
-      void imeRef.current
-        ?.sendKey({
-          key,
-          ctrl: applyControl,
-          alt: false,
-          shift: false,
-          meta: false,
-          repeat: false
-        })
-        .catch(() => undefined)
+      sendOrderedActionInput(keys)
     },
-    []
+    [sendOrderedActionInput]
   )
+
+  const submitActionInput = useCallback((keys: string) => {
+    controlRef.current = false
+    setControl(false)
+    sendOrderedActionInput(keys)
+  }, [sendOrderedActionInput])
 
   const toggleControl = useCallback(() => {
     const next = !controlRef.current
@@ -157,13 +275,21 @@ export function TabletClient({ capability }: TabletClientProps) {
     setControl(next)
   }, [])
 
+  const focusEditorIme = useCallback(() => {
+    firstKeyAfterFocus.current = true
+    void imeRef.current?.focus().catch(() => undefined)
+  }, [])
+
   const connected = client.phase === 'connected'
   const connecting = client.phase === 'connecting'
   const expanded = capability.layout === 'expanded'
+  const compactControls = capability.height - availableHeight >= KEYBOARD_COMPACT_THRESHOLD
   const mode = client.snapshot?.mode.name.toUpperCase() || '—'
 
   useEffect(() => {
     if (!connected) {
+      pendingActionInputs.current = []
+      firstKeyAfterFocus.current = false
       controlRef.current = false
       setControl(false)
       void imeRef.current?.blur().catch(() => undefined)
@@ -173,10 +299,15 @@ export function TabletClient({ capability }: TabletClientProps) {
   return (
     <KeyboardAvoidingView
       behavior="height"
-      style={[styles.screen, expanded ? styles.expandedScreen : styles.condensedScreen]}
+      onLayout={onScreenLayout}
+      style={[
+        styles.screen,
+        expanded ? styles.expandedScreen : styles.condensedScreen,
+        compactControls && styles.keyboardCompactScreen
+      ]}
       testID="tablet-client-screen"
     >
-      <View style={styles.toolbar}>
+      <View style={[styles.toolbar, compactControls && styles.keyboardCompactToolbar]}>
         <View style={styles.brandBlock}>
           <Text style={styles.brand}>CODEY</Text>
           <View style={[styles.statusDot, statusDotStyle(client.phase)]} />
@@ -225,12 +356,13 @@ export function TabletClient({ capability }: TabletClientProps) {
       <Pressable
         accessibilityLabel="Neovim editor"
         disabled={!connected}
-        onPress={() => void imeRef.current?.focus().catch(() => undefined)}
-        style={styles.editorFrame}
+        onPress={focusEditorIme}
+        style={[styles.editorFrame, compactControls && styles.keyboardCompactEditor]}
       >
         <EditorCanvas
           height={canvasBounds.height}
           onLayout={onEditorLayout}
+          performanceSamples={client.performanceSamples}
           snapshot={client.snapshot}
           width={canvasBounds.width}
         />
@@ -244,49 +376,100 @@ export function TabletClient({ capability }: TabletClientProps) {
         ) : null}
         <CodeyIme
           ref={imeRef}
+          inputMode="terminal"
           onCommittedText={submitCommittedText}
           onKey={submitHardwareKey}
+          onOrderedInput={submitOrderedInput}
           style={styles.imeTarget}
         />
       </Pressable>
 
-      <View style={styles.editorStatus}>
-        <Text style={styles.mode}>{mode}</Text>
-        <Text style={styles.dimensions}>
-          {client.gridSize.columns} × {client.gridSize.rows} · {Math.round(capability.width)} ×{' '}
-          {Math.round(capability.height)}dp
-        </Text>
-      </View>
-
-      <View style={styles.keyRow}>
-        <KeyButton active={control} label="Ctrl" onPress={toggleControl} />
-        {KEY_ROW.map(([label, key]) => (
-          <KeyButton key={key} label={label} onPress={() => submitKeyRow(key)} />
-        ))}
-      </View>
+      <ActionPad
+        compact={compactControls}
+        controlActive={control}
+        dimensions={`${client.gridSize.columns} × ${client.gridSize.rows} · ${Math.round(capability.width)} × ${Math.round(capability.height)}dp`}
+        enabled={connected}
+        mode={mode}
+        onKeyPress={submitKeyRow}
+        onRawInput={submitActionInput}
+        onToggleControl={toggleControl}
+        resetKey={client.phase}
+        rootMenu={ACTION_PAD_MENU}
+      />
     </KeyboardAvoidingView>
   )
 }
 
-function KeyButton({
-  active = false,
-  label,
-  onPress
-}: {
-  readonly active?: boolean
-  readonly label: string
-  readonly onPress: () => void
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected: active }}
-      onPress={onPress}
-      style={({ pressed }) => [styles.keyButton, active && styles.keyButtonActive, pressed && styles.pressed]}
-    >
-      <Text style={[styles.keyButtonText, active && styles.keyButtonTextActive]}>{label}</Text>
-    </Pressable>
-  )
+function orderedBatchToNvimInput(event: CodeyImeOrderedInputEvent): string {
+  const parts: string[] = []
+  for (const segment of event.segments) {
+    switch (segment.type) {
+      case 'text':
+        parts.push(committedTextToNvimInput(segment.text))
+        break
+      case 'key': {
+        const input = specialKeyToNvimInput({
+          key: segment.key,
+          modifiers: {
+            ctrl: segment.ctrl,
+            alt: segment.alt,
+            shift: segment.shift,
+            meta: segment.meta
+          }
+        })
+        if (input !== null) parts.push(input)
+        break
+      }
+      case 'input':
+        parts.push(segment.keys)
+    }
+  }
+  return parts.join('')
+}
+
+function consumeFirstKeyAfterFocus(flag: { current: boolean }): boolean {
+  const value = flag.current
+  flag.current = false
+  return value
+}
+
+function recordNativeToJsDelivery(
+  receivedAtUptimeMs: number | undefined,
+  tags: PerformanceTags,
+  deliveredAtMs = performanceDiagnosticsEnabled() ? performanceNow() : undefined
+): void {
+  if (deliveredAtMs === undefined) return
+  const durationMs = receivedAtUptimeMs === undefined ? Number.NaN : deliveredAtMs - receivedAtUptimeMs
+  if (Number.isFinite(durationMs) && durationMs >= 0 && durationMs <= 60_000) {
+    recordPerformance('native_to_js_event_delivery', {
+      startedAtMs: receivedAtUptimeMs,
+      durationMs,
+      tags
+    })
+    return
+  }
+  recordPerformance('native_to_js_event_delivery', {
+    startedAtMs: deliveredAtMs,
+    durationMs: 0,
+    tags
+  })
+}
+
+function nativeInputTiming(receivedAtUptimeMs: number | undefined): NativeInputTiming {
+  if (!performanceDiagnosticsEnabled()) return {}
+  const deliveredAtMs = performanceNow()
+  const deliveryDurationMs = receivedAtUptimeMs === undefined
+    ? Number.NaN
+    : deliveredAtMs - receivedAtUptimeMs
+  const inputStartedAtMs = Number.isFinite(deliveryDurationMs) &&
+    deliveryDurationMs >= 0 &&
+    deliveryDurationMs <= 60_000
+    ? receivedAtUptimeMs
+    : deliveredAtMs
+  return {
+    deliveredAtMs,
+    sample: createPerformanceInputSample(inputStartedAtMs)
+  }
 }
 
 function statusDotStyle(phase: string) {
@@ -311,11 +494,18 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     gap: 5
   },
+  keyboardCompactScreen: {
+    paddingVertical: 2,
+    gap: 4
+  },
   toolbar: {
     minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8
+  },
+  keyboardCompactToolbar: {
+    minHeight: 40
   },
   brandBlock: {
     flexDirection: 'row',
@@ -382,6 +572,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: '#111419'
   },
+  keyboardCompactEditor: {
+    minHeight: 48
+  },
   emptyState: {
     position: 'absolute',
     top: 0,
@@ -400,33 +593,5 @@ const styles = StyleSheet.create({
     width: 2,
     height: 2,
     opacity: 0.01
-  },
-  editorStatus: {
-    minHeight: 22,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 5
-  },
-  mode: { color: '#7ee787', fontFamily: 'monospace', fontSize: 12, fontWeight: '700' },
-  dimensions: { color: '#7c8997', fontFamily: 'monospace', fontSize: 12 },
-  keyRow: {
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 7
-  },
-  keyButton: {
-    flex: 1,
-    minWidth: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#35404c',
-    borderRadius: 8,
-    backgroundColor: '#182029'
-  },
-  keyButtonActive: { borderColor: '#7ee787', backgroundColor: '#1e3527' },
-  keyButtonText: { color: '#c4ced8', fontSize: 14, fontWeight: '600' },
-  keyButtonTextActive: { color: '#7ee787' }
+  }
 })

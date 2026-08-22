@@ -1,4 +1,13 @@
-import type { RedrawBatch, RedrawCall } from "@codey/nvim-session";
+import type {
+  RedrawBatch,
+  RedrawCall,
+  RedrawEvent,
+} from "@codey/nvim-session";
+import {
+  performanceDiagnosticsEnabled,
+  performanceNow,
+  recordPerformance,
+} from "@codey/perf";
 
 export interface GridCell {
   readonly text: string;
@@ -127,12 +136,24 @@ export function applyRedrawBatch(
   previous: EditorState,
   batch: RedrawBatch,
 ): RedrawReduction {
+  const diagnosticsEnabled = performanceDiagnosticsEnabled();
+  const reductionStartedAt = diagnosticsEnabled ? performanceNow() : 0;
   let state = previous;
   let didFlush = false;
 
   for (const event of batch) {
-    const [name, ...calls] = event;
-    for (const call of calls) {
+    const name = event[0];
+    if (name === "grid_line") {
+      state = applyGridLineEvent(state, event);
+      continue;
+    }
+
+    for (let callIndex = 1; callIndex < event.length; callIndex += 1) {
+      const call = event[callIndex];
+      if (!Array.isArray(call)) {
+        continue;
+      }
+
       switch (name) {
         case "grid_resize":
           state = applyGridResize(state, call);
@@ -145,9 +166,6 @@ export function applyRedrawBatch(
           break;
         case "grid_cursor_goto":
           state = applyGridCursorGoto(state, call);
-          break;
-        case "grid_line":
-          state = applyGridLine(state, call);
           break;
         case "grid_scroll":
           state = applyGridScroll(state, call);
@@ -174,6 +192,18 @@ export function applyRedrawBatch(
           break;
       }
     }
+  }
+
+  if (diagnosticsEnabled) {
+    recordPerformance("redraw_reduction", {
+      startedAtMs: reductionStartedAt,
+      tags: {
+        source: "redraw",
+        eventCount: batch.length,
+        flushCount: state.flushCount,
+        didFlush,
+      },
+    });
   }
 
   return { state, didFlush };
@@ -289,31 +319,75 @@ function applyGridCursorGoto(
   return { ...state, cursor: { gridId, row, column } };
 }
 
-function applyGridLine(state: EditorState, call: RedrawCall): EditorState {
-  const gridId = integerAt(call, 0);
-  const row = integerAt(call, 1);
-  const columnStart = integerAt(call, 2);
-  const encodedCells = call[3];
-  if (
-    gridId === null ||
-    row === null ||
-    columnStart === null ||
-    !Array.isArray(encodedCells)
-  ) {
+interface GridLineEdit {
+  readonly grid: Grid;
+  readonly cells: GridCell[];
+}
+
+/**
+ * Neovim groups any number of line updates under one `grid_line` event. Clone
+ * each affected grid once, then apply its calls in protocol order to that one
+ * working buffer. This preserves highlight carry and overlapping-call ordering
+ * without copying a whole grid for every row fragment.
+ */
+function applyGridLineEvent(state: EditorState, event: RedrawEvent): EditorState {
+  const edits = new Map<number, GridLineEdit>();
+
+  for (let callIndex = 1; callIndex < event.length; callIndex += 1) {
+    const call = event[callIndex];
+    if (!Array.isArray(call)) {
+      continue;
+    }
+
+    const gridId = integerAt(call, 0);
+    const row = integerAt(call, 1);
+    const columnStart = integerAt(call, 2);
+    const encodedCells = call[3];
+    if (
+      gridId === null ||
+      row === null ||
+      columnStart === null ||
+      !Array.isArray(encodedCells)
+    ) {
+      continue;
+    }
+
+    let edit = edits.get(gridId);
+    const grid = edit?.grid ?? state.grids[gridId];
+    if (
+      grid === undefined ||
+      row < 0 ||
+      row >= grid.height ||
+      columnStart < 0
+    ) {
+      continue;
+    }
+
+    if (edit === undefined) {
+      edit = { grid, cells: [...grid.cells] };
+      edits.set(gridId, edit);
+    }
+    applyGridLineCall(edit.grid, edit.cells, row, columnStart, encodedCells);
+  }
+
+  if (edits.size === 0) {
     return state;
   }
 
-  const grid = state.grids[gridId];
-  if (
-    grid === undefined ||
-    row < 0 ||
-    row >= grid.height ||
-    columnStart < 0
-  ) {
-    return state;
+  const grids: Record<number, Grid> = { ...state.grids };
+  for (const [gridId, edit] of edits) {
+    grids[gridId] = { ...edit.grid, cells: edit.cells };
   }
+  return { ...state, grids };
+}
 
-  const cells = [...grid.cells];
+function applyGridLineCall(
+  grid: Grid,
+  cells: GridCell[],
+  row: number,
+  columnStart: number,
+  encodedCells: readonly unknown[],
+): void {
   let column = columnStart;
   let highlightId =
     columnStart > 0
@@ -358,8 +432,6 @@ function applyGridLine(state: EditorState, call: RedrawCall): EditorState {
       break;
     }
   }
-
-  return replaceGrid(state, { ...grid, cells });
 }
 
 function applyGridScroll(state: EditorState, call: RedrawCall): EditorState {

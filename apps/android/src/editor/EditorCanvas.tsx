@@ -1,180 +1,345 @@
-import { memo, useMemo } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { StyleSheet, View, type LayoutChangeEvent } from 'react-native'
 import {
   Canvas,
-  Group,
-  Line,
-  Path,
+  Picture,
   Rect,
-  Skia,
-  Text as SkiaText,
-  matchFont
+  matchFont,
+  type SkFont,
+  type SkPicture
 } from '@shopify/react-native-skia'
-import type { EditorSnapshot, HighlightAttributes } from '@codey/editor-core'
+import type {
+  Cursor as EditorCursor,
+  DefaultColors,
+  EditorSnapshot,
+  ModeState
+} from '@codey/editor-core'
 
+import type { PublishedPerformanceSample } from '../controller'
 import { EDITOR_CELL_METRICS } from '../grid'
 import {
-  FALLBACK_BACKGROUND,
-  colorString,
-  renderCells,
-  type RenderCell
-} from './render-model'
+  performanceDiagnosticsEnabled,
+  performanceNow,
+  recordPerformance
+} from '../performance'
+import {
+  recordGridPicture,
+  sanitizedPictureDimension,
+  visibleGridSize,
+  type GridPictureFonts
+} from './grid-picture'
+import { colorString } from './render-model'
 
 interface EditorCanvasProps {
   readonly snapshot: EditorSnapshot | null
+  readonly performanceSamples?: readonly PublishedPerformanceSample[]
   readonly width: number
   readonly height: number
   readonly onLayout: (event: LayoutChangeEvent) => void
 }
 
 const FONT_SIZE = 16
-const FONT_BASELINE = 17
+const EMPTY_HIGHLIGHTS: EditorSnapshot['highlights'] = Object.freeze({})
+const EMPTY_PERFORMANCE_SAMPLES: readonly PublishedPerformanceSample[] = Object.freeze([])
 
 export const EditorCanvas = memo(function EditorCanvas({
   snapshot,
+  performanceSamples = EMPTY_PERFORMANCE_SAMPLES,
   width,
   height,
   onLayout
 }: EditorCanvasProps) {
-  const normalFont = useMemo(
-    () => matchFont({ fontFamily: 'monospace', fontSize: FONT_SIZE }),
-    []
+  const diagnosticsEnabled = performanceDiagnosticsEnabled()
+  const renderStartedAtMs = diagnosticsEnabled ? performanceNow() : undefined
+  const fonts = useCommittedGridFonts()
+
+  const grid = snapshot?.grid ?? null
+  const defaultColors = snapshot?.defaultColors ?? null
+  const highlights = snapshot?.highlights ?? EMPTY_HIGHLIGHTS
+  const pictureWidth = sanitizedPictureDimension(width)
+  const pictureHeight = sanitizedPictureDimension(height)
+  const visible = visibleGridSize(grid, pictureWidth, pictureHeight)
+  const flushCount = snapshot?.flushCount
+
+  const { picture, isCurrent: pictureIsCurrent } = useCommittedGridPicture({
+    grid,
+    defaultColors,
+    highlights,
+    width: pictureWidth,
+    height: pictureHeight,
+    fonts,
+    flushCount
+  })
+
+  // This effect deliberately follows picture ownership in hook order. React
+  // runs passive cleanups in declaration order, so the picture is released
+  // before the fonts it was recorded with on final unmount.
+  useEffect(() => {
+    if (fonts === null) return
+    return () => disposeFontResource(fonts)
+  }, [fonts])
+
+  const cursorElement = useMemo(() => {
+    const cursor = snapshot?.cursor ?? null
+    const mode = snapshot?.mode
+    if (cursor === null || mode === undefined || grid?.id !== cursor.gridId) return null
+    return (
+      <Cursor
+        key="cursor"
+        cursor={cursor}
+        defaultColors={defaultColors}
+        mode={mode}
+      />
+    )
+  }, [defaultColors, grid?.id, snapshot?.cursor, snapshot?.mode])
+  const canvasChildren = useMemo(
+    () => [
+      picture === null ? null : <Picture key="grid-picture" picture={picture} />,
+      cursorElement
+    ],
+    [cursorElement, picture]
   )
-  const boldFont = useMemo(
-    () => matchFont({ fontFamily: 'monospace', fontSize: FONT_SIZE, fontWeight: 'bold' }),
-    []
+
+  const previousPicture = useRef<SkPicture | null>(null)
+  const committedPerformanceSamples = useRef<readonly PublishedPerformanceSample[] | null>(null)
+  useLayoutEffect(() => {
+    if (picture === null || !pictureIsCurrent) return
+    const pictureChanged = previousPicture.current !== picture
+    previousPicture.current = picture
+    if (!diagnosticsEnabled || renderStartedAtMs === undefined) return
+    if (committedPerformanceSamples.current !== performanceSamples) {
+      committedPerformanceSamples.current = performanceSamples
+      for (const sample of performanceSamples) {
+        recordPerformance('key_to_visible', {
+          startedAtMs: sample.inputStartedAtMs,
+          tags: {
+            ...sample,
+            gridWidth: grid?.width,
+            gridHeight: grid?.height,
+            visibleColumns: visible.columns,
+            visibleRows: visible.rows,
+            pictureChanged
+          }
+        })
+      }
+    }
+    recordPerformance('renderer_layout_commit', {
+      startedAtMs: renderStartedAtMs,
+      tags: {
+        source: 'renderer',
+        flushCount,
+        gridWidth: grid?.width,
+        gridHeight: grid?.height,
+        visibleColumns: visible.columns,
+        visibleRows: visible.rows,
+        pictureChanged
+      }
+    })
+  })
+
+  return (
+    <View onLayout={onLayout} style={styles.frame} testID="editor-canvas-frame">
+      <Canvas style={StyleSheet.absoluteFill}>{canvasChildren}</Canvas>
+    </View>
   )
-  const italicFont = useMemo(
-    () => matchFont({ fontFamily: 'monospace', fontSize: FONT_SIZE, fontStyle: 'italic' }),
-    []
-  )
-  const boldItalicFont = useMemo(
-    () =>
-      matchFont({
+})
+
+type ResourceStatus = 'pending' | 'committed' | 'disposed'
+
+interface GridFontResource extends GridPictureFonts {
+  status: ResourceStatus
+}
+
+interface GridPictureResource {
+  readonly picture: SkPicture
+  readonly grid: EditorSnapshot['grid'] | null
+  readonly defaultColors: DefaultColors | null
+  readonly highlights: EditorSnapshot['highlights']
+  readonly width: number
+  readonly height: number
+  readonly fonts: GridFontResource
+  status: ResourceStatus
+}
+
+interface CommittedGridPictureOptions {
+  readonly grid: EditorSnapshot['grid'] | null
+  readonly defaultColors: DefaultColors | null
+  readonly highlights: EditorSnapshot['highlights']
+  readonly width: number
+  readonly height: number
+  readonly fonts: GridFontResource | null
+  readonly flushCount?: number
+}
+
+/**
+ * Native Skia objects must not be allocated while React is rendering: a
+ * StrictMode or concurrent render may be abandoned without ever running an
+ * effect cleanup. Create the fonts after commit, publish them with a sync
+ * layout update, and release only the unpublished StrictMode probe resource
+ * from the creating effect's cleanup.
+ */
+function useCommittedGridFonts(): GridFontResource | null {
+  const [resource, setResource] = useState<GridFontResource | null>(null)
+
+  useLayoutEffect(() => {
+    const created = createFontResource()
+    setResource(created)
+    return () => {
+      if (created.status === 'pending') disposeFontResource(created)
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (resource?.status === 'pending') resource.status = 'committed'
+  }, [resource])
+
+  return resource?.status === 'disposed' ? null : resource
+}
+
+/**
+ * The currently displayed picture remains valid while a replacement is
+ * recorded. Its passive cleanup runs only after React commits the replacement;
+ * a picture that never reaches that commit is reclaimed as pending instead.
+ */
+function useCommittedGridPicture({
+  grid,
+  defaultColors,
+  highlights,
+  width,
+  height,
+  fonts,
+  flushCount
+}: CommittedGridPictureOptions): {
+  readonly picture: SkPicture | null
+  readonly isCurrent: boolean
+} {
+  const [resource, setResource] = useState<GridPictureResource | null>(null)
+
+  useLayoutEffect(() => {
+    if (fonts === null) return
+    // Font publication is an earlier layout effect, so picture recording never
+    // observes the pending font set used by the StrictMode effect probe.
+    if (fonts.status !== 'committed') return
+
+    const created: GridPictureResource = {
+      picture: recordGridPicture({
+        grid,
+        defaultColors,
+        highlights,
+        width,
+        height,
+        fonts,
+        flushCount
+      }),
+      grid,
+      defaultColors,
+      highlights,
+      width,
+      height,
+      fonts,
+      status: 'pending'
+    }
+    setResource(created)
+    return () => {
+      if (created.status === 'pending') disposePictureResource(created)
+    }
+  }, [defaultColors, fonts, grid, height, highlights, width])
+
+  useLayoutEffect(() => {
+    if (resource?.status === 'pending') resource.status = 'committed'
+  }, [resource])
+
+  useEffect(() => {
+    if (resource === null) return
+    return () => disposePictureResource(resource)
+  }, [resource])
+
+  const isCurrent =
+    resource !== null &&
+    resource.status !== 'disposed' &&
+    resource.grid === grid &&
+    resource.defaultColors === defaultColors &&
+    resource.highlights === highlights &&
+    resource.width === width &&
+    resource.height === height &&
+    resource.fonts === fonts
+
+  return {
+    picture: resource?.status === 'disposed' ? null : (resource?.picture ?? null),
+    isCurrent
+  }
+}
+
+function createFontResource(): GridFontResource {
+  const created: SkFont[] = []
+  const create = (style: Parameters<typeof matchFont>[0]): SkFont => {
+    const font = matchFont(style)
+    created.push(font)
+    return font
+  }
+
+  try {
+    return {
+      normal: create({ fontFamily: 'monospace', fontSize: FONT_SIZE }),
+      bold: create({
+        fontFamily: 'monospace',
+        fontSize: FONT_SIZE,
+        fontWeight: 'bold'
+      }),
+      italic: create({
+        fontFamily: 'monospace',
+        fontSize: FONT_SIZE,
+        fontStyle: 'italic'
+      }),
+      boldItalic: create({
         fontFamily: 'monospace',
         fontSize: FONT_SIZE,
         fontWeight: 'bold',
         fontStyle: 'italic'
       }),
-    []
-  )
-
-  const cells = useMemo(
-    () =>
-      snapshot === null
-        ? []
-        : renderCells(
-            snapshot,
-            Math.ceil(width / EDITOR_CELL_METRICS.width),
-            Math.ceil(height / EDITOR_CELL_METRICS.height)
-          ),
-    [height, snapshot, width]
-  )
-
-  const background =
-    snapshot === null
-      ? colorString(undefined, FALLBACK_BACKGROUND)
-      : colorString(snapshot.defaultColors?.background, FALLBACK_BACKGROUND)
-
-  return (
-    <View onLayout={onLayout} style={styles.frame} testID="editor-canvas-frame">
-      <Canvas style={StyleSheet.absoluteFill}>
-        <Rect x={0} y={0} width={Math.max(0, width)} height={Math.max(0, height)} color={background} />
-        {cells.map((cell) => (
-          <Rect
-            key={`background:${cell.row}:${cell.column}`}
-            x={cell.column * EDITOR_CELL_METRICS.width}
-            y={cell.row * EDITOR_CELL_METRICS.height}
-            width={EDITOR_CELL_METRICS.width}
-            height={EDITOR_CELL_METRICS.height}
-            color={cell.colors.background}
-          />
-        ))}
-        {cells.map((cell) => {
-          const attributes = cell.attributes
-          const font = attributes.bold === true
-            ? attributes.italic === true
-              ? boldItalicFont
-              : boldFont
-            : attributes.italic === true
-              ? italicFont
-              : normalFont
-          return (
-            <Group key={`foreground:${cell.row}:${cell.column}`}>
-              {cell.text.length > 0 && cell.text !== ' ' ? (
-                <SkiaText
-                  x={cell.column * EDITOR_CELL_METRICS.width}
-                  y={cell.row * EDITOR_CELL_METRICS.height + FONT_BASELINE}
-                  text={cell.text}
-                  color={cell.colors.foreground}
-                  font={font}
-                />
-              ) : null}
-              <CellDecorations cell={cell} />
-            </Group>
-          )
-        })}
-        {snapshot !== null &&
-        snapshot.cursor !== null &&
-        snapshot.grid?.id === snapshot.cursor.gridId ? (
-          <Cursor snapshot={snapshot} />
-        ) : null}
-      </Canvas>
-    </View>
-  )
-})
-
-function CellDecorations({ cell }: { readonly cell: RenderCell }) {
-  const x = cell.column * EDITOR_CELL_METRICS.width
-  const y = cell.row * EDITOR_CELL_METRICS.height
-  const attributes = cell.attributes
-  const decorations = []
-
-  if (attributes.underline === true) {
-    decorations.push(
-      <Line
-        key="underline"
-        p1={{ x, y: y + EDITOR_CELL_METRICS.height - 2 }}
-        p2={{ x: x + EDITOR_CELL_METRICS.width, y: y + EDITOR_CELL_METRICS.height - 2 }}
-        color={cell.colors.special}
-        strokeWidth={1}
-      />
-    )
+      status: 'pending'
+    }
+  } catch (error) {
+    for (let index = created.length - 1; index >= 0; index -= 1) {
+      created[index]?.dispose()
+    }
+    throw error
   }
-  if (attributes.undercurl === true) {
-    decorations.push(
-      <Path
-        key="undercurl"
-        path={undercurlPath(x, y + EDITOR_CELL_METRICS.height - 2)}
-        color={cell.colors.special}
-        style="stroke"
-        strokeWidth={1}
-      />
-    )
-  }
-  if (attributes.strikethrough === true) {
-    decorations.push(
-      <Line
-        key="strikethrough"
-        p1={{ x, y: y + EDITOR_CELL_METRICS.height / 2 }}
-        p2={{ x: x + EDITOR_CELL_METRICS.width, y: y + EDITOR_CELL_METRICS.height / 2 }}
-        color={cell.colors.special}
-        strokeWidth={1}
-      />
-    )
-  }
-  return decorations
 }
 
-function Cursor({ snapshot }: { readonly snapshot: EditorSnapshot }) {
-  const cursor = snapshot.cursor!
-  const info = snapshot.mode.infos[snapshot.mode.index] as HighlightAttributes | undefined
+function disposePictureResource(resource: GridPictureResource): void {
+  if (resource.status === 'disposed') return
+  resource.status = 'disposed'
+  resource.picture.dispose()
+}
+
+function disposeFontResource(resource: GridFontResource): void {
+  if (resource.status === 'disposed') return
+  resource.status = 'disposed'
+  resource.boldItalic.dispose()
+  resource.italic.dispose()
+  resource.bold.dispose()
+  resource.normal.dispose()
+}
+
+function Cursor({
+  cursor,
+  defaultColors,
+  mode
+}: {
+  readonly cursor: EditorCursor
+  readonly defaultColors: DefaultColors | null
+  readonly mode: ModeState
+}) {
+  const info = mode.infos[mode.index]
   const shape = info?.cursor_shape
   const percentage =
-    typeof info?.cell_percentage === 'number' ? Math.max(10, Math.min(100, info.cell_percentage)) : 25
+    typeof info?.cell_percentage === 'number'
+      ? Math.max(10, Math.min(100, info.cell_percentage))
+      : 25
   const baseX = cursor.column * EDITOR_CELL_METRICS.width
   const baseY = cursor.row * EDITOR_CELL_METRICS.height
-  const color = colorString(snapshot.defaultColors?.foreground, 0xd7dde4)
+  const color = colorString(defaultColors?.foreground, 0xd7dde4)
 
   if (shape === 'vertical') {
     return (
@@ -211,16 +376,6 @@ function Cursor({ snapshot }: { readonly snapshot: EditorSnapshot }) {
       opacity={0.45}
     />
   )
-}
-
-function undercurlPath(x: number, y: number) {
-  const path = Skia.Path.Make()
-  path.moveTo(x, y)
-  path.lineTo(x + 2.5, y - 2)
-  path.lineTo(x + 5, y)
-  path.lineTo(x + 7.5, y - 2)
-  path.lineTo(x + 10, y)
-  return path
 }
 
 const styles = StyleSheet.create({

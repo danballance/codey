@@ -17,6 +17,23 @@ internal sealed interface ImeSignal {
   ) : ImeSignal
 }
 
+internal sealed interface ImeOrderedSegment {
+  data class Text(val text: String) : ImeOrderedSegment
+
+  data class Key(
+    val key: String,
+    val modifiers: ImeModifiers = ImeModifiers(),
+    val repeat: Boolean = false
+  ) : ImeOrderedSegment
+
+  data class Input(val keys: String) : ImeOrderedSegment
+}
+
+internal data class ImeOrderedBatch(
+  val segments: List<ImeOrderedSegment>,
+  val drainedComposition: Boolean
+)
+
 /**
  * Turns the stateful Android IME protocol into Codey's stateless input stream.
  * Composition updates stay local until Android commits or finishes the composition.
@@ -87,17 +104,44 @@ internal class ImeInputProcessor(
     return finishComposingText()
   }
 
+  @Synchronized
+  fun orderedInput(keys: String): ImeOrderedBatch? {
+    if (keys.isEmpty()) return null
+
+    val composition = composingText
+    val segments = mutableListOf<ImeOrderedSegment>()
+    if (composition != null) {
+      clearComposition()
+      processCommittedText(composition) { signal ->
+        segments += when (signal) {
+          is ImeSignal.CommittedText -> ImeOrderedSegment.Text(signal.text)
+          is ImeSignal.Key -> ImeOrderedSegment.Key(
+            key = signal.key,
+            modifiers = signal.modifiers,
+            repeat = signal.repeat
+          )
+        }
+      }
+    }
+    segments += ImeOrderedSegment.Input(keys)
+    return ImeOrderedBatch(segments, drainedComposition = composition != null)
+  }
+
   fun reset() {
     clearComposition()
   }
 
   private fun emitCommittedText(text: String) {
+    processCommittedText(text, emit)
+  }
+
+  private fun processCommittedText(text: String, sink: (ImeSignal) -> Unit) {
     if (text.isEmpty()) return
 
     val committed = StringBuilder()
     fun flushCommitted() {
       if (committed.isNotEmpty()) {
-        emit(ImeSignal.CommittedText(committed.toString()))
+        sink(ImeSignal.CommittedText(committed.toString()))
         committed.clear()
       }
     }
@@ -107,20 +151,20 @@ internal class ImeInputProcessor(
       when (val character = text[index]) {
         '\r' -> {
           flushCommitted()
-          emit(ImeSignal.Key("Enter"))
+          sink(ImeSignal.Key("Enter"))
           if (index + 1 < text.length && text[index + 1] == '\n') index += 1
         }
         '\n' -> {
           flushCommitted()
-          emit(ImeSignal.Key("Enter"))
+          sink(ImeSignal.Key("Enter"))
         }
         '\b' -> {
           flushCommitted()
-          emit(ImeSignal.Key("Backspace"))
+          sink(ImeSignal.Key("Backspace"))
         }
         '\t' -> {
           flushCommitted()
-          emit(ImeSignal.Key("Tab"))
+          sink(ImeSignal.Key("Tab"))
         }
         else -> committed.append(character)
       }

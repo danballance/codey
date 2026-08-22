@@ -10,6 +10,7 @@
   "scripts": {
     "start": "expo start --dev-client --lan",
     "android": "expo run:android --device",
+    "install:release": "./scripts/install-release.sh",
     "prebuild:clean": "expo prebuild --clean --platform android",
     "export:android": "expo export --platform android --output-dir dist",
     "doctor": "expo-doctor",
@@ -17,12 +18,14 @@
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit",
     "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-tcp:testDebugUnitTest",
-    "assemble:debug": "NODE_ENV=development ./android/gradlew -p android assembleDebug"
+    "assemble:debug": "NODE_ENV=development ./android/gradlew -p android assembleDebug",
+    "assemble:release": "NODE_ENV=production ./android/gradlew -p android assembleRelease"
   },
   "dependencies": {
     "@codey/editor-core": "workspace:*",
     "@codey/msgpack-rpc": "workspace:*",
     "@codey/nvim-session": "workspace:*",
+    "@codey/perf": "workspace:*",
     "@codey/transport": "workspace:*",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@shopify/react-native-skia": "2.6.2",

@@ -1,8 +1,14 @@
-import { decode, encode } from "@msgpack/msgpack";
+import { Decoder, Encoder } from "@msgpack/msgpack";
 
+import {
+  currentPerformanceTags,
+  performanceDiagnosticsEnabled,
+  performanceNow,
+  recordPerformance,
+} from "@codey/perf";
 import type { DuplexTransport } from "@codey/transport";
 
-import { findMessagePackValueEnd } from "./framing";
+import { MessagePackStreamFramer } from "./framing";
 
 export type RpcParams = readonly unknown[];
 export type RpcNotificationListener = (
@@ -51,18 +57,21 @@ interface PendingRequest {
 
 type ClientState = "idle" | "connecting" | "connected" | "closing" | "closed";
 
-const EMPTY_BYTES = new Uint8Array(0);
-
 export class MessagePackRpcClient {
   readonly #transport: DuplexTransport;
   readonly #pendingRequests = new Map<number, PendingRequest>();
   readonly #notificationListeners = new Set<RpcNotificationListener>();
   readonly #requestHandlers = new Map<string, RpcRequestHandler>();
   readonly #errorListeners = new Set<(error: Error) => void>();
+  readonly #framer = new MessagePackStreamFramer();
+  readonly #decoder = new Decoder();
+  readonly #encoder = new Encoder();
+  readonly #receiveFrame = (frame: Uint8Array): void => {
+    this.#acceptFrame(frame);
+  };
 
   #state: ClientState = "idle";
   #nextRequestId = 1;
-  #incoming = EMPTY_BYTES;
   #connectPromise: Promise<void> | undefined;
   #closePromise: Promise<void> | undefined;
   #unsubscribeData: (() => void) | undefined;
@@ -179,7 +188,7 @@ export class MessagePackRpcClient {
 
     this.#explicitClose = true;
     this.#state = "closing";
-    this.#incoming = EMPTY_BYTES;
+    this.#framer.reset();
     this.#rejectPending(
       new MessagePackRpcConnectionClosedError("MessagePack-RPC client was closed"),
     );
@@ -208,64 +217,113 @@ export class MessagePackRpcClient {
       return;
     }
 
-    const combined = new Uint8Array(this.#incoming.byteLength + chunk.byteLength);
-    combined.set(this.#incoming, 0);
-    combined.set(chunk, this.#incoming.byteLength);
-    this.#incoming = combined;
+    const diagnosticsEnabled = performanceDiagnosticsEnabled();
+    let framingStartedAt = diagnosticsEnabled ? performanceNow() : 0;
+    let scannedBefore = this.#framer.scannedByteCount;
+    let copiedBefore = this.#framer.copiedByteCount;
+    let failure: MessagePackRpcProtocolError | undefined;
 
-    let offset = 0;
-    while (offset < this.#incoming.byteLength) {
-      let end: number | null;
-      try {
-        end = findMessagePackValueEnd(this.#incoming, offset);
-      } catch (cause) {
-        this.#fail(
-          new MessagePackRpcProtocolError(
-            "Invalid MessagePack data received from the transport",
-            cause,
-          ),
-        );
-        return;
+    try {
+      if (diagnosticsEnabled) {
+        this.#framer.push(chunk, (frame) => {
+          this.#recordFramingWork(
+            framingStartedAt,
+            scannedBefore,
+            copiedBefore,
+          );
+          try {
+            this.#acceptFrame(frame);
+          } finally {
+            // Delivery can synchronously close the client and reset framing.
+            scannedBefore = this.#framer.scannedByteCount;
+            copiedBefore = this.#framer.copiedByteCount;
+            framingStartedAt = performanceNow();
+          }
+        });
+      } else {
+        this.#framer.push(chunk, this.#receiveFrame);
       }
-
-      if (end === null) {
-        break;
-      }
-
-      let message: unknown;
-      try {
-        message = decode(this.#incoming.subarray(offset, end));
-      } catch (cause) {
-        this.#fail(
-          new MessagePackRpcProtocolError(
-            "Failed to decode a MessagePack-RPC value",
-            cause,
-          ),
+    } catch (cause) {
+      failure =
+        cause instanceof MessagePackRpcProtocolError
+          ? cause
+          : new MessagePackRpcProtocolError(
+              "Invalid MessagePack data received from the transport",
+              cause,
+            );
+    } finally {
+      if (diagnosticsEnabled) {
+        this.#recordFramingWork(
+          framingStartedAt,
+          scannedBefore,
+          copiedBefore,
         );
-        return;
-      }
-      offset = end;
-
-      try {
-        this.#handleMessage(message);
-      } catch (cause) {
-        this.#fail(
-          cause instanceof MessagePackRpcProtocolError
-            ? cause
-            : new MessagePackRpcProtocolError(
-                "Invalid MessagePack-RPC message",
-                cause,
-              ),
-        );
-        return;
       }
     }
 
-    if (offset === this.#incoming.byteLength) {
-      this.#incoming = EMPTY_BYTES;
-    } else if (offset > 0) {
-      this.#incoming = this.#incoming.slice(offset);
+    if (failure !== undefined) {
+      this.#fail(failure);
     }
+  }
+
+  #acceptFrame(frame: Uint8Array): void {
+    const diagnosticsEnabled = performanceDiagnosticsEnabled();
+    const decodeStartedAt = diagnosticsEnabled ? performanceNow() : 0;
+    let message: unknown;
+    try {
+      message = this.#decoder.decode(frame);
+    } catch (cause) {
+      throw new MessagePackRpcProtocolError(
+        "Failed to decode a MessagePack-RPC value",
+        cause,
+      );
+    } finally {
+      if (diagnosticsEnabled) {
+        recordPerformance("msgpack_decode", {
+          startedAtMs: decodeStartedAt,
+          tags: { source: "rpc", byteLength: frame.byteLength },
+        });
+      }
+    }
+
+    try {
+      this.#handleMessage(message);
+    } catch (cause) {
+      throw cause instanceof MessagePackRpcProtocolError
+        ? cause
+        : new MessagePackRpcProtocolError(
+            "Invalid MessagePack-RPC message",
+            cause,
+          );
+    }
+  }
+
+  #recordFramingWork(
+    startedAtMs: number,
+    scannedBefore: number,
+    copiedBefore: number,
+  ): void {
+    const scannedBytes = Math.max(
+      0,
+      this.#framer.scannedByteCount - scannedBefore,
+    );
+    const copiedBytes = Math.max(
+      0,
+      this.#framer.copiedByteCount - copiedBefore,
+    );
+    if (scannedBytes === 0 && copiedBytes === 0) {
+      return;
+    }
+    recordPerformance("msgpack_framing", {
+      startedAtMs,
+      tags: {
+        source: "rpc",
+        byteLength: scannedBytes,
+        scannedBytes,
+        copiedBytes,
+        segmentCount: this.#framer.queuedSegmentCount,
+      },
+    });
   }
 
   #handleMessage(message: unknown): void {
@@ -393,7 +451,28 @@ export class MessagePackRpcClient {
   async #writeFrame(message: unknown[]): Promise<void> {
     // Keep encoding inside the async boundary so unsupported/cyclic values
     // reject callers instead of escaping synchronously and leaking pending IDs.
-    const bytes = encode(message);
+    const diagnosticsEnabled = performanceDiagnosticsEnabled();
+    const encodeStartedAt = diagnosticsEnabled ? performanceNow() : 0;
+    const encodeSource = diagnosticsEnabled
+      ? (currentPerformanceTags().source ?? "rpc")
+      : "rpc";
+    let bytes: Uint8Array | undefined;
+    try {
+      bytes = this.#encoder.encode(message);
+    } finally {
+      if (diagnosticsEnabled) {
+        recordPerformance("msgpack_encode", {
+          startedAtMs: encodeStartedAt,
+          tags:
+            bytes === undefined
+              ? { source: encodeSource }
+              : { source: encodeSource, byteLength: bytes.byteLength },
+        });
+      }
+    }
+    if (bytes === undefined) {
+      throw new Error("MessagePack encoder returned no bytes");
+    }
     await this.#transport.write(bytes);
   }
 
@@ -415,7 +494,7 @@ export class MessagePackRpcClient {
     }
 
     let error = this.#terminalError;
-    if (error === undefined && this.#incoming.byteLength > 0) {
+    if (error === undefined && this.#framer.hasIncompleteFrame) {
       error = new MessagePackRpcProtocolError(
         "Transport closed with an incomplete MessagePack value",
         transportError,
@@ -441,7 +520,7 @@ export class MessagePackRpcClient {
     this.#terminalError = error;
     this.#reportError(error);
     this.#rejectPending(error);
-    this.#incoming = EMPTY_BYTES;
+    this.#framer.reset();
     this.#state = "closing";
 
     this.#closePromise = this.#transport.close().then(
@@ -464,7 +543,7 @@ export class MessagePackRpcClient {
     if (error !== undefined) {
       this.#rejectPending(error);
     }
-    this.#incoming = EMPTY_BYTES;
+    this.#framer.reset();
     this.#unsubscribeData?.();
     this.#unsubscribeClose?.();
     this.#unsubscribeData = undefined;

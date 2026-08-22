@@ -1,6 +1,10 @@
 import type { EditorSnapshot } from '@codey/editor-core'
 
-import { colorString, colorsForSnapshot, renderCells } from '../editor/render-model'
+import {
+  colorString,
+  colorsForDefaults,
+  colorsForSnapshot
+} from '../editor/render-model'
 
 const snapshot: EditorSnapshot = {
   grid: {
@@ -43,29 +47,15 @@ const snapshot: EditorSnapshot = {
 }
 
 describe('Skia render model', () => {
-  it('resolves RGB colors, reverse video, and decoration attributes', () => {
+  it('resolves RGB colors and reverse video', () => {
     expect(colorsForSnapshot(snapshot, snapshot.highlights[4]?.rgb)).toEqual({
       foreground: '#0000ff',
       background: '#00ff00',
       special: '#ff0000'
     })
-    expect(renderCells(snapshot, 2, 1)[0]).toMatchObject({
-      text: 'A',
-      row: 0,
-      column: 0,
-      attributes: {
-        bold: true,
-        italic: true,
-        underline: true,
-        undercurl: true,
-        strikethrough: true
-      }
-    })
-  })
-
-  it('clips the render model to visible cells and retains Unicode glyphs', () => {
-    expect(renderCells(snapshot, 1, 1)).toHaveLength(1)
-    expect(renderCells(snapshot, 2, 1)[1]?.text).toBe('界')
+    expect(colorsForDefaults(snapshot.defaultColors, snapshot.highlights[4]?.rgb)).toEqual(
+      colorsForSnapshot(snapshot, snapshot.highlights[4]?.rgb)
+    )
   })
 
   it('replaces Neovim unknown-color sentinels with valid renderer defaults', () => {

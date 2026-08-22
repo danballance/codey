@@ -167,6 +167,77 @@ class ImeInputProcessorTest {
   }
 
   @Test
+  fun `ordered input drains composition and appends its exact sequence in one batch`() {
+    val events = mutableListOf<ImeSignal>()
+    val processor = ImeInputProcessor(events::add)
+
+    assertTrue(processor.setComposingText("ready", newCursorPosition = 1))
+    val batch = processor.orderedInput("<Esc>")
+    assertTrue(processor.finishComposingText())
+
+    assertEquals(
+      ImeOrderedBatch(
+        segments = listOf(
+          ImeOrderedSegment.Text("ready"),
+          ImeOrderedSegment.Input("<Esc>")
+        ),
+        drainedComposition = true
+      ),
+      batch
+    )
+    assertTrue(events.isEmpty())
+  }
+
+  @Test
+  fun `empty ordered input is ignored without settling composition`() {
+    val events = mutableListOf<ImeSignal>()
+    val processor = ImeInputProcessor(events::add)
+
+    assertTrue(processor.setComposingText("still composing", newCursorPosition = 1))
+    assertEquals(null, processor.orderedInput(""))
+    assertTrue(events.isEmpty())
+    assertTrue(processor.finishComposingText())
+
+    assertEquals(listOf(ImeSignal.CommittedText("still composing")), events)
+  }
+
+  @Test
+  fun `ordered input preserves structured controls inside composed multiline text`() {
+    val processor = ImeInputProcessor { error("ordered input must not emit separate events: $it") }
+
+    assertTrue(processor.setComposingText("one\r\ntwo\t\b", newCursorPosition = 1))
+    val batch = processor.orderedInput(":w<CR>")
+
+    assertEquals(
+      ImeOrderedBatch(
+        segments = listOf(
+          ImeOrderedSegment.Text("one"),
+          ImeOrderedSegment.Key("Enter"),
+          ImeOrderedSegment.Text("two"),
+          ImeOrderedSegment.Key("Tab"),
+          ImeOrderedSegment.Key("Backspace"),
+          ImeOrderedSegment.Input(":w<CR>")
+        ),
+        drainedComposition = true
+      ),
+      batch
+    )
+  }
+
+  @Test
+  fun `ordered input without composition does not request an input restart`() {
+    val processor = ImeInputProcessor { error("unexpected event: $it") }
+
+    assertEquals(
+      ImeOrderedBatch(
+        segments = listOf(ImeOrderedSegment.Input("5j")),
+        drainedComposition = false
+      ),
+      processor.orderedInput("5j")
+    )
+  }
+
+  @Test
   fun `delete surrounding text emits backward and forward deletion`() {
     val events = mutableListOf<ImeSignal>()
     val processor = ImeInputProcessor(events::add)

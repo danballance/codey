@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BASIC_UI_OPTIONS,
   createNvimSession,
+  isRedrawBatch,
   type RedrawBatch,
 } from "../src/index.js";
 
@@ -55,6 +56,7 @@ describe("NvimSessionClient", () => {
       "nvim_ui_try_resize",
       [100, 40],
     );
+    expect(double.rpc.notify).not.toHaveBeenCalled();
   });
 
   it("emits the redraw notification params as the event batch", () => {
@@ -74,6 +76,19 @@ describe("NvimSessionClient", () => {
     off();
     double.emit("redraw", [...batch]);
     expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it("validates redraw calls by index without slicing event arrays", () => {
+    const event = ["grid_line", [1, 0, 0, [["A", 0]]]];
+    Object.defineProperty(event, "slice", {
+      value: () => {
+        throw new Error("redraw validation must not allocate event slices");
+      },
+    });
+
+    expect(isRedrawBatch([event])).toBe(true);
+    expect(isRedrawBatch([["flush"]])).toBe(true);
+    expect(isRedrawBatch([["grid_line", { invalid: true }]])).toBe(false);
   });
 
   it("forwards mouse input and closes idempotently", async () => {

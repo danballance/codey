@@ -1,6 +1,7 @@
 package dev.codey.tcp
 
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.ServerSocket
@@ -11,11 +12,13 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -71,26 +74,142 @@ class TcpClientManagerTest {
   }
 
   @Test
+  fun `read delivery timing uses the injected uptime clock`() {
+    val payload = byteArrayOf(7, 8, 9)
+    val socket = SingleReadSocket(payload)
+    val times = doubleArrayOf(100.0, 103.5, 104.0, 104.0)
+    val clockIndex = AtomicInteger(0)
+    val sink = RecordingSink(expectedBytes = payload.size)
+    val manager = TcpClientManager(
+      eventSink = sink,
+      uptimeMillis = { times[clockIndex.getAndIncrement().coerceAtMost(times.lastIndex)] },
+      socketFactory = { socket }
+    ).also(managers::add)
+
+    manager.open("127.0.0.1", 1, 2_000)
+
+    assertTrue("client did not receive payload", sink.dataReady.await(2, TimeUnit.SECONDS))
+    assertEquals(103.5, sink.dataTimings.single().first, 0.0)
+    assertEquals(3.5, sink.dataTimings.single().second, 0.0)
+  }
+
+  @Test
+  fun `uptime helper uses Android uptime and converts its JVM fallback`() {
+    assertEquals(
+      42.0,
+      tcpUptimeMillis(androidUptimeMillis = { 42L }, fallbackNanos = { error("unused") }),
+      0.0
+    )
+    assertEquals(
+      7.5,
+      tcpUptimeMillis(
+        androidUptimeMillis = { error("Android clock unavailable") },
+        fallbackNanos = { 7_500_000L }
+      ),
+      0.0
+    )
+  }
+
+  @Test
   fun `writes are observed in invocation order`() {
     val server = ServerSocket(0).also(servers::add)
     val received = ByteArrayOutputStream()
     val serverDone = CountDownLatch(1)
+    val expected = ByteArray(100) { it.toByte() }
 
     daemonThread("codey-tcp-test-order") {
       server.accept().use { socket ->
-        repeat(6) { received.write(socket.getInputStream().read()) }
+        repeat(expected.size) { received.write(socket.getInputStream().read()) }
       }
       serverDone.countDown()
     }
 
     val manager = TcpClientManager(RecordingSink()).also(managers::add)
     val connectionId = manager.open("127.0.0.1", server.localPort, 2_000)
-    manager.write(connectionId, byteArrayOf(1, 2))
-    manager.write(connectionId, byteArrayOf(3))
-    manager.write(connectionId, byteArrayOf(4, 5, 6))
+    expected.forEach { byte -> manager.write(connectionId, byteArrayOf(byte)) }
 
     assertTrue("server did not receive writes", serverDone.await(2, TimeUnit.SECONDS))
-    assertArrayEquals(byteArrayOf(1, 2, 3, 4, 5, 6), received.toByteArray())
+    assertArrayEquals(expected, received.toByteArray())
+  }
+
+  @Test
+  fun `write stays on its caller thread reuses the stream and does not copy payload`() {
+    val socket = InspectableWriteSocket()
+    val manager = TcpClientManager(RecordingSink()) { socket }.also(managers::add)
+    val connectionId = manager.open("127.0.0.1", 1, 2_000)
+    val payload = byteArrayOf(1, 2, 3, 4)
+    val callingThread = Thread.currentThread()
+
+    manager.write(connectionId, payload)
+    manager.write(connectionId, byteArrayOf(5))
+
+    assertSame(payload, socket.firstPayload.get())
+    assertSame(callingThread, socket.writeThread.get())
+    assertEquals(1, socket.outputStreamRequests.get())
+  }
+
+  @Test
+  fun `measured write separates native entry lock wait and socket write timing`() {
+    val socket = InspectableWriteSocket()
+    val writeTimes = doubleArrayOf(11.0, 13.0, 17.0, 22.0)
+    val writeClockIndex = AtomicInteger(0)
+    val manager = TcpClientManager(
+      eventSink = RecordingSink(),
+      uptimeMillis = {
+        if (Thread.currentThread().name.startsWith("codey-tcp-reader")) 1.0
+        else writeTimes[writeClockIndex.getAndIncrement()]
+      },
+      socketFactory = { socket }
+    ).also(managers::add)
+    val connectionId = manager.open("127.0.0.1", 1, 2_000)
+    val payload = byteArrayOf(1, 2, 3)
+
+    val measurement = manager.writeMeasured(
+      connectionId = connectionId,
+      bytes = payload,
+      nativeEntryUptimeMs = 7.0
+    )
+    // The ordinary path must continue to perform no diagnostic clock reads.
+    manager.write(connectionId, byteArrayOf(4))
+
+    assertSame(payload, socket.firstPayload.get())
+    assertEquals(4, writeClockIndex.get())
+    assertEquals(7.0, measurement.nativeEntryUptimeMs, 0.0)
+    assertEquals(11.0, measurement.lockWaitStartedAtUptimeMs, 0.0)
+    assertEquals(2.0, measurement.lockWaitDurationMs, 0.0)
+    assertEquals(17.0, measurement.socketWriteStartedAtUptimeMs, 0.0)
+    assertEquals(5.0, measurement.socketWriteDurationMs, 0.0)
+  }
+
+  @Test
+  fun `write failure emits one terminal close and preserves its error`() {
+    val socket = InspectableWriteSocket(IOException("synthetic broken pipe"))
+    val sink = RecordingSink()
+    val manager = TcpClientManager(sink) { socket }.also(managers::add)
+    val connectionId = manager.open("127.0.0.1", 1, 2_000)
+
+    val failure = runCatching { manager.write(connectionId, byteArrayOf(1)) }.exceptionOrNull()
+    manager.close(connectionId)
+
+    assertTrue(failure is IOException)
+    assertEquals("synthetic broken pipe", failure?.message)
+    assertTrue(sink.closeReady.await(2, TimeUnit.SECONDS))
+    assertEquals(1, sink.closeEvents.size)
+    assertEquals("E_TCP_WRITE", sink.closeEvents.single().code)
+  }
+
+  @Test
+  fun `read failure emits one terminal close`() {
+    val socket = FailingReadSocket()
+    val sink = RecordingSink()
+    val manager = TcpClientManager(sink) { socket }.also(managers::add)
+    val connectionId = manager.open("127.0.0.1", 1, 2_000)
+
+    assertTrue(sink.closeReady.await(2, TimeUnit.SECONDS))
+    manager.close(connectionId)
+
+    assertEquals(1, sink.closeEvents.size)
+    assertEquals("E_TCP_READ", sink.closeEvents.single().code)
   }
 
   @Test
@@ -181,14 +300,21 @@ class TcpClientManagerTest {
 
   private class RecordingSink(expectedBytes: Int = 0) : TcpEventSink {
     val dataEvents = CopyOnWriteArrayList<Pair<Int, ByteArray>>()
+    val dataTimings = CopyOnWriteArrayList<Pair<Double, Double>>()
     val closeEvents = CopyOnWriteArrayList<CloseEvent>()
     val dataReady = CountDownLatch(if (expectedBytes > 0) 1 else 0)
     val closeReady = CountDownLatch(1)
     private val byteCount = java.util.concurrent.atomic.AtomicInteger(0)
     private val expectedByteCount = expectedBytes
 
-    override fun onData(connectionId: Int, bytes: ByteArray) {
+    override fun onData(
+      connectionId: Int,
+      bytes: ByteArray,
+      receivedAtUptimeMs: Double,
+      nativeDurationMs: Double
+    ) {
       dataEvents += connectionId to bytes
+      dataTimings += receivedAtUptimeMs to nativeDurationMs
       if (byteCount.addAndGet(bytes.size) >= expectedByteCount) dataReady.countDown()
     }
 
@@ -270,6 +396,87 @@ class TcpClientManagerTest {
     override fun close() {
       closed.countDown()
     }
+  }
+
+  private class InspectableWriteSocket(
+    private val writeFailure: IOException? = null
+  ) : Socket() {
+    val outputStreamRequests = AtomicInteger(0)
+    val firstPayload = AtomicReference<ByteArray?>()
+    val writeThread = AtomicReference<Thread?>()
+    private val closed = CountDownLatch(1)
+    private val terminal = AtomicBoolean(false)
+    private val output = object : OutputStream() {
+      override fun write(value: Int) {
+        write(byteArrayOf(value.toByte()), 0, 1)
+      }
+
+      override fun write(bytes: ByteArray, offset: Int, length: Int) {
+        firstPayload.compareAndSet(null, bytes)
+        writeThread.compareAndSet(null, Thread.currentThread())
+        writeFailure?.let { throw it }
+      }
+    }
+
+    override fun connect(endpoint: SocketAddress, timeout: Int) = Unit
+
+    override fun setTcpNoDelay(on: Boolean) = Unit
+
+    override fun getInputStream(): InputStream = object : InputStream() {
+      override fun read(): Int {
+        awaitClose()
+        return -1
+      }
+    }
+
+    override fun getOutputStream(): OutputStream {
+      outputStreamRequests.incrementAndGet()
+      return output
+    }
+
+    override fun close() {
+      if (terminal.compareAndSet(false, true)) closed.countDown()
+    }
+
+    private fun awaitClose() {
+      try {
+        closed.await()
+      } catch (error: InterruptedException) {
+        Thread.currentThread().interrupt()
+      }
+    }
+  }
+
+  private class FailingReadSocket : Socket() {
+    override fun connect(endpoint: SocketAddress, timeout: Int) = Unit
+
+    override fun setTcpNoDelay(on: Boolean) = Unit
+
+    override fun getInputStream(): InputStream = object : InputStream() {
+      override fun read(): Int = throw IOException("synthetic read failure")
+    }
+
+    override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+  }
+
+  private class SingleReadSocket(private val payload: ByteArray) : Socket() {
+    private val read = AtomicBoolean(false)
+
+    override fun connect(endpoint: SocketAddress, timeout: Int) = Unit
+
+    override fun setTcpNoDelay(on: Boolean) = Unit
+
+    override fun getInputStream(): InputStream = object : InputStream() {
+      override fun read(): Int = -1
+
+      override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
+        if (!read.compareAndSet(false, true)) return -1
+        payload.copyInto(bytes, destinationOffset = offset)
+        return payload.size
+      }
+    }
+
+    override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
   }
 
   private fun daemonThread(name: String, block: () -> Unit) {

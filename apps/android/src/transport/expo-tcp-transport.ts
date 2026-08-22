@@ -1,11 +1,19 @@
 import type { DuplexTransport } from '@codey/transport'
+import {
+  currentPerformanceTags,
+  performanceDiagnosticsEnabled,
+  performanceNow,
+  recordPerformance,
+  type PerformanceTags
+} from '@codey/perf'
 
 import {
   getNativeTcp,
   type NativeSubscription,
   type NativeTcpCloseEvent,
   type NativeTcpDataEvent,
-  type NativeTcpModule
+  type NativeTcpModule,
+  type NativeTcpWriteMeasurement
 } from '../native/tcp'
 
 export interface ExpoTcpTransportOptions {
@@ -90,11 +98,40 @@ export class ExpoTcpTransport implements DuplexTransport {
 
     const connectionId = this.#connectionId
     const bytes = data.slice()
+    const diagnosticsEnabled = performanceDiagnosticsEnabled()
+    const queuedAtMs = diagnosticsEnabled ? performanceNow() : 0
+    const tags: PerformanceTags | undefined = diagnosticsEnabled
+      ? {
+          source: 'tcp',
+          ...currentPerformanceTags(),
+          byteLength: bytes.byteLength,
+          connectionId
+        }
+      : undefined
+    if (tags !== undefined) {
+      recordPerformance('transport_write_queued', { durationMs: 0, tags })
+    }
     const operation = this.#writeTail.then(async () => {
       if (this.#state !== 'connected' || this.#connectionId !== connectionId) {
         throw new Error('TCP transport is not connected')
       }
-      await this.#module.write(connectionId, bytes)
+      if (tags !== undefined) {
+        recordPerformance('transport_write_started', { startedAtMs: queuedAtMs, tags })
+      }
+      try {
+        const measuredWrite = this.#module.writeMeasured
+        if (tags === undefined || measuredWrite === undefined) {
+          await this.#module.write(connectionId, bytes)
+        } else {
+          const nativeQueuedAtMs = performanceNow()
+          const measurement = await measuredWrite.call(this.#module, connectionId, bytes)
+          recordNativeWritePerformance(measurement, nativeQueuedAtMs, tags)
+        }
+      } finally {
+        if (tags !== undefined) {
+          recordPerformance('transport_write_completed', { startedAtMs: queuedAtMs, tags })
+        }
+      }
     })
     this.#writeTail = operation.catch((reason: unknown) => {
       const error = toError(reason, 'TCP write failed')
@@ -157,6 +194,7 @@ export class ExpoTcpTransport implements DuplexTransport {
     if (event.connectionId !== this.#connectionId || this.#state !== 'connected') return
     const bytes = event.bytes instanceof Uint8Array ? event.bytes : Uint8Array.from(event.bytes)
     if (bytes.byteLength === 0) return
+    recordNativeReadPerformance(event, bytes.byteLength)
     for (const listener of [...this.#dataListeners]) listener(bytes)
   }
 
@@ -208,4 +246,96 @@ function nativeCloseError(event: NativeTcpCloseEvent): Error {
 function toError(reason: unknown, fallback: string): Error {
   if (reason instanceof Error) return reason
   return new Error(typeof reason === 'string' && reason.length > 0 ? reason : fallback)
+}
+
+function recordNativeReadPerformance(event: NativeTcpDataEvent, byteLength: number): void {
+  if (!performanceDiagnosticsEnabled()) return
+  const deliveredAtMs = performanceNow()
+  const nativeDurationMs = validDuration(event.nativeDurationMs)
+  const deliveryDurationMs = event.receivedAtUptimeMs === undefined
+    ? null
+    : deliveredAtMs - event.receivedAtUptimeMs
+  const clocksCompatible = deliveryDurationMs !== null &&
+    Number.isFinite(deliveryDurationMs) &&
+    deliveryDurationMs >= 0 &&
+    deliveryDurationMs <= 60_000
+  const tags: PerformanceTags = {
+    source: 'tcp',
+    byteLength,
+    connectionId: event.connectionId
+  }
+
+  recordPerformance('native_socket_read', {
+    startedAtMs: clocksCompatible && event.receivedAtUptimeMs !== undefined
+      ? Math.max(0, event.receivedAtUptimeMs - nativeDurationMs)
+      : deliveredAtMs,
+    durationMs: nativeDurationMs,
+    tags
+  })
+  recordPerformance('native_socket_read_delivery', {
+    startedAtMs: clocksCompatible && event.receivedAtUptimeMs !== undefined
+      ? event.receivedAtUptimeMs
+      : deliveredAtMs,
+    durationMs: clocksCompatible ? deliveryDurationMs ?? 0 : 0,
+    tags
+  })
+}
+
+function recordNativeWritePerformance(
+  measurement: NativeTcpWriteMeasurement,
+  nativeQueuedAtMs: number,
+  tags: PerformanceTags
+): void {
+  const deliveredAtMs = performanceNow()
+  const nativeEntryUptimeMs = compatibleUptimeStart(
+    measurement.nativeEntryUptimeMs,
+    deliveredAtMs
+  ) && measurement.nativeEntryUptimeMs >= nativeQueuedAtMs
+    ? measurement.nativeEntryUptimeMs
+    : null
+  const lockWaitStartedAtUptimeMs = compatibleUptimeStart(
+    measurement.lockWaitStartedAtUptimeMs,
+    deliveredAtMs
+  )
+    ? measurement.lockWaitStartedAtUptimeMs
+    : deliveredAtMs
+  const socketWriteStartedAtUptimeMs = compatibleUptimeStart(
+    measurement.socketWriteStartedAtUptimeMs,
+    deliveredAtMs
+  )
+    ? measurement.socketWriteStartedAtUptimeMs
+    : deliveredAtMs
+
+  recordPerformance('native_socket_write_queue', {
+    startedAtMs: nativeQueuedAtMs,
+    durationMs: nativeEntryUptimeMs === null
+      ? 0
+      : Math.min(60_000, nativeEntryUptimeMs - nativeQueuedAtMs),
+    tags
+  })
+  recordPerformance('native_socket_write_lock_wait', {
+    startedAtMs: lockWaitStartedAtUptimeMs,
+    durationMs: validDuration(measurement.lockWaitDurationMs),
+    tags
+  })
+  recordPerformance('native_socket_write', {
+    startedAtMs: socketWriteStartedAtUptimeMs,
+    durationMs: validDuration(measurement.socketWriteDurationMs),
+    tags
+  })
+}
+
+function compatibleUptimeStart(value: number, deliveredAtMs: number): boolean {
+  const deliveryDurationMs = deliveredAtMs - value
+  return Number.isFinite(value) &&
+    value >= 0 &&
+    Number.isFinite(deliveryDurationMs) &&
+    deliveryDurationMs >= 0 &&
+    deliveryDurationMs <= 60_000
+}
+
+function validDuration(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) && value >= 0 && value <= 60_000
+    ? value
+    : 0
 }

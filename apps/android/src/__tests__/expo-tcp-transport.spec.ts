@@ -2,16 +2,27 @@ import type {
   NativeSubscription,
   NativeTcpCloseEvent,
   NativeTcpDataEvent,
-  NativeTcpModule
+  NativeTcpModule,
+  NativeTcpWriteMeasurement
 } from '../native/tcp'
+import {
+  clearPerformanceRecords,
+  configurePerformanceDiagnostics,
+  getPerformanceRecords,
+  performanceNow
+} from '@codey/perf'
 import { ExpoTcpTransport } from '../transport/expo-tcp-transport'
 
 class FakeNativeTcp implements NativeTcpModule {
   readonly writes: Array<{ connectionId: number; bytes: number[] }> = []
+  readonly measuredWrites: Array<{ connectionId: number; bytes: number[] }> = []
   nextConnectionId = 1
   openError: Error | undefined
   openImplementation: (() => Promise<number>) | undefined
   writeImplementation: ((connectionId: number, bytes: Uint8Array) => Promise<void>) | undefined
+  writeMeasuredImplementation:
+    | ((connectionId: number, bytes: Uint8Array) => Promise<NativeTcpWriteMeasurement>)
+    | undefined
   readonly close = jest.fn(async (_connectionId: number) => undefined)
 
   readonly #dataListeners = new Set<(event: NativeTcpDataEvent) => void>()
@@ -26,6 +37,24 @@ class FakeNativeTcp implements NativeTcpModule {
   async write(connectionId: number, bytes: Uint8Array): Promise<void> {
     this.writes.push({ connectionId, bytes: [...bytes] })
     await this.writeImplementation?.(connectionId, bytes)
+  }
+
+  async writeMeasured(
+    connectionId: number,
+    bytes: Uint8Array
+  ): Promise<NativeTcpWriteMeasurement> {
+    this.measuredWrites.push({ connectionId, bytes: [...bytes] })
+    if (this.writeMeasuredImplementation !== undefined) {
+      return this.writeMeasuredImplementation(connectionId, bytes)
+    }
+    const now = performanceNow()
+    return {
+      nativeEntryUptimeMs: now,
+      lockWaitStartedAtUptimeMs: now,
+      lockWaitDurationMs: 0,
+      socketWriteStartedAtUptimeMs: now,
+      socketWriteDurationMs: 0
+    }
   }
 
   addListener(
@@ -65,6 +94,16 @@ function deferred() {
 }
 
 describe('ExpoTcpTransport', () => {
+  beforeEach(() => {
+    configurePerformanceDiagnostics({ enabled: false })
+    clearPerformanceRecords()
+  })
+
+  afterEach(() => {
+    configurePerformanceDiagnostics({ enabled: false })
+    clearPerformanceRecords()
+  })
+
   it('forwards split binary data only for its connection ID', async () => {
     const native = new FakeNativeTcp()
     const transport = new ExpoTcpTransport({ host: '192.168.0.20', port: 6666 }, native)
@@ -101,6 +140,44 @@ describe('ExpoTcpTransport', () => {
     ])
     gates[1]!.resolve()
     await second
+    expect(native.measuredWrites).toEqual([])
+  })
+
+  it('uses measured native writes only for diagnostics and records separate timing stages', async () => {
+    configurePerformanceDiagnostics({ enabled: true, log: false })
+    const native = new FakeNativeTcp()
+    native.writeMeasuredImplementation = async () => {
+      const now = performanceNow()
+      return {
+        nativeEntryUptimeMs: now,
+        lockWaitStartedAtUptimeMs: now,
+        lockWaitDurationMs: 2.5,
+        socketWriteStartedAtUptimeMs: now,
+        socketWriteDurationMs: 3.75
+      }
+    }
+    const transport = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
+    await transport.connect()
+
+    await transport.write(Uint8Array.of(1, 2, 3))
+
+    expect(native.writes).toEqual([])
+    expect(native.measuredWrites).toEqual([{ connectionId: 1, bytes: [1, 2, 3] }])
+    const records = getPerformanceRecords()
+    expect(records.map((record) => record.stage)).toEqual(
+      expect.arrayContaining([
+        'native_socket_write_queue',
+        'native_socket_write_lock_wait',
+        'native_socket_write'
+      ])
+    )
+    expect(
+      records.find((record) => record.stage === 'native_socket_write_lock_wait')?.durationMs
+    ).toBe(2.5)
+    expect(
+      records.find((record) => record.stage === 'native_socket_write')?.durationMs
+    ).toBe(3.75)
+    expect(JSON.stringify(records)).not.toContain('1,2,3')
   })
 
   it('surfaces a write failure once and makes close idempotent', async () => {

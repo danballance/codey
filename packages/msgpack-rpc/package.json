@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@codey/perf": "workspace:*",
     "@codey/transport": "workspace:*",
     "@msgpack/msgpack": "^3.1.3"
   },

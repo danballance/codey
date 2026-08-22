@@ -58,6 +58,69 @@ describe("line-grid redraw reduction", () => {
     ]);
   });
 
+  it("applies multi-call grid_line events in order with one cell clone per grid", () => {
+    let result = reduce([
+      ["grid_resize", [1, 11, 1]],
+      ["grid_resize", [2, 3, 1]],
+      ["grid_line", [1, 0, 0, [["a", 4, 11]]]],
+      ["grid_line", [2, 0, 0, [["x", 8, 3]]]],
+    ]);
+    const sourceGridOne = result.state.grids[1]!;
+    const sourceGridTwo = result.state.grids[2]!;
+    const iteratorDescriptor = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      Symbol.iterator,
+    )!;
+    const originalIterator = Array.prototype[Symbol.iterator];
+    let clonedCellBuffers = 0;
+    Object.defineProperty(Array.prototype, Symbol.iterator, {
+      ...iteratorDescriptor,
+      value: function (this: unknown[]) {
+        if (
+          this.length > 0 &&
+          this.every(
+            (value) =>
+              typeof value === "object" &&
+              value !== null &&
+              "text" in value &&
+              "highlightId" in value,
+          )
+        ) {
+          clonedCellBuffers += 1;
+        }
+        return originalIterator.call(this);
+      },
+    });
+
+    try {
+      result = applyRedrawBatch(result.state, [
+        [
+          "grid_line",
+          [1, 0, 0, [["A", 7], ["B"]]],
+          [2, 0, 1, [["Y", 9]]],
+          // This call overlaps the first and inherits its freshly written hl_id.
+          [1, 0, 1, [["C"]]],
+        ],
+      ]);
+    } finally {
+      Object.defineProperty(Array.prototype, Symbol.iterator, iteratorDescriptor);
+    }
+
+    expect(clonedCellBuffers).toBe(2);
+    expect(result.state.grids[1]?.cells.slice(0, 3)).toEqual([
+      { text: "A", highlightId: 7 },
+      { text: "C", highlightId: 7 },
+      { text: "a", highlightId: 4 },
+    ]);
+    expect(result.state.grids[2]?.cells).toEqual([
+      { text: "x", highlightId: 8 },
+      { text: "Y", highlightId: 9 },
+      { text: "x", highlightId: 8 },
+    ]);
+    expect(sourceGridOne.cells.every((cell) => cell.text === "a")).toBe(true);
+    expect(sourceGridTwo.cells.every((cell) => cell.text === "x")).toBe(true);
+  });
+
   it("resizes with overlap preserved and clears cells", () => {
     let result = reduce([
       ["grid_resize", [1, 2, 1]],

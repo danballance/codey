@@ -8,7 +8,15 @@ import {
 import { requireNativeView } from 'expo'
 import type { StyleProp, ViewStyle } from 'react-native'
 
-export interface CodeyImeKeyEvent {
+export type CodeyImeInputMode = 'terminal' | 'composed'
+
+export interface CodeyImeEventMetadata {
+  readonly sequence: number
+  readonly receivedAtUptimeMs: number
+  readonly connectionGeneration: number
+}
+
+export interface CodeyImeKeyEvent extends Partial<CodeyImeEventMetadata> {
   readonly key: string
   readonly ctrl: boolean
   readonly alt: boolean
@@ -20,7 +28,18 @@ export interface CodeyImeKeyEvent {
 export interface CodeyImeHandle {
   focus(): Promise<void>
   blur(): Promise<void>
-  sendKey(event: CodeyImeKeyEvent): Promise<void>
+  sendOrderedInput(keys: string): Promise<void>
+}
+
+export type CodeyImeOrderedSegment =
+  | { readonly type: 'text'; readonly text: string }
+  | ({ readonly type: 'key' } & CodeyImeKeyEvent)
+  | { readonly type: 'input'; readonly keys: string }
+
+export interface CodeyImeOrderedInputEvent extends CodeyImeEventMetadata {
+  readonly nativeDurationMs: number
+  readonly compositionDrained: boolean
+  readonly segments: readonly CodeyImeOrderedSegment[]
 }
 
 interface NativeImeEvent<T> {
@@ -30,26 +49,25 @@ interface NativeImeEvent<T> {
 interface CodeyImeNativeRef {
   focusIme(): Promise<void>
   blurIme(): Promise<void>
-  sendImeKey(
-    key: string,
-    ctrl: boolean,
-    alt: boolean,
-    shift: boolean,
-    meta: boolean,
-    repeat: boolean
-  ): Promise<void>
+  sendOrderedInput(keys: string): Promise<void>
 }
 
 interface NativeCodeyImeProps {
   readonly style?: StyleProp<ViewStyle>
-  readonly onCommittedText?: (event: NativeImeEvent<{ readonly text: string }>) => void
+  readonly inputMode: CodeyImeInputMode
+  readonly onCommittedText?: (
+    event: NativeImeEvent<{ readonly text: string } & CodeyImeEventMetadata>
+  ) => void
   readonly onKey?: (event: NativeImeEvent<CodeyImeKeyEvent>) => void
+  readonly onOrderedInput?: (event: NativeImeEvent<CodeyImeOrderedInputEvent>) => void
 }
 
 export interface CodeyImeProps {
   readonly style?: StyleProp<ViewStyle>
-  readonly onCommittedText: (text: string) => void
+  readonly inputMode?: CodeyImeInputMode
+  readonly onCommittedText: (text: string, metadata?: CodeyImeEventMetadata) => void
   readonly onKey: (event: CodeyImeKeyEvent) => void
+  readonly onOrderedInput: (event: CodeyImeOrderedInputEvent) => void
 }
 
 const NativeCodeyIme = requireNativeView<NativeCodeyImeProps>(
@@ -57,7 +75,7 @@ const NativeCodeyIme = requireNativeView<NativeCodeyImeProps>(
 ) as ComponentType<NativeCodeyImeProps & RefAttributes<CodeyImeNativeRef>>
 
 export const CodeyIme = forwardRef<CodeyImeHandle, CodeyImeProps>(function CodeyIme(
-  { style, onCommittedText, onKey },
+  { style, inputMode = 'terminal', onCommittedText, onKey, onOrderedInput },
   forwardedRef
 ) {
   const nativeRef = useRef<CodeyImeNativeRef | null>(null)
@@ -66,15 +84,7 @@ export const CodeyIme = forwardRef<CodeyImeHandle, CodeyImeProps>(function Codey
     () => ({
       focus: async () => nativeRef.current?.focusIme(),
       blur: async () => nativeRef.current?.blurIme(),
-      sendKey: async (event) =>
-        nativeRef.current?.sendImeKey(
-          event.key,
-          event.ctrl,
-          event.alt,
-          event.shift,
-          event.meta,
-          event.repeat
-        )
+      sendOrderedInput: async (keys) => nativeRef.current?.sendOrderedInput(keys)
     }),
     []
   )
@@ -83,8 +93,13 @@ export const CodeyIme = forwardRef<CodeyImeHandle, CodeyImeProps>(function Codey
     <NativeCodeyIme
       ref={nativeRef}
       style={style}
-      onCommittedText={(event) => onCommittedText(event.nativeEvent.text)}
+      inputMode={inputMode}
+      onCommittedText={(event) => {
+        const { text, ...metadata } = event.nativeEvent
+        onCommittedText(text, metadata)
+      }}
       onKey={(event) => onKey(event.nativeEvent)}
+      onOrderedInput={(event) => onOrderedInput(event.nativeEvent)}
     />
   )
 })

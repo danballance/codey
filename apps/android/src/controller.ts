@@ -6,7 +6,17 @@ import {
   type EditorState
 } from '@codey/editor-core'
 import type { RedrawBatch } from '@codey/nvim-session'
+import {
+  currentPerformanceTags,
+  performanceDiagnosticsEnabled,
+  performanceNow,
+  recordPerformance,
+  withPerformanceTags,
+  type PerformanceInputSample,
+  type PerformanceTags
+} from '@codey/perf'
 import type { DuplexTransport } from '@codey/transport'
+import { Systrace } from 'react-native'
 
 import type { Endpoint } from './endpoint'
 import { sameGridSize, type GridSize } from './grid'
@@ -18,7 +28,14 @@ export interface ClientState {
   readonly message: string
   readonly snapshot: EditorSnapshot | null
   readonly gridSize: GridSize
+  readonly performanceSamples: readonly PublishedPerformanceSample[]
 }
+
+export type PublishedPerformanceSample = Readonly<
+  PerformanceInputSample & PerformanceTags & { readonly flushCount: number }
+>
+
+type PendingPerformanceSample = Readonly<PerformanceInputSample & PerformanceTags>
 
 export interface MobileSession {
   connect(): Promise<void>
@@ -36,6 +53,11 @@ export interface ConnectionResources {
 
 export type ConnectionFactory = (endpoint: Endpoint) => ConnectionResources
 
+export interface FrameScheduler {
+  request(callback: (timestampMs: number) => void): number
+  cancel(handle: number): void
+}
+
 interface ActiveConnection extends ConnectionResources {
   readonly generation: number
   editorState: EditorState
@@ -43,21 +65,33 @@ interface ActiveConnection extends ConnectionResources {
   closing: boolean
   closePromise: Promise<void> | null
   attachedGrid: GridSize | null
+  pendingSnapshot: EditorSnapshot | null
+  pendingInputSamples: PendingPerformanceSample[]
+  pendingPublicationSamples: PublishedPerformanceSample[]
+  publicationFrame: number | null
   removeRedrawListener: () => void
   removeCloseListener: () => void
 }
 
 const INITIAL_GRID: GridSize = Object.freeze({ columns: 80, rows: 24 })
+const EMPTY_PERFORMANCE_SAMPLES: readonly PublishedPerformanceSample[] = Object.freeze([])
+const MAX_PENDING_PERFORMANCE_SAMPLES = 256
+const ANDROID_FRAME_SCHEDULER: FrameScheduler = Object.freeze({
+  request: (callback: (timestampMs: number) => void) => requestAnimationFrame(callback),
+  cancel: (handle: number) => cancelAnimationFrame(handle)
+})
 
 export class TabletClientController {
   readonly #listeners = new Set<() => void>()
   readonly #factory: ConnectionFactory
+  readonly #frameScheduler: FrameScheduler
 
   #state: ClientState = {
     phase: 'disconnected',
     message: 'Not connected',
     snapshot: null,
-    gridSize: INITIAL_GRID
+    gridSize: INITIAL_GRID,
+    performanceSamples: EMPTY_PERFORMANCE_SAMPLES
   }
   #active: ActiveConnection | null = null
   #nextGeneration = 1
@@ -68,8 +102,12 @@ export class TabletClientController {
   #pendingResize: { readonly connection: ActiveConnection; readonly size: GridSize } | null = null
   #resizeDrain: Promise<void> | null = null
 
-  public constructor(factory: ConnectionFactory) {
+  public constructor(
+    factory: ConnectionFactory,
+    frameScheduler: FrameScheduler = ANDROID_FRAME_SCHEDULER
+  ) {
     this.#factory = factory
+    this.#frameScheduler = frameScheduler
   }
 
   public getState = (): ClientState => this.#state
@@ -102,6 +140,10 @@ export class TabletClientController {
       closing: false,
       closePromise: null,
       attachedGrid: null,
+      pendingSnapshot: null,
+      pendingInputSamples: [],
+      pendingPublicationSamples: [],
+      publicationFrame: null,
       removeRedrawListener: () => undefined,
       removeCloseListener: () => undefined
     }
@@ -109,7 +151,8 @@ export class TabletClientController {
     this.#replaceState({
       phase: 'connecting',
       message: `Connecting to ${endpoint.host}:${endpoint.port}…`,
-      snapshot: null
+      snapshot: null,
+      performanceSamples: EMPTY_PERFORMANCE_SAMPLES
     })
 
     connection.removeRedrawListener = connection.session.onRedraw((batch) => {
@@ -165,8 +208,31 @@ export class TabletClientController {
     const connection = this.#active
     if (connection === null || !connection.ready || connection.closing) return
 
+    const diagnosticsEnabled = performanceDiagnosticsEnabled()
+    const inheritedTags = diagnosticsEnabled ? currentPerformanceTags() : undefined
+    const performanceTags: PerformanceTags | undefined = diagnosticsEnabled
+      ? {
+          inputLength: keys.length,
+          connectionGeneration: connection.generation,
+          resizeInFlight: this.#resizeInFlight()
+        }
+      : undefined
+    if (inheritedTags !== undefined && performanceTags !== undefined) {
+      const sample = inputSampleFromTags({ ...inheritedTags, ...performanceTags })
+      if (sample !== null) this.#enqueuePerformanceSample(connection, sample)
+    }
+    if (performanceTags !== undefined) {
+      recordPerformance('controller_input', {
+        durationMs: 0,
+        tags: performanceTags
+      })
+    }
+
     try {
-      await connection.session.input(keys)
+      const inputPromise = performanceTags !== undefined
+        ? withPerformanceTags(performanceTags, () => connection.session.input(keys))
+        : connection.session.input(keys)
+      await inputPromise
     } catch (reason) {
       if (this.#isCurrent(connection)) {
         await this.#failConnection(connection, reason, 'Input failed')
@@ -224,10 +290,93 @@ export class TabletClientController {
 
   #receiveRedraw(connection: ActiveConnection, batch: RedrawBatch): void {
     if (!this.#isCurrent(connection)) return
-    const reduction = applyRedrawBatch(connection.editorState, batch)
-    connection.editorState = reduction.state
-    if (reduction.didFlush) {
-      this.#replaceState({ snapshot: toSnapshot(connection.editorState) })
+    Systrace.beginEvent('Codey/redraw')
+    try {
+      const diagnosticsEnabled = performanceDiagnosticsEnabled()
+      const hasPendingSamples = connection.pendingInputSamples.length > 0
+      const redrawStartedAt = diagnosticsEnabled || hasPendingSamples ? performanceNow() : 0
+      const performanceTags: PerformanceTags | undefined = diagnosticsEnabled
+        ? {
+            source: 'redraw',
+            connectionGeneration: connection.generation,
+            eventCount: batch.length,
+            resizeInFlight: this.#resizeInFlight()
+          }
+        : undefined
+      const reduction = performanceTags === undefined
+        ? applyRedrawBatch(connection.editorState, batch)
+        : withPerformanceTags(performanceTags, () =>
+            applyRedrawBatch(connection.editorState, batch)
+          )
+      connection.editorState = reduction.state
+      if (reduction.didFlush) {
+        this.#assignPendingSamples(
+          connection,
+          connection.editorState.flushCount,
+          redrawStartedAt
+        )
+        connection.pendingSnapshot = toSnapshot(connection.editorState)
+        if (connection.publicationFrame === null) {
+          connection.publicationFrame = this.#frameScheduler.request(() => {
+            this.#publishPendingSnapshot(connection)
+          })
+        }
+      }
+      if (performanceTags !== undefined) {
+        recordPerformance('redraw_processing', {
+          startedAtMs: redrawStartedAt,
+          tags: {
+            ...performanceTags,
+            flushCount: connection.editorState.flushCount,
+            didFlush: reduction.didFlush
+          }
+        })
+      }
+    } finally {
+      Systrace.endEvent()
+    }
+  }
+
+  #publishPendingSnapshot(connection: ActiveConnection): void {
+    const snapshot = connection.pendingSnapshot
+    const performanceSamples = connection.pendingPublicationSamples
+    connection.pendingSnapshot = null
+    connection.pendingPublicationSamples = []
+    connection.publicationFrame = null
+    if (snapshot === null || !this.#isCurrent(connection)) {
+      this.#recordDiscardedSamples('input_sample_unpublished', performanceSamples)
+      return
+    }
+
+    const diagnosticsEnabled = performanceDiagnosticsEnabled()
+    const publicationStartedAt = diagnosticsEnabled || performanceSamples.length > 0
+      ? performanceNow()
+      : 0
+    if (diagnosticsEnabled) {
+      for (const sample of performanceSamples) {
+        recordPerformance('input_to_snapshot', {
+          startedAtMs: sample.inputStartedAtMs,
+          durationMs: elapsedMilliseconds(sample.inputStartedAtMs, publicationStartedAt),
+          tags: sample
+        })
+      }
+    }
+    this.#replaceState({
+      snapshot,
+      performanceSamples: performanceSamples.length === 0
+        ? EMPTY_PERFORMANCE_SAMPLES
+        : Object.freeze(performanceSamples)
+    })
+    if (diagnosticsEnabled) {
+      recordPerformance('snapshot_publication', {
+        startedAtMs: publicationStartedAt,
+        tags: {
+          source: 'redraw',
+          connectionGeneration: connection.generation,
+          flushCount: snapshot.flushCount,
+          resizeInFlight: this.#resizeInFlight()
+        }
+      })
     }
   }
 
@@ -239,7 +388,8 @@ export class TabletClientController {
       message: error?.message
         ? `Neovim connection closed: ${error.message}`
         : 'Neovim connection closed',
-      snapshot: null
+      snapshot: null,
+      performanceSamples: EMPTY_PERFORMANCE_SAMPLES
     })
   }
 
@@ -263,7 +413,8 @@ export class TabletClientController {
       this.#replaceState({
         phase: 'disconnected',
         message: 'Disconnected',
-        snapshot: null
+        snapshot: null,
+        performanceSamples: EMPTY_PERFORMANCE_SAMPLES
       })
     }
   }
@@ -275,6 +426,9 @@ export class TabletClientController {
     }
     connection.closing = true
     connection.ready = false
+    this.#cancelPendingSnapshot(connection)
+    this.#recordDiscardedSamples('input_sample_unmatched', connection.pendingInputSamples)
+    connection.pendingInputSamples = []
     if (this.#active === connection) this.#active = null
     if (this.#pendingResize?.connection === connection) this.#pendingResize = null
     this.#detach(connection)
@@ -296,6 +450,75 @@ export class TabletClientController {
     connection.removeCloseListener = () => undefined
   }
 
+  #cancelPendingSnapshot(connection: ActiveConnection): void {
+    if (connection.publicationFrame !== null) {
+      this.#frameScheduler.cancel(connection.publicationFrame)
+      connection.publicationFrame = null
+    }
+    connection.pendingSnapshot = null
+    this.#recordDiscardedSamples(
+      'input_sample_unpublished',
+      connection.pendingPublicationSamples
+    )
+    connection.pendingPublicationSamples = []
+  }
+
+  #enqueuePerformanceSample(
+    connection: ActiveConnection,
+    sample: PendingPerformanceSample
+  ): void {
+    if (
+      connection.pendingInputSamples.length + connection.pendingPublicationSamples.length >=
+      MAX_PENDING_PERFORMANCE_SAMPLES
+    ) {
+      const dropped = connection.pendingPublicationSamples.shift() ??
+        connection.pendingInputSamples.shift()
+      if (dropped !== undefined) {
+        this.#recordDiscardedSamples('input_sample_dropped', [dropped])
+      }
+    }
+    connection.pendingInputSamples.push(sample)
+  }
+
+  #assignPendingSamples(
+    connection: ActiveConnection,
+    flushCount: number,
+    redrawReceivedAtMs: number
+  ): void {
+    const samples = connection.pendingInputSamples
+    connection.pendingInputSamples = []
+    for (const sample of samples) {
+      const published = Object.freeze({ ...sample, flushCount })
+      connection.pendingPublicationSamples.push(published)
+      if (performanceDiagnosticsEnabled()) {
+        recordPerformance('input_to_redraw', {
+          startedAtMs: sample.inputStartedAtMs,
+          durationMs: elapsedMilliseconds(sample.inputStartedAtMs, redrawReceivedAtMs),
+          tags: published
+        })
+      }
+    }
+  }
+
+  #recordDiscardedSamples(
+    stage: 'input_sample_dropped' | 'input_sample_unmatched' | 'input_sample_unpublished',
+    samples: readonly PendingPerformanceSample[]
+  ): void {
+    if (samples.length === 0 || !performanceDiagnosticsEnabled()) return
+    const discardedAtMs = performanceNow()
+    for (const sample of samples) {
+      recordPerformance(stage, {
+        startedAtMs: sample.inputStartedAtMs,
+        durationMs: elapsedMilliseconds(sample.inputStartedAtMs, discardedAtMs),
+        tags: sample
+      })
+    }
+  }
+
+  #resizeInFlight(): boolean {
+    return this.#pendingResize !== null || this.#resizeDrain !== null
+  }
+
   #isCurrent(connection: ActiveConnection): boolean {
     return (
       this.#active === connection &&
@@ -307,7 +530,12 @@ export class TabletClientController {
 
   #setError(reason: unknown, fallback: string): void {
     const detail = reason instanceof Error && reason.message ? reason.message : fallback
-    this.#replaceState({ phase: 'error', message: detail, snapshot: null })
+    this.#replaceState({
+      phase: 'error',
+      message: detail,
+      snapshot: null,
+      performanceSamples: EMPTY_PERFORMANCE_SAMPLES
+    })
   }
 
   #replaceState(patch: Partial<ClientState>): void {
@@ -318,4 +546,22 @@ export class TabletClientController {
   #assertUsable(): void {
     if (this.#disposed) throw new Error('Tablet client controller is disposed')
   }
+}
+
+function inputSampleFromTags(tags: PerformanceTags): PendingPerformanceSample | null {
+  if (
+    tags.sampleId === undefined ||
+    !Number.isSafeInteger(tags.sampleId) ||
+    tags.sampleId < 1 ||
+    tags.inputStartedAtMs === undefined ||
+    !Number.isFinite(tags.inputStartedAtMs) ||
+    tags.inputStartedAtMs < 0
+  ) {
+    return null
+  }
+  return Object.freeze({ ...tags }) as PendingPerformanceSample
+}
+
+function elapsedMilliseconds(startedAtMs: number, endedAtMs: number): number {
+  return Math.max(0, endedAtMs - startedAtMs)
 }

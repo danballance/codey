@@ -6,6 +6,8 @@ import { TabletClient } from './src/TabletClient'
 import { TabletCapabilityGate } from './src/TabletCapabilityGate'
 import { tabletCapability } from './src/tablet'
 
+import './src/performance'
+
 export default function App() {
   const { width, height } = useWindowDimensions()
   const capability = tabletCapability(width, height)

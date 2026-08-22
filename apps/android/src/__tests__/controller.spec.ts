@@ -1,8 +1,16 @@
 import type { RedrawBatch } from '@codey/nvim-session'
+import {
+  clearPerformanceRecords,
+  configurePerformanceDiagnostics,
+  createPerformanceInputSample,
+  getPerformanceRecords,
+  withPerformanceTags
+} from '@codey/perf'
 import type { DuplexTransport } from '@codey/transport'
 
 import {
   TabletClientController,
+  type FrameScheduler,
   type MobileSession
 } from '../controller'
 import type { Endpoint } from '../endpoint'
@@ -57,7 +65,47 @@ function deferredVoid() {
   return { promise, resolve }
 }
 
+function frameSchedulerDouble() {
+  let nextHandle = 1
+  const pending = new Map<number, (timestampMs: number) => void>()
+  const allCallbacks = new Map<number, (timestampMs: number) => void>()
+  const scheduler = {
+    request: jest.fn((callback: (timestampMs: number) => void) => {
+      const handle = nextHandle++
+      pending.set(handle, callback)
+      allCallbacks.set(handle, callback)
+      return handle
+    }),
+    cancel: jest.fn((handle: number) => {
+      pending.delete(handle)
+    })
+  } satisfies FrameScheduler
+
+  return {
+    scheduler,
+    get pendingCount() {
+      return pending.size
+    },
+    get lastHandle() {
+      return nextHandle - 1
+    },
+    advance(timestampMs = 16) {
+      const callbacks = [...pending.values()]
+      pending.clear()
+      for (const callback of callbacks) callback(timestampMs)
+    },
+    forceRun(handle: number, timestampMs = 16) {
+      allCallbacks.get(handle)?.(timestampMs)
+    }
+  }
+}
+
 describe('TabletClientController', () => {
+  afterEach(() => {
+    configurePerformanceDiagnostics({ enabled: false })
+    clearPerformanceRecords()
+  })
+
   it('connects one session, attaches the current grid, sends input, and resizes', async () => {
     const double = connectionDouble()
     const factory = jest.fn((_endpoint: Endpoint) => double)
@@ -79,7 +127,8 @@ describe('TabletClientController', () => {
 
   it('publishes a renderer snapshot only after a redraw flush', async () => {
     const double = connectionDouble()
-    const controller = new TabletClientController(() => double)
+    const frames = frameSchedulerDouble()
+    const controller = new TabletClientController(() => double, frames.scheduler)
     const listener = jest.fn()
     controller.subscribe(listener)
     await controller.connect(endpoint)
@@ -93,11 +142,223 @@ describe('TabletClientController', () => {
     expect(listener).not.toHaveBeenCalled()
 
     double.redraw([['flush', []]])
+    expect(controller.getState().snapshot).toBeNull()
+    expect(listener).not.toHaveBeenCalled()
+    expect(frames.pendingCount).toBe(1)
+
+    frames.advance()
     expect(controller.getState().snapshot?.grid?.cells.map((cell) => cell.text)).toEqual([
       'A',
       '界'
     ])
     expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces multiple flushes to the latest snapshot in one scheduled frame', async () => {
+    const double = connectionDouble()
+    const frames = frameSchedulerDouble()
+    const controller = new TabletClientController(() => double, frames.scheduler)
+    const listener = jest.fn()
+    controller.subscribe(listener)
+    await controller.connect(endpoint)
+    listener.mockClear()
+
+    double.redraw([
+      ['grid_resize', [1, 1, 1]],
+      ['grid_line', [1, 0, 0, [['A', 0]]]],
+      ['flush', []]
+    ])
+    double.redraw([
+      ['grid_line', [1, 0, 0, [['B', 0]]]],
+      ['flush', []]
+    ])
+    double.redraw([
+      ['grid_line', [1, 0, 0, [['C', 0]]]],
+      ['flush', []]
+    ])
+
+    expect(frames.scheduler.request).toHaveBeenCalledTimes(1)
+    expect(listener).not.toHaveBeenCalled()
+    frames.advance()
+
+    expect(controller.getState().snapshot?.grid?.cells[0]?.text).toBe('C')
+    expect(controller.getState().snapshot?.flushCount).toBe(3)
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    double.redraw([['flush', []]])
+    expect(frames.scheduler.request).toHaveBeenCalledTimes(2)
+    frames.advance()
+    expect(controller.getState().snapshot?.flushCount).toBe(4)
+  })
+
+  it('does not leak post-flush, unflushed mutations into a pending snapshot', async () => {
+    const double = connectionDouble()
+    const frames = frameSchedulerDouble()
+    const controller = new TabletClientController(() => double, frames.scheduler)
+    await controller.connect(endpoint)
+
+    double.redraw([
+      ['grid_resize', [1, 1, 1]],
+      ['grid_line', [1, 0, 0, [['A', 0]]]],
+      ['flush', []]
+    ])
+    double.redraw([['grid_line', [1, 0, 0, [['B', 0]]]]])
+    frames.advance()
+
+    expect(controller.getState().snapshot?.grid?.cells[0]?.text).toBe('A')
+    expect(controller.getState().snapshot?.flushCount).toBe(1)
+  })
+
+  it('cancels pending frames for disconnect, reconnect, remote close, and disposal', async () => {
+    const scenarios = ['disconnect', 'reconnect', 'remote-close', 'dispose'] as const
+
+    for (const scenario of scenarios) {
+      const first = connectionDouble()
+      const second = connectionDouble()
+      const doubles = [first, second]
+      const frames = frameSchedulerDouble()
+      const controller = new TabletClientController(() => doubles.shift()!, frames.scheduler)
+      await controller.connect(endpoint)
+      first.redraw([
+        ['grid_resize', [1, 1, 1]],
+        ['grid_line', [1, 0, 0, [['A', 0]]]],
+        ['flush', []]
+      ])
+      const canceledHandle = frames.lastHandle
+
+      if (scenario === 'disconnect') await controller.disconnect()
+      if (scenario === 'reconnect') {
+        await controller.connect({ host: '192.168.0.21', port: 7777 })
+      }
+      if (scenario === 'remote-close') first.remoteClose(new Error('closed'))
+      if (scenario === 'dispose') await controller.dispose()
+
+      expect(frames.scheduler.cancel).toHaveBeenCalledWith(canceledHandle)
+      expect(frames.pendingCount).toBe(0)
+      frames.forceRun(canceledHandle)
+      expect(controller.getState().snapshot).toBeNull()
+    }
+  })
+
+  it('records sanitized controller, redraw, and publication diagnostics', async () => {
+    configurePerformanceDiagnostics({ enabled: true, log: false, build: 'release' })
+    const double = connectionDouble()
+    const frames = frameSchedulerDouble()
+    const controller = new TabletClientController(() => double, frames.scheduler)
+    await controller.connect(endpoint)
+
+    await withPerformanceTags(
+      { source: 'ime', firstKeyAfterFocus: true },
+      () => controller.input('private-text')
+    )
+    double.redraw([
+      ['grid_resize', [1, 1, 1]],
+      ['flush', []]
+    ])
+    frames.advance()
+
+    const records = getPerformanceRecords()
+    expect(records.map((record) => record.stage)).toEqual(
+      expect.arrayContaining([
+        'controller_input',
+        'redraw_reduction',
+        'redraw_processing',
+        'snapshot_publication'
+      ])
+    )
+    expect(records.find((record) => record.stage === 'controller_input')?.tags).toMatchObject({
+      source: 'ime',
+      inputLength: 12,
+      connectionGeneration: 1,
+      firstKeyAfterFocus: true,
+      build: 'release'
+    })
+    expect(JSON.stringify(records)).not.toContain('private-text')
+  })
+
+  it('correlates every pending input to its next flush and coalesced snapshot', async () => {
+    configurePerformanceDiagnostics({ enabled: true, log: false, build: 'release' })
+    const double = connectionDouble()
+    const frames = frameSchedulerDouble()
+    const controller = new TabletClientController(() => double, frames.scheduler)
+    await controller.connect(endpoint)
+    const first = createPerformanceInputSample()
+    const second = createPerformanceInputSample()
+    const third = createPerformanceInputSample()
+
+    await withPerformanceTags({ ...first, source: 'ime' }, () => controller.input('a'))
+    await withPerformanceTags({ ...second, source: 'hardware' }, () => controller.input('b'))
+    double.redraw([
+      ['grid_resize', [1, 1, 1]],
+      ['grid_line', [1, 0, 0, [['B', 0]]]],
+      ['flush', []]
+    ])
+    await withPerformanceTags({ ...third, source: 'action-pad' }, () => controller.input('c'))
+    double.redraw([
+      ['grid_line', [1, 0, 0, [['C', 0]]]],
+      ['flush', []]
+    ])
+
+    expect(controller.getState().performanceSamples).toEqual([])
+    expect(frames.scheduler.request).toHaveBeenCalledTimes(1)
+    frames.advance()
+
+    expect(controller.getState().performanceSamples.map((sample) => ({
+      sampleId: sample.sampleId,
+      flushCount: sample.flushCount
+    }))).toEqual([
+      { sampleId: first.sampleId, flushCount: 1 },
+      { sampleId: second.sampleId, flushCount: 1 },
+      { sampleId: third.sampleId, flushCount: 2 }
+    ])
+    const records = getPerformanceRecords()
+    expect(records.filter((record) => record.stage === 'input_to_redraw').map((record) => ({
+      sampleId: record.tags.sampleId,
+      flushCount: record.tags.flushCount
+    }))).toEqual([
+      { sampleId: first.sampleId, flushCount: 1 },
+      { sampleId: second.sampleId, flushCount: 1 },
+      { sampleId: third.sampleId, flushCount: 2 }
+    ])
+    expect(records.filter((record) => record.stage === 'input_to_snapshot').map(
+      (record) => record.tags.sampleId
+    )).toEqual([first.sampleId, second.sampleId, third.sampleId])
+  })
+
+  it('bounds pending samples and records dropped and unmatched inputs on close', async () => {
+    configurePerformanceDiagnostics({ enabled: true, capacity: 4_096, log: false })
+    const double = connectionDouble()
+    const controller = new TabletClientController(() => double)
+    await controller.connect(endpoint)
+
+    for (let index = 0; index < 257; index += 1) {
+      const sample = createPerformanceInputSample()
+      await withPerformanceTags({ ...sample, source: 'ime' }, () => controller.input('x'))
+    }
+    await controller.disconnect()
+
+    const records = getPerformanceRecords()
+    expect(records.filter((record) => record.stage === 'input_sample_dropped')).toHaveLength(1)
+    expect(records.filter((record) => record.stage === 'input_sample_unmatched')).toHaveLength(256)
+  })
+
+  it('records flushed samples as unpublished when a pending frame is canceled', async () => {
+    configurePerformanceDiagnostics({ enabled: true, log: false })
+    const double = connectionDouble()
+    const frames = frameSchedulerDouble()
+    const controller = new TabletClientController(() => double, frames.scheduler)
+    await controller.connect(endpoint)
+    const sample = createPerformanceInputSample()
+
+    await withPerformanceTags({ ...sample, source: 'ime' }, () => controller.input('x'))
+    double.redraw([['flush', []]])
+    await controller.disconnect()
+
+    expect(getPerformanceRecords().filter(
+      (record) => record.stage === 'input_sample_unpublished'
+    ).map((record) => record.tags.sampleId)).toEqual([sample.sampleId])
+    frames.forceRun(frames.lastHandle)
+    expect(controller.getState().performanceSamples).toEqual([])
   })
 
   it('isolates stale redraw and close events after reconnecting', async () => {

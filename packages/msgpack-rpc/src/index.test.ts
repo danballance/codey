@@ -1,7 +1,13 @@
 import { decode, encode } from "@msgpack/msgpack";
 
+import {
+  clearPerformanceRecords,
+  configurePerformanceDiagnostics,
+  getPerformanceRecords,
+  withPerformanceTags,
+} from "@codey/perf";
 import type { DuplexTransport } from "@codey/transport";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   MessagePackRpcClient,
@@ -71,6 +77,11 @@ function concatenate(...parts: Uint8Array[]): Uint8Array {
 }
 
 describe("MessagePackRpcClient", () => {
+  afterEach(() => {
+    configurePerformanceDiagnostics({ enabled: false });
+    clearPerformanceRecords();
+  });
+
   it("decodes values split across chunks and multiple values in one chunk", async () => {
     const transport = new FakeTransport();
     const client = new MessagePackRpcClient(transport);
@@ -178,6 +189,99 @@ describe("MessagePackRpcClient", () => {
     expect(transport.closeCalls).toBe(1);
   });
 
+  it.each([
+    { name: "empty message", message: [] },
+    { name: "response", message: [1, 1, null] },
+    { name: "notification", message: [2, "event", "not-params"] },
+    { name: "request", message: [0, 1, 42, []] },
+  ])("treats a malformed $name shape as fatal", async ({ message }) => {
+    const transport = new FakeTransport();
+    const client = new MessagePackRpcClient(transport);
+    const errors: Error[] = [];
+    client.onError((error) => errors.push(error));
+    await client.connect();
+
+    transport.emitData(encode(message));
+
+    await vi.waitFor(() => expect(transport.closeCalls).toBe(1));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(MessagePackRpcProtocolError);
+  });
+
+  it("rejects an unknown response ID as a protocol error", async () => {
+    const transport = new FakeTransport();
+    const client = new MessagePackRpcClient(transport);
+    const errors: Error[] = [];
+    client.onError((error) => errors.push(error));
+    await client.connect();
+
+    transport.emitData(encode([1, 999, null, "orphaned"]));
+
+    await vi.waitFor(() => expect(transport.closeCalls).toBe(1));
+    expect(errors[0]).toBeInstanceOf(MessagePackRpcProtocolError);
+    expect(errors[0]?.message).toContain("unknown request ID 999");
+  });
+
+  it("delivers a complete frame before failing on a later invalid marker", async () => {
+    const transport = new FakeTransport();
+    const client = new MessagePackRpcClient(transport);
+    const notifications = vi.fn();
+    const errors: Error[] = [];
+    client.onNotification(notifications);
+    client.onError((error) => errors.push(error));
+    await client.connect();
+
+    transport.emitData(
+      concatenate(encode([2, "ready", [1]]), Uint8Array.of(0xc1)),
+    );
+
+    expect(notifications).toHaveBeenCalledOnce();
+    expect(notifications).toHaveBeenCalledWith("ready", [1]);
+    await vi.waitFor(() => expect(transport.closeCalls).toBe(1));
+    expect(errors[0]?.message).toContain("Invalid MessagePack data");
+  });
+
+  it("delivers complete frames before reporting an incomplete trailing value on close", async () => {
+    const transport = new FakeTransport();
+    const client = new MessagePackRpcClient(transport);
+    const notifications = vi.fn();
+    const errors: Error[] = [];
+    client.onNotification(notifications);
+    client.onError((error) => errors.push(error));
+    await client.connect();
+    const partial = encode([2, "later", [1, 2, 3]]);
+
+    transport.emitData(
+      concatenate(encode([2, "ready", []]), partial.subarray(0, 3)),
+    );
+    transport.emitClose();
+
+    expect(notifications).toHaveBeenCalledOnce();
+    expect(notifications).toHaveBeenCalledWith("ready", []);
+    expect(errors[0]?.message).toContain("incomplete MessagePack value");
+  });
+
+  it("stops delivering the active chunk when a notification closes the client", async () => {
+    const transport = new FakeTransport();
+    const client = new MessagePackRpcClient(transport);
+    const notifications: string[] = [];
+    client.onNotification((method) => {
+      notifications.push(method);
+      if (method === "close-now") void client.close();
+    });
+    await client.connect();
+
+    transport.emitData(
+      concatenate(
+        encode([2, "close-now", []]),
+        encode([2, "must-not-deliver", []]),
+      ),
+    );
+
+    await vi.waitFor(() => expect(transport.closeCalls).toBe(1));
+    expect(notifications).toEqual(["close-now"]);
+  });
+
   it("reports an incomplete MessagePack value when the transport closes", async () => {
     const transport = new FakeTransport();
     const client = new MessagePackRpcClient(transport);
@@ -240,5 +344,47 @@ describe("MessagePackRpcClient", () => {
     expect(transport.closeCalls).toBe(1);
     await client.close();
     expect(transport.closeCalls).toBe(1);
+  });
+
+  it("records sanitized framing, decode, and encode diagnostics", async () => {
+    configurePerformanceDiagnostics({
+      enabled: true,
+      log: false,
+      build: "release",
+    });
+    const transport = new FakeTransport();
+    const client = new MessagePackRpcClient(transport);
+    await client.connect();
+
+    const response = withPerformanceTags(
+      { source: "ime", inputLength: 1, connectionGeneration: 4 },
+      () => client.request("private-method", ["private-value"]),
+    );
+    const outgoing = decode(transport.writes[0]!) as unknown[];
+    const requestId = outgoing[1] as number;
+    const responseBytes = encode([1, requestId, null, "ok"]);
+    transport.emitData(responseBytes.subarray(0, 2));
+    transport.emitData(responseBytes.subarray(2));
+    await expect(response).resolves.toBe("ok");
+
+    const records = getPerformanceRecords();
+    expect(records.map((record) => record.stage)).toEqual(
+      expect.arrayContaining([
+        "msgpack_encode",
+        "msgpack_framing",
+        "msgpack_decode",
+      ]),
+    );
+    expect(
+      records.find((record) => record.stage === "msgpack_encode")?.tags,
+    ).toMatchObject({
+      source: "ime",
+      inputLength: 1,
+      connectionGeneration: 4,
+      byteLength: transport.writes[0]?.byteLength,
+      build: "release",
+    });
+    expect(JSON.stringify(records)).not.toContain("private-method");
+    expect(JSON.stringify(records)).not.toContain("private-value");
   });
 });

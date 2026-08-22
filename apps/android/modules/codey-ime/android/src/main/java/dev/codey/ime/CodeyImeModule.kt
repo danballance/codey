@@ -8,7 +8,11 @@ class CodeyImeModule : Module() {
     Name("CodeyIme")
 
     View(CodeyImeView::class) {
-      Events("onCommittedText", "onKey")
+      Events("onCommittedText", "onKey", "onOrderedInput")
+
+      Prop("inputMode") { view: CodeyImeView, inputMode: String ->
+        view.setInputMode(inputMode)
+      }
 
       AsyncFunction("focusIme") { view: CodeyImeView ->
         view.focusKeyboard()
@@ -18,15 +22,8 @@ class CodeyImeModule : Module() {
         view.blurKeyboard()
       }
 
-      AsyncFunction("sendImeKey") {
-          view: CodeyImeView,
-          key: String,
-          ctrl: Boolean,
-          alt: Boolean,
-          shift: Boolean,
-          meta: Boolean,
-          repeat: Boolean ->
-        view.sendImeKey(key, ctrl, alt, shift, meta, repeat)
+      AsyncFunction("sendOrderedInput") { view: CodeyImeView, keys: String ->
+        view.sendOrderedInput(keys)
       }
 
       OnViewDestroys { view: CodeyImeView ->
