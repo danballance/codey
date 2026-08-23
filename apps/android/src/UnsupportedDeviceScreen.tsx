@@ -7,11 +7,11 @@ export function UnsupportedDeviceScreen() {
     <View style={styles.screen} testID="unsupported-device-screen">
       <View style={styles.card}>
         <Text style={styles.eyebrow}>ANDROID TABLET REQUIRED</Text>
-        <Text style={styles.title}>Codey needs a landscape tablet window</Text>
+        <Text style={styles.title}>Codey needs a tablet-sized window</Text>
         <Text style={styles.copy}>
-          This development build supports landscape tablet windows with a shortest side of at
-          least {` ${MIN_TABLET_SHORTEST_SIDE_DP}dp`}. Phones can install the build, but cannot
-          start an editor session.
+          This development build supports portrait and landscape windows with a shortest side
+          of at least {` ${MIN_TABLET_SHORTEST_SIDE_DP}dp`}. Phones can install the build, but
+          cannot start an editor session.
         </Text>
       </View>
     </View>

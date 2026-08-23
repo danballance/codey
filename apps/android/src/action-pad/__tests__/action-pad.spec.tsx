@@ -25,13 +25,100 @@ function actionPadProps(overrides: Partial<ActionPadProps> = {}): ActionPadProps
 }
 
 describe('ActionPad', () => {
+  it('defaults to the roomy below-terminal presentation', () => {
+    const screen = render(<ActionPad {...actionPadProps()} />)
+
+    const panelStyle = StyleSheet.flatten(
+      screen.getByTestId('action-pad').props.style
+    )
+    expect(panelStyle.minHeight).toBe(213)
+    expect(panelStyle.borderTopWidth).toBe(2)
+    expect(panelStyle.width).toBeUndefined()
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-1').props.style)).toMatchObject({
+      height: 52,
+      flexDirection: 'row'
+    })
+  })
+
   it('keeps two 48dp touch rows in its keyboard-compact layout', () => {
     const screen = render(<ActionPad {...actionPadProps({ compact: true })} />)
 
     expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-1').props.style).height).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-2').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
+      minWidth: 48,
+      height: 48
+    })
+  })
+
+  it('uses a roomy scrollable two-column flow for right placement', () => {
+    const screen = render(
+      <ActionPad {...actionPadProps({ placement: 'right' })} />
+    )
+
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style)).toMatchObject({
+      flex: 1,
+      minHeight: 0,
+      borderTopWidth: 0,
+      borderLeftWidth: 2
+    })
+    expect(screen.getByTestId('action-pad-flow-scroll')).toBeTruthy()
+    expect(screen.queryByTestId('action-pad-row-1')).toBeNull()
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow').props.style)).toMatchObject({
+      width: '100%',
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      alignContent: 'flex-start',
+      rowGap: 12
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
+      minWidth: 48,
+      width: '48%',
+      height: 52,
+      flex: 0,
+      borderRadius: 12
+    })
+    expect(screen.getAllByRole('button').map((button) => button.props.testID)).toEqual([
+      'action-pad-ctrl',
+      'action-pad-escape',
+      'action-pad-tab',
+      'action-pad-enter',
+      'action-pad-backspace',
+      'action-pad-left',
+      'action-pad-down',
+      'action-pad-up',
+      'action-pad-right',
+      'action-pad-leader',
+      'action-pad-command'
+    ])
+  })
+
+  it('keeps the right flow scrollable with 48dp controls when compact', () => {
+    const screen = render(
+      <ActionPad {...actionPadProps({ compact: true, placement: 'right' })} />
+    )
+
+    expect(screen.getByTestId('action-pad-flow-scroll')).toBeTruthy()
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow').props.style).rowGap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
+      minWidth: 48,
+      width: '48%',
+      height: 48,
+      flex: 0,
+      borderRadius: 8
+    })
+  })
+
+  it('places generated Back after the final flowing submenu action', () => {
+    const screen = render(
+      <ActionPad {...actionPadProps({ placement: 'right' })} />
+    )
+
+    fireEvent.press(screen.getByTestId('action-pad-leader'))
+    const buttons = screen.getAllByRole('button')
+    expect(buttons[buttons.length - 1]?.props.testID).toBe('action-pad-back')
   })
 
   it('renders disabled actions without dispatching input', () => {

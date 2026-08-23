@@ -37,7 +37,7 @@ import {
   type CodeyImeOrderedInputEvent
 } from './native/CodeyIme'
 import { createRuntimeConnection } from './runtime-connection'
-import type { TabletCapability } from './tablet'
+import type { TabletCapability, TabletOrientation } from './tablet'
 
 interface TabletClientProps {
   readonly capability: TabletCapability
@@ -46,6 +46,11 @@ interface TabletClientProps {
 interface CanvasBounds {
   readonly width: number
   readonly height: number
+}
+
+interface ScreenMeasurement {
+  readonly height: number
+  readonly orientation: TabletOrientation
 }
 
 interface PendingActionInput {
@@ -61,6 +66,7 @@ interface NativeInputTiming {
 }
 
 const KEYBOARD_COMPACT_THRESHOLD = 120
+const LANDSCAPE_ACTION_PAD_WIDTH = 336
 
 export function TabletClient({ capability }: TabletClientProps) {
   const [controller] = useState(() => new TabletClientController(createRuntimeConnection))
@@ -71,7 +77,10 @@ export function TabletClient({ capability }: TabletClientProps) {
   const [control, setControl] = useState(false)
   const controlRef = useRef(false)
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds>({ width: 0, height: 0 })
-  const [availableHeight, setAvailableHeight] = useState(capability.height)
+  const [screenMeasurement, setScreenMeasurement] = useState<ScreenMeasurement>({
+    height: capability.height,
+    orientation: capability.orientation
+  })
   const imeRef = useRef<CodeyImeHandle>(null)
   const pendingActionInputs = useRef<PendingActionInput[]>([])
   const firstKeyAfterFocus = useRef(false)
@@ -100,10 +109,17 @@ export function TabletClient({ capability }: TabletClientProps) {
     [controller]
   )
 
-  const onScreenLayout = useCallback((event: LayoutChangeEvent) => {
-    const { height } = event.nativeEvent.layout
-    setAvailableHeight((previous) => previous === height ? previous : height)
-  }, [])
+  const onScreenLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const { height } = event.nativeEvent.layout
+      setScreenMeasurement((previous) =>
+        previous.height === height && previous.orientation === capability.orientation
+          ? previous
+          : { height, orientation: capability.orientation }
+      )
+    },
+    [capability.orientation]
+  )
 
   const toggleConnection = useCallback(() => {
     setFormError('')
@@ -283,7 +299,10 @@ export function TabletClient({ capability }: TabletClientProps) {
   const connected = client.phase === 'connected'
   const connecting = client.phase === 'connecting'
   const expanded = capability.layout === 'expanded'
-  const compactControls = capability.height - availableHeight >= KEYBOARD_COMPACT_THRESHOLD
+  const landscape = capability.orientation === 'landscape'
+  const compactControls = screenMeasurement.orientation === capability.orientation &&
+    capability.height - screenMeasurement.height >= KEYBOARD_COMPACT_THRESHOLD
+  const compactActionPad = compactControls
   const mode = client.snapshot?.mode.name.toUpperCase() || '—'
 
   useEffect(() => {
@@ -353,49 +372,72 @@ export function TabletClient({ capability }: TabletClientProps) {
         </Text>
       </View>
 
-      <Pressable
-        accessibilityLabel="Neovim editor"
-        disabled={!connected}
-        onPress={focusEditorIme}
-        style={[styles.editorFrame, compactControls && styles.keyboardCompactEditor]}
+      <View
+        style={[
+          styles.workspace,
+          expanded ? styles.expandedWorkspace : styles.condensedWorkspace,
+          compactControls && styles.keyboardCompactWorkspace,
+          landscape ? styles.landscapeWorkspace : styles.portraitWorkspace
+        ]}
+        testID="tablet-client-workspace"
       >
-        <EditorCanvas
-          height={canvasBounds.height}
-          onLayout={onEditorLayout}
-          performanceSamples={client.performanceSamples}
-          snapshot={client.snapshot}
-          width={canvasBounds.width}
-        />
-        {client.snapshot === null ? (
-          <View pointerEvents="none" style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>{connecting ? 'Connecting to Neovim…' : 'No editor session'}</Text>
-            <Text style={styles.emptyCopy}>
-              {connecting ? 'Waiting for the initial redraw frame' : 'Enter a trusted LAN endpoint above'}
-            </Text>
-          </View>
-        ) : null}
-        <CodeyIme
-          ref={imeRef}
-          inputMode="terminal"
-          onCommittedText={submitCommittedText}
-          onKey={submitHardwareKey}
-          onOrderedInput={submitOrderedInput}
-          style={styles.imeTarget}
-        />
-      </Pressable>
+        <Pressable
+          accessibilityLabel="Neovim editor"
+          disabled={!connected}
+          onPress={focusEditorIme}
+          style={[styles.editorFrame, compactControls && styles.keyboardCompactEditor]}
+        >
+          <EditorCanvas
+            height={canvasBounds.height}
+            onLayout={onEditorLayout}
+            performanceSamples={client.performanceSamples}
+            snapshot={client.snapshot}
+            width={canvasBounds.width}
+          />
+          {client.snapshot === null ? (
+            <View pointerEvents="none" style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>
+                {connecting ? 'Connecting to Neovim…' : 'No editor session'}
+              </Text>
+              <Text style={styles.emptyCopy}>
+                {connecting
+                  ? 'Waiting for the initial redraw frame'
+                  : 'Enter a trusted LAN endpoint above'}
+              </Text>
+            </View>
+          ) : null}
+          <CodeyIme
+            ref={imeRef}
+            inputMode="terminal"
+            onCommittedText={submitCommittedText}
+            onKey={submitHardwareKey}
+            onOrderedInput={submitOrderedInput}
+            style={styles.imeTarget}
+          />
+        </Pressable>
 
-      <ActionPad
-        compact={compactControls}
-        controlActive={control}
-        dimensions={`${client.gridSize.columns} × ${client.gridSize.rows} · ${Math.round(capability.width)} × ${Math.round(capability.height)}dp`}
-        enabled={connected}
-        mode={mode}
-        onKeyPress={submitKeyRow}
-        onRawInput={submitActionInput}
-        onToggleControl={toggleControl}
-        resetKey={client.phase}
-        rootMenu={ACTION_PAD_MENU}
-      />
+        <View
+          style={[
+            styles.actionPadContainer,
+            landscape && styles.landscapeActionPadContainer
+          ]}
+          testID="action-pad-container"
+        >
+          <ActionPad
+            compact={compactActionPad}
+            controlActive={control}
+            dimensions={`${client.gridSize.columns} × ${client.gridSize.rows} · ${Math.round(capability.width)} × ${Math.round(capability.height)}dp`}
+            enabled={connected}
+            mode={mode}
+            onKeyPress={submitKeyRow}
+            onRawInput={submitActionInput}
+            onToggleControl={toggleControl}
+            placement={landscape ? 'right' : 'below'}
+            resetKey={client.phase}
+            rootMenu={ACTION_PAD_MENU}
+          />
+        </View>
+      </View>
     </KeyboardAvoidingView>
   )
 }
@@ -498,6 +540,33 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     gap: 4
   },
+  workspace: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0
+  },
+  portraitWorkspace: {
+    flexDirection: 'column'
+  },
+  landscapeWorkspace: {
+    flexDirection: 'row'
+  },
+  expandedWorkspace: {
+    gap: 8
+  },
+  condensedWorkspace: {
+    gap: 5
+  },
+  keyboardCompactWorkspace: {
+    gap: 4
+  },
+  actionPadContainer: {
+    minWidth: 0,
+    minHeight: 0
+  },
+  landscapeActionPadContainer: {
+    width: LANDSCAPE_ACTION_PAD_WIDTH
+  },
   toolbar: {
     minHeight: 48,
     flexDirection: 'row',
@@ -565,6 +634,7 @@ const styles = StyleSheet.create({
   error: { color: '#ff7b72' },
   editorFrame: {
     flex: 1,
+    minWidth: 0,
     minHeight: 80,
     overflow: 'hidden',
     borderWidth: 1,

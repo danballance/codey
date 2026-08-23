@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 
 import { ACTION_PAD_MENU } from './config'
 import {
@@ -9,10 +9,13 @@ import {
 } from './types'
 import { validateActionMenu } from './validation'
 
+export type ActionPadPlacement = 'below' | 'right'
+
 export interface ActionPadProps {
   readonly rootMenu?: ActionMenu
   readonly enabled: boolean
   readonly compact?: boolean
+  readonly placement?: ActionPadPlacement
   readonly resetKey?: string | number
   readonly mode: string
   readonly dimensions: string
@@ -26,6 +29,7 @@ export const ActionPad = memo(function ActionPad({
   rootMenu = ACTION_PAD_MENU,
   enabled,
   compact = false,
+  placement = 'below',
   resetKey,
   mode,
   dimensions,
@@ -34,6 +38,7 @@ export const ActionPad = memo(function ActionPad({
   onRawInput,
   onToggleControl
 }: ActionPadProps) {
+  const placedRight = placement === 'right'
   const validatedRoot = useMemo(() => {
     validateActionMenu(rootMenu)
     return rootMenu
@@ -98,7 +103,11 @@ export const ActionPad = memo(function ActionPad({
   return (
     <View
       accessibilityLabel="Neovim action pad"
-      style={[styles.panel, compact && styles.compactPanel]}
+      style={[
+        styles.panel,
+        compact && styles.compactPanel,
+        placedRight && styles.rightPanel
+      ]}
       testID="action-pad"
     >
       <View style={[styles.header, compact && styles.compactHeader]}>
@@ -120,53 +129,70 @@ export const ActionPad = memo(function ActionPad({
         )}
       </View>
 
-      <View style={[styles.rows, compact && styles.compactRows]}>
-        {currentMenu.rows.map((row, rowIndex) => (
+      {placedRight ? (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          style={styles.flowScroll}
+          testID="action-pad-flow-scroll"
+        >
           <View
-            key={`${currentMenu.id}-row-${rowIndex}`}
-            style={[styles.row, compact && styles.compactRow]}
-            testID={`action-pad-row-${rowIndex + 1}`}
+            style={[styles.flow, compact && styles.compactFlow]}
+            testID="action-pad-flow"
           >
-            {row.map((action) => (
+            {currentMenu.rows.flat().map((action) => (
               <ActionButtonView
                 key={action.id}
                 action={action}
                 compact={compact}
                 controlActive={controlActive}
                 enabled={enabled}
+                flow
                 onOpenMenu={openMenu}
                 onPress={pressAction}
               />
             ))}
-            {rowIndex === 1 && menuStack.length > 1 ? (
-              <Pressable
-                accessibilityLabel="Back"
-                accessibilityRole="button"
-                disabled={!enabled}
+            {menuStack.length > 1 ? (
+              <BackButtonView
+                compact={compact}
+                enabled={enabled}
+                flow
                 onPress={goBack}
-                style={({ pressed }) => [
-                  styles.button,
-                  compact && styles.compactButton,
-                  styles.backButton,
-                  !enabled && styles.disabled,
-                  pressed && enabled && styles.pressed
-                ]}
-                testID="action-pad-back"
-              >
-                <Text
-                  style={[
-                    styles.buttonText,
-                    compact && styles.compactButtonText,
-                    styles.backButtonText
-                  ]}
-                >
-                  Back
-                </Text>
-              </Pressable>
+              />
             ) : null}
           </View>
-        ))}
-      </View>
+        </ScrollView>
+      ) : (
+        <View style={[styles.rows, compact && styles.compactRows]}>
+          {currentMenu.rows.map((row, rowIndex) => (
+            <View
+              key={`${currentMenu.id}-row-${rowIndex}`}
+              style={[styles.row, compact && styles.compactRow]}
+              testID={`action-pad-row-${rowIndex + 1}`}
+            >
+              {row.map((action) => (
+                <ActionButtonView
+                  key={action.id}
+                  action={action}
+                  compact={compact}
+                  controlActive={controlActive}
+                  enabled={enabled}
+                  flow={false}
+                  onOpenMenu={openMenu}
+                  onPress={pressAction}
+                />
+              ))}
+              {rowIndex === 1 && menuStack.length > 1 ? (
+                <BackButtonView
+                  compact={compact}
+                  enabled={enabled}
+                  flow={false}
+                  onPress={goBack}
+                />
+              ) : null}
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   )
 })
@@ -176,6 +202,7 @@ function ActionButtonView({
   compact,
   controlActive,
   enabled,
+  flow,
   onOpenMenu,
   onPress
 }: {
@@ -183,6 +210,7 @@ function ActionButtonView({
   readonly compact: boolean
   readonly controlActive: boolean
   readonly enabled: boolean
+  readonly flow: boolean
   readonly onOpenMenu: (menu: ActionMenu) => void
   readonly onPress: (action: ActionButton) => void
 }) {
@@ -219,6 +247,7 @@ function ActionButtonView({
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
+        flow && styles.flowButton,
         modifierActive && styles.activeButton,
         !enabled && styles.disabled,
         pressed && enabled && styles.pressed
@@ -239,6 +268,46 @@ function ActionButtonView({
   )
 }
 
+function BackButtonView({
+  compact,
+  enabled,
+  flow,
+  onPress
+}: {
+  readonly compact: boolean
+  readonly enabled: boolean
+  readonly flow: boolean
+  readonly onPress: () => void
+}) {
+  return (
+    <Pressable
+      accessibilityLabel="Back"
+      accessibilityRole="button"
+      disabled={!enabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.button,
+        compact && styles.compactButton,
+        flow && styles.flowButton,
+        styles.backButton,
+        !enabled && styles.disabled,
+        pressed && enabled && styles.pressed
+      ]}
+      testID="action-pad-back"
+    >
+      <Text
+        style={[
+          styles.buttonText,
+          compact && styles.compactButtonText,
+          styles.backButtonText
+        ]}
+      >
+        Back
+      </Text>
+    </Pressable>
+  )
+}
+
 const styles = StyleSheet.create({
   panel: {
     minHeight: 213,
@@ -254,6 +323,27 @@ const styles = StyleSheet.create({
     padding: 8,
     gap: 6,
     borderRadius: 8
+  },
+  rightPanel: {
+    flex: 1,
+    minHeight: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 2
+  },
+  flowScroll: {
+    flex: 1,
+    minHeight: 0
+  },
+  flow: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    alignContent: 'flex-start',
+    rowGap: 12
+  },
+  compactFlow: {
+    rowGap: 6
   },
   header: {
     height: 25,
@@ -335,6 +425,10 @@ const styles = StyleSheet.create({
     height: 48,
     paddingHorizontal: 4,
     borderRadius: 8
+  },
+  flowButton: {
+    width: '48%',
+    flex: 0
   },
   buttonText: {
     color: '#c0caf5',

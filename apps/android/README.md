@@ -15,7 +15,7 @@ Skia + Android IME
 
 ## Supported screen contract
 
-- Landscape is the only supported orientation.
+- Portrait, landscape, and square tablet windows are supported.
 - The shortest active window side must be at least `600dp`.
 - Windows from `600dp` through `839dp` wide use the condensed tablet shell.
 - Windows at least `840dp` wide use the large-tablet shell; approximately
@@ -24,19 +24,27 @@ Skia + Android IME
   connect an editor session.
 
 If multi-window resizing takes a connected editor below the minimum, the app
-disconnects safely before showing the unsupported-device explanation. Android
-16 builds also opt into the platform's temporary fixed-orientation compatibility
-mode so the tablet opens in landscape. The runtime landscape gate remains in
-place because Android 17 removes that compatibility opt-out and device policy
-may still override an orientation request.
+disconnects safely before showing the unsupported-device explanation. The app
+does not request a fixed orientation, so rotating or resizing a supported tablet
+reflows the existing editor session instead of reconstructing it.
 
-## Dynamic action pad
+## Adaptive workspace and dynamic action pad
 
-The command area below the editor is a two-row action pad. The root menu keeps
-common native keys available and links to groups such as navigation, Leader,
-Search, and Cmd. Entering a group replaces the visible buttons with that
-group's next choices, adds a generated Back button, and shows the current path
-as a breadcrumb. Disconnecting resets the pad and disables its controls.
+In portrait and square windows, the command area remains below the editor. In
+landscape, the editor uses the available vertical space while the action pad
+moves into a fixed `336dp` rail to its right. In that rail, the configured
+actions flatten into an ordered, scrollable two-column flow with portrait-sized
+buttons. The full-width connection toolbar stays above both. The same action
+pad remains mounted across rotations, so its active menu and input state survive
+the layout change.
+
+The action tree is configured as two ordered button rows. Portrait and square
+windows render those rows directly; landscape preserves their order while
+letting the buttons wrap through the rail. The root menu keeps common native
+keys available and links to groups such as navigation, Leader, Search, and Cmd.
+Entering a group replaces the visible buttons with that group's next choices,
+adds a generated Back button as the final flowing action, and shows the current
+path as a breadcrumb. Disconnecting resets the pad and disables its controls.
 
 Up and Down are dual-purpose controls: tap to send one arrow key, or hold for
 `450ms` to open the corresponding navigation menu. A successful hold suppresses
@@ -45,10 +53,11 @@ leaf actions normally return to the root. Each leaf dispatches its complete
 Neovim input sequence in one ordered operation, after any active Android IME
 composition has been committed.
 
-When the software keyboard reduces the window height, the pad switches to a
-compact 144dp layout while preserving both rows and 48dp touch targets. The
-editor and toolbar also relax their minimum heights so the 800 × 600dp
-condensed tablet layout does not overflow.
+When the software keyboard reduces the window height by at least `120dp`, the
+pad switches to its compact treatment while preserving `48dp` touch targets.
+The landscape flow remains vertically scrollable when the keyboard leaves too
+little height for every action. The editor and toolbar also relax their minimum
+heights so the 800 × 600dp condensed tablet layout does not overflow.
 
 The bundled action tree is a typed TypeScript configuration in
 `src/action-pad/config.ts`. `src/action-pad/index.ts` exports the `ActionPad`,
@@ -113,8 +122,10 @@ Expo Continuous Native Generation produces `apps/android/android/`; that folder
 is ignored and can be recreated. Kotlin source for the TCP and IME modules is
 tracked under `modules/`.
 
-After changing Expo native configuration, native module registration, or the
-Kotlin IME bridge, run a clean prebuild and reinstall the development client:
+After changing Expo native configuration (including supported orientations),
+native module registration, or the Kotlin IME bridge, run a clean prebuild and
+reinstall the development client. An existing APK will retain its generated
+manifest until it is rebuilt and reinstalled:
 
 ```sh
 pnpm android:prebuild

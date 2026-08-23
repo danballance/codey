@@ -11,7 +11,7 @@ and editor-state packages:
 ```text
 apps/
   desktop/       Electron client with an HTML canvas renderer
-  android/       Expo development client for landscape Android tablets
+  android/       Expo development client for Android tablets
 packages/
   transport/     Platform-neutral byte-stream contract and Node TCP adapter
   msgpack-rpc/   Streaming MessagePack-RPC client
@@ -22,8 +22,10 @@ packages/
 The Android path uses a Skia renderer, an Android IME view, and a local Expo
 Kotlin TCP module. Phones remain installable, but a window whose shortest side
 is below `600dp` only shows the unsupported-device explanation and cannot open
-a Neovim session. The primary design target is a 12–14-inch tablet in landscape
-with at least `840dp` of window width.
+a Neovim session. Portrait and square windows place the action pad below the
+terminal; landscape flows portrait-sized controls through a two-column
+right-hand rail so the terminal gains vertical space. The primary design target
+remains a 12–14-inch tablet.
 
 ## Development environment
 
@@ -73,18 +75,18 @@ development client with:
 pnpm android:metro
 ```
 
-The app is Android-only and requests landscape, including Android 16's temporary
-large-screen compatibility mode. A runtime gate still rejects portrait windows
-if the platform or device policy overrides that request. Use the development
-host's private-LAN address in the connection toolbar; `127.0.0.1` on the tablet
-means the tablet itself. Start Neovim on that concrete host address, for example:
+The app is Android-only and supports both portrait and landscape tablet windows.
+Use the development host's private-LAN address in the connection toolbar;
+`127.0.0.1` on the tablet means the tablet itself. Start Neovim on that concrete
+host address, for example:
 
 ```sh
 nvim --clean --headless --listen 192.168.1.20:6666
 ```
 
-Changes to Expo native configuration or native modules require a native
-regeneration and reinstall:
+Changes to Expo native configuration, including orientation support, or native
+modules require a clean native regeneration and reinstall. The installed APK
+does not pick up these changes from Metro alone:
 
 ```sh
 pnpm android:prebuild

@@ -159,31 +159,61 @@ beforeEach(() => {
 })
 
 describe('tablet client shell', () => {
-  it('uses keyboard-aware expanded and condensed tablet layouts', () => {
-    const expanded = render(
+  it('keeps portrait and square workspaces stacked while using a flowing landscape rail', () => {
+    const portrait = render(
+      <TabletClient capability={tabletCapability(800, 1_280)} />
+    )
+    expect(StyleSheet.flatten(portrait.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(8)
+    expect(StyleSheet.flatten(portrait.getByTestId('tablet-client-workspace').props.style)).toMatchObject({
+      flexDirection: 'column'
+    })
+    expect(StyleSheet.flatten(portrait.getByTestId('action-pad-container').props.style).width).toBeUndefined()
+    expect(StyleSheet.flatten(portrait.getByTestId('action-pad').props.style).minHeight).toBe(213)
+    portrait.unmount()
+
+    const square = render(
+      <TabletClient capability={tabletCapability(840, 840)} />
+    )
+    expect(StyleSheet.flatten(square.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(16)
+    expect(StyleSheet.flatten(square.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('column')
+    square.unmount()
+
+    const landscape = render(
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
-    const expandedStyle = StyleSheet.flatten(expanded.getByTestId('tablet-client-screen').props.style)
-    expect(expandedStyle.paddingHorizontal).toBe(16)
-    expanded.unmount()
-
-    const condensed = render(
-      <TabletClient capability={tabletCapability(800, 600)} />
-    )
-    const condensedStyle = StyleSheet.flatten(condensed.getByTestId('tablet-client-screen').props.style)
-    expect(condensedStyle.paddingHorizontal).toBe(8)
+    expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-workspace').props.style)).toMatchObject({
+      flexDirection: 'row'
+    })
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-container').props.style).width).toBe(336)
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad').props.style)).toMatchObject({
+      flex: 1,
+      minHeight: 0,
+      padding: 24,
+      borderTopWidth: 0,
+      borderLeftWidth: 2
+    })
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-flow').props.style)).toMatchObject({
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      rowGap: 12
+    })
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-escape').props.style)).toMatchObject({
+      width: '48%',
+      height: 52
+    })
+    expect(landscape.getByTestId('action-pad-flow-scroll')).toBeTruthy()
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
   })
 
-  it('preserves two usable action rows when the software keyboard reduces height', async () => {
+  it('preserves two usable action rows when the software keyboard reduces portrait height', async () => {
     const screen = render(
-      <TabletClient capability={tabletCapability(800, 600)} />
+      <TabletClient capability={tabletCapability(800, 1_280)} />
     )
 
     expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(213)
     fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
       persist: jest.fn(),
-      nativeEvent: { layout: { width: 800, height: 430, x: 0, y: 0 } }
+      nativeEvent: { layout: { width: 800, height: 1_160, x: 0, y: 0 } }
     })
 
     await waitFor(() => {
@@ -193,6 +223,113 @@ describe('tablet client shell', () => {
     expect(StyleSheet.flatten(screen.getByLabelText('Neovim editor').props.style).minHeight).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-1').props.style).height).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-2').props.style).height).toBe(48)
+  })
+
+  it('applies keyboard compaction to the landscape shell while retaining rail controls', async () => {
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style).height).toBe(52)
+    expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(8)
+    fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
+      persist: jest.fn(),
+      nativeEvent: { layout: { width: 1_280, height: 680, x: 0, y: 0 } }
+    })
+
+    await waitFor(() => {
+      expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(4)
+      expect(StyleSheet.flatten(screen.getByLabelText('Neovim editor').props.style).minHeight).toBe(48)
+      expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).padding).toBe(8)
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow').props.style).rowGap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
+      width: '48%',
+      height: 48
+    })
+  })
+
+  it('does not reuse a stale keyboard height measurement after orientation changes', async () => {
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+    fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
+      persist: jest.fn(),
+      nativeEvent: { layout: { width: 1_280, height: 500, x: 0, y: 0 } }
+    })
+    await waitFor(() => {
+      expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(4)
+    })
+
+    screen.rerender(
+      <TabletClient capability={tabletCapability(800, 1_280)} />
+    )
+
+    expect(StyleSheet.flatten(screen.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('column')
+    expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(5)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(213)
+
+    fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
+      persist: jest.fn(),
+      nativeEvent: { layout: { width: 800, height: 1_160, x: 0, y: 0 } }
+    })
+    await waitFor(() => {
+      expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
+    })
+  })
+
+  it('preserves the session, menu, and input state while resizing the editor after rotation', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient capability={tabletCapability(800, 1_280)} />
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+    fireEvent.changeText(screen.getByLabelText('Neovim host'), '192.168.0.42')
+    fireEvent.changeText(screen.getByLabelText('Neovim port'), '7777')
+    fireEvent(screen.getByTestId('mock-editor-canvas'), 'layout', {
+      nativeEvent: { layout: { width: 700, height: 550, x: 0, y: 0 } }
+    })
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+    expect(double.session.attach).toHaveBeenCalledWith(70, 25)
+
+    fireEvent.press(screen.getByTestId('action-pad-ctrl'))
+    fireEvent.press(screen.getByTestId('action-pad-leader'))
+    fireEvent.press(screen.getByTestId('action-pad-search'))
+    expect(screen.getByLabelText('Current action path: Leader / Search')).toBeTruthy()
+
+    screen.rerender(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+
+    expect(StyleSheet.flatten(screen.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('row')
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-container').props.style).width).toBe(336)
+    expect(screen.getByLabelText('Current action path: Leader / Search')).toBeTruthy()
+    expect(screen.getByLabelText('Neovim host').props.value).toBe('192.168.0.42')
+    expect(screen.getByLabelText('Neovim port').props.value).toBe('7777')
+    expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
+    expect(double.session.attach).toHaveBeenCalledTimes(1)
+    expect(double.session.close).not.toHaveBeenCalled()
+
+    fireEvent.press(screen.getByTestId('action-pad-back'))
+    fireEvent.press(screen.getByTestId('action-pad-back'))
+    expect(screen.getByTestId('action-pad-ctrl').props.accessibilityState).toEqual({
+      disabled: false,
+      selected: true
+    })
+
+    fireEvent(screen.getByTestId('mock-editor-canvas'), 'layout', {
+      nativeEvent: { layout: { width: 900, height: 440, x: 0, y: 0 } }
+    })
+    await waitFor(() => {
+      expect(double.session.resize).toHaveBeenCalledWith(90, 20)
+    })
+    expect(double.session.attach).toHaveBeenCalledTimes(1)
+    expect(double.session.close).not.toHaveBeenCalled()
   })
 
   it('keeps one-shot Ctrl for the requested Action Pad action across IME and hardware input', async () => {

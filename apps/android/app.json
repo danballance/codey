@@ -4,7 +4,7 @@
     "slug": "codey-android",
     "version": "0.1.0",
     "platforms": ["android"],
-    "orientation": "landscape",
+    "orientation": "default",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#090b10",
     "scheme": "codey",
@@ -16,7 +16,6 @@
       "predictiveBackGestureEnabled": false
     },
     "plugins": [
-      "./plugins/with-android16-landscape-compatibility",
       "./plugins/with-dark-android-splash",
       "expo-system-ui",
       [

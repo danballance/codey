@@ -29,12 +29,11 @@ reconnection explicit; restart Neovim, then use Connect again.
 
 ## Physical Android tablet
 
-The Android vertical slice targets a 12–14-inch tablet in landscape. It supports
-windows with a shortest side of at least `600dp`, with `840dp` or more of
-landscape width as the primary layout. Smaller windows and phones show only the
-unsupported-device screen. Android 16 uses its temporary fixed-orientation
-compatibility mode; if a device policy overrides landscape, or on Android 17 and
-later, portrait bounds are rejected by the same runtime capability gate.
+The Android vertical slice targets a 12–14-inch tablet in portrait or landscape.
+It supports windows with a shortest side of at least `600dp`; smaller windows
+and phones show only the unsupported-device screen. Portrait and square windows
+stack the action pad below the terminal, while landscape windows place it in a
+scrollable two-column right-hand rail.
 
 Enable Android developer options and USB debugging, attach the device, and
 accept its authorization prompt. From `nix develop`, verify that ADB can see it:
@@ -46,8 +45,10 @@ adb devices
 Install the native development client with `pnpm android:install`. Keep USB
 attached for the most predictable development workflow, or make sure Metro's
 LAN address is reachable from the tablet before using `pnpm android:metro`.
-Native module or Expo configuration changes require `pnpm android:prebuild`
-followed by another install; ordinary TypeScript changes only require Metro.
+Native module or Expo configuration changes require a clean
+`pnpm android:prebuild` followed by another install; ordinary TypeScript changes
+only require Metro. Orientation support is generated into the native manifest,
+so changing it also requires rebuilding and reinstalling the development client.
 
 ## Safety
 

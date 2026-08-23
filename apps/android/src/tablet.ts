@@ -2,10 +2,12 @@ export const MIN_TABLET_SHORTEST_SIDE_DP = 600
 export const EXPANDED_TABLET_MIN_WIDTH_DP = 840
 
 export type TabletLayout = 'unsupported' | 'condensed' | 'expanded'
+export type TabletOrientation = 'portrait' | 'landscape'
 
 export interface TabletCapability {
   readonly supported: boolean
   readonly layout: TabletLayout
+  readonly orientation: TabletOrientation
   readonly width: number
   readonly height: number
   readonly shortestSide: number
@@ -16,10 +18,7 @@ export function tabletCapability(width: number, height: number): TabletCapabilit
   const safeWidth = Number.isFinite(width) ? Math.max(0, width) : 0
   const safeHeight = Number.isFinite(height) ? Math.max(0, height) : 0
   const shortestSide = Math.min(safeWidth, safeHeight)
-  // Android 16 may ignore manifest orientation requests on large screens, so
-  // landscape is enforced at the same runtime boundary as the tablet size.
-  const supported =
-    shortestSide >= MIN_TABLET_SHORTEST_SIDE_DP && safeWidth >= safeHeight
+  const supported = shortestSide >= MIN_TABLET_SHORTEST_SIDE_DP
 
   return {
     supported,
@@ -28,6 +27,7 @@ export function tabletCapability(width: number, height: number): TabletCapabilit
       : safeWidth >= EXPANDED_TABLET_MIN_WIDTH_DP
         ? 'expanded'
         : 'condensed',
+    orientation: safeWidth > safeHeight ? 'landscape' : 'portrait',
     width: safeWidth,
     height: safeHeight,
     shortestSide,

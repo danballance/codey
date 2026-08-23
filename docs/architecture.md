@@ -63,10 +63,8 @@ command-line, popup-menu, or message UIs.
 ## Android platform boundary
 
 The app evaluates the active Android window before constructing any editor
-resource. Its generated Android 16 manifest uses the platform's temporary
-restricted-resizability compatibility property so the development client opens
-in landscape. The runtime gate also rejects portrait bounds because device
-policy can override that request and Android 17 removes the compatibility opt-out:
+resource. The generated manifest leaves orientation unspecified. Runtime
+eligibility depends only on tablet-sized bounds:
 
 - shortest side below `600dp`: unsupported; no transport, session, renderer, or
   IME is created;
@@ -77,8 +75,10 @@ policy can override that request and Android 17 removes the compatibility opt-ou
 
 Phones are not filtered from the manifest. If an active editor window becomes
 unsupported during multi-window resizing, the controller tears down the session
-idempotently before showing the unsupported-device screen. The application is
-otherwise landscape-only.
+idempotently before showing the unsupported-device screen. Supported portrait
+and square bounds use a stacked terminal and action pad; landscape bounds place
+the same persistent action pad in a fixed `336dp` right rail. Changing layout
+does not recreate the connection, editor controller, or action-pad state.
 
 The app-local controller owns exactly one current connection. It validates and
 persists host/port settings, exposes explicit connect, disconnect, and reconnect
@@ -120,9 +120,13 @@ local: Neovim receives nothing until a configured action is chosen, which makes
 Back a purely local operation. Navigation menus can remain open for repeated
 movement; one-shot command menus return to the root after dispatch.
 
-The action pad normally follows the Figma 213dp treatment. When the software
-keyboard removes at least 120dp of usable height, it compacts to 144dp while
-retaining two 48dp touch rows and yields the remaining space to the editor.
+Below the editor, the action pad normally follows the Figma 213dp treatment.
+When the software keyboard removes at least 120dp of usable height, it compacts
+to 144dp while retaining two 48dp touch rows and yields the remaining space to
+the editor. To the editor's right, it uses a `336dp` rail at full workspace
+height. The rail flattens the two configured rows in order into a scrollable,
+two-column flex flow with the normal 52dp portrait treatment; keyboard
+compaction reduces those controls to 48dp without changing their order.
 
 The current Neovim mode and menu breadcrumb are projections in the action pad,
 not a second Neovim state machine. Hardware-key input remains independent of the
@@ -137,7 +141,7 @@ directory. Native module source remains tracked under `apps/android/modules/`.
 - One configured endpoint and one active connection per client.
 - One basic Neovim grid.
 - Manual host process startup and manual reconnect.
-- Android requires a landscape tablet-sized window and a development build.
+- Android requires a tablet-sized window and a development build.
 - No TLS, authentication, discovery, daemon, or remote-access relay.
-- Mouse, clipboard integration, iOS, portrait, emulator support, advanced UI
+- Mouse, clipboard integration, iOS, emulator support, advanced UI
   extensions, and Android phone layouts are out of scope.

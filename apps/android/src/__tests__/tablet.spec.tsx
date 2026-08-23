@@ -8,24 +8,54 @@ import { tabletCapability } from '../tablet'
 afterEach(cleanup)
 
 describe('Android tablet capability', () => {
-  it('rejects 599dp and accepts the exact 600dp boundary', () => {
+  it('uses the 600dp shortest-side boundary in both orientations', () => {
     expect(tabletCapability(1_280, 599)).toMatchObject({
       supported: false,
-      layout: 'unsupported'
+      layout: 'unsupported',
+      orientation: 'landscape'
     })
     expect(tabletCapability(1_280, 600)).toMatchObject({
       supported: true,
-      layout: 'expanded'
+      layout: 'expanded',
+      orientation: 'landscape'
+    })
+    expect(tabletCapability(599, 1_280)).toMatchObject({
+      supported: false,
+      layout: 'unsupported',
+      orientation: 'portrait'
+    })
+    expect(tabletCapability(600, 1_280)).toMatchObject({
+      supported: true,
+      layout: 'condensed',
+      orientation: 'portrait'
     })
   })
 
-  it('rejects a phone-sized landscape window and distinguishes tablet layouts', () => {
+  it('rejects phone-sized windows and preserves width-based tablet tiers', () => {
     expect(tabletCapability(915, 412).supported).toBe(false)
-    expect(tabletCapability(600, 800).supported).toBe(false)
+    expect(tabletCapability(412, 915).supported).toBe(false)
+    expect(tabletCapability(600, 800)).toMatchObject({
+      supported: true,
+      layout: 'condensed',
+      orientation: 'portrait'
+    })
     expect(tabletCapability(800, 600).layout).toBe('condensed')
     expect(tabletCapability(839, 600).layout).toBe('condensed')
     expect(tabletCapability(840, 600).layout).toBe('expanded')
     expect(tabletCapability(1_280, 800).layout).toBe('expanded')
+  })
+
+  it('treats square windows as portrait/stacked layouts', () => {
+    expect(tabletCapability(600, 600)).toMatchObject({
+      supported: true,
+      layout: 'condensed',
+      orientation: 'portrait'
+    })
+    expect(tabletCapability(840, 840)).toMatchObject({
+      supported: true,
+      layout: 'expanded',
+      orientation: 'portrait'
+    })
   })
 
   it('never evaluates the supported client factory for an unsupported window', () => {
