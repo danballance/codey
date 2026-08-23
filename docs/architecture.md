@@ -55,7 +55,11 @@ The Android Skia renderer draws grid backgrounds and glyphs, RGB highlights,
 reverse colors, text decorations, cursor, mode, and dimensions from those
 snapshots. Available canvas bounds are converted to rows and columns whenever
 system bars, the software keyboard, or multi-window bounds change, and the new
-grid size is sent to Neovim.
+grid size is sent to Neovim. A completed tap inside the rendered grid is
+converted through those same cell metrics and sent as a zero-based
+`nvim_input_mouse` left-button press with grid `0`, allowing Neovim to resolve
+the target screen window while retaining authority over its mouse option and
+mappings.
 
 This slice opts into `ext_linegrid` and `rgb`, but not multigrid or externalized
 command-line, popup-menu, or message UIs.
@@ -104,11 +108,13 @@ boundary to `DuplexTransport` and isolates reconnect generations.
 ### Input module
 
 The local Expo native view exposes imperative `focus()`, `blur()`, structured-key,
-and raw-input calls plus committed-text, structured special/hardware-key, and raw
-input events. Android composition updates are not forwarded as duplicate input.
-Both visible keys and configured command sequences settle active composition
-before their input reaches Neovim, so touch commands cannot overtake unfinished
-software-keyboard text.
+raw-input, and composition-settlement calls plus committed-text, structured
+special/hardware-key, and ordered-input events. Android composition updates are
+not forwarded as duplicate input. Visible keys, configured command sequences,
+and editor taps settle active composition before their input reaches Neovim, so
+touch commands cannot overtake unfinished software-keyboard text. Tapping the
+editor never changes IME focus; the root action pad exposes an explicit Keyboard
+action for opening it.
 
 ### Contextual action pad
 
@@ -146,5 +152,6 @@ directory. Native module source remains tracked under `apps/android/modules/`.
 - Manual host process startup and manual reconnect.
 - Android requires a tablet-sized window and a development build.
 - No TLS, authentication, discovery, daemon, or remote-access relay.
-- Mouse, clipboard integration, iOS, emulator support, advanced UI
-  extensions, and Android phone layouts are out of scope.
+- Mouse gestures beyond a single left-button tap, clipboard integration, iOS,
+  emulator support, advanced UI extensions, and Android phone layouts are out
+  of scope.

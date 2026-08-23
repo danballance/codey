@@ -5,7 +5,7 @@ import {
   type EditorSnapshot,
   type EditorState
 } from '@codey/editor-core'
-import type { RedrawBatch } from '@codey/nvim-session'
+import type { MouseInput, RedrawBatch } from '@codey/nvim-session'
 import {
   currentPerformanceTags,
   performanceDiagnosticsEnabled,
@@ -41,6 +41,7 @@ export interface MobileSession {
   connect(): Promise<void>
   attach(width: number, height: number): Promise<void>
   input(keys: string): Promise<void>
+  inputMouse(mouse: MouseInput): Promise<void>
   resize(width: number, height: number): Promise<void>
   onRedraw(listener: (batch: RedrawBatch) => void): () => void
   close(): Promise<void>
@@ -236,6 +237,19 @@ export class TabletClientController {
     } catch (reason) {
       if (this.#isCurrent(connection)) {
         await this.#failConnection(connection, reason, 'Input failed')
+      }
+    }
+  }
+
+  public async inputMouse(mouse: MouseInput): Promise<void> {
+    const connection = this.#active
+    if (connection === null || !connection.ready || connection.closing) return
+
+    try {
+      await connection.session.inputMouse(mouse)
+    } catch (reason) {
+      if (this.#isCurrent(connection)) {
+        await this.#failConnection(connection, reason, 'Mouse input failed')
       }
     }
   }

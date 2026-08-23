@@ -1,6 +1,6 @@
 import type { EditorSnapshot, Grid } from '@codey/editor-core'
 import { StrictMode, Suspense, startTransition, useState } from 'react'
-import { act, render } from '@testing-library/react-native'
+import { act, fireEvent, render } from '@testing-library/react-native'
 
 jest.mock('../performance', () => ({
   performanceDiagnosticsEnabled: () => Boolean(
@@ -129,6 +129,57 @@ describe('EditorCanvas picture lifecycle', () => {
       diagnosticsEnabled: false
     }
     jest.mocked(recordPerformance).mockClear()
+  })
+
+  it('maps a completed canvas press to a visible grid cell', () => {
+    const onCellPress = jest.fn()
+    const screen = render(
+      <EditorCanvas
+        height={44}
+        onCellPress={onCellPress}
+        onLayout={jest.fn()}
+        snapshot={snapshot({
+          grid: {
+            id: 1,
+            width: 3,
+            height: 2,
+            cells: Array.from({ length: 6 }, () => ({ text: ' ', highlightId: 0 }))
+          }
+        })}
+        width={35}
+      />
+    )
+
+    fireEvent.press(screen.getByTestId('editor-canvas-frame'), {
+      nativeEvent: { locationX: 19.5, locationY: 23 }
+    })
+    expect(onCellPress).toHaveBeenCalledWith({ row: 1, column: 1 })
+
+    fireEvent.press(screen.getByTestId('editor-canvas-frame'), {
+      nativeEvent: { locationX: 31, locationY: 23 }
+    })
+    expect(onCellPress).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables touch dispatch without a current grid or callback', () => {
+    const onCellPress = jest.fn()
+    const screen = render(
+      <EditorCanvas
+        height={22}
+        onCellPress={onCellPress}
+        onLayout={jest.fn()}
+        snapshot={snapshot({ grid: null })}
+        width={20}
+      />
+    )
+
+    expect(screen.getByTestId('editor-canvas-frame').props.accessibilityState).toEqual({
+      disabled: true
+    })
+    fireEvent.press(screen.getByTestId('editor-canvas-frame'), {
+      nativeEvent: { locationX: 1, locationY: 1 }
+    })
+    expect(onCellPress).not.toHaveBeenCalled()
   })
 
   it('does not rebuild for cursor, mode, or flush-only snapshots and disposes replacements', () => {

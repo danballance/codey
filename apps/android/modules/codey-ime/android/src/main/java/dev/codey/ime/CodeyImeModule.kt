@@ -26,6 +26,10 @@ class CodeyImeModule : Module() {
         view.sendOrderedInput(keys)
       }
 
+      AsyncFunction("settleComposition") { view: CodeyImeView ->
+        view.settleComposition()
+      }
+
       OnViewDestroys { view: CodeyImeView ->
         view.blurKeyboard()
       }

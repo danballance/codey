@@ -29,11 +29,15 @@ jest.mock('../editor/EditorCanvas', () => {
   return {
     EditorCanvas: ({
       onLayout,
+      onCellPress,
       performanceSamples
     }: {
       onLayout: unknown
+      onCellPress?: (position: { readonly row: number; readonly column: number }) => void
       performanceSamples: readonly unknown[]
     }) => React.createElement(View, {
+      accessibilityLabel: 'Neovim editor',
+      onCellPress,
       onLayout,
       performanceSamples,
       testID: 'mock-editor-canvas'
@@ -47,6 +51,7 @@ jest.mock('../native/CodeyIme', () => {
   const focus = jest.fn(async () => undefined)
   const blur = jest.fn(async () => undefined)
   const sendOrderedInput = jest.fn()
+  const settleComposition = jest.fn()
   let orderedPrefix: unknown[] = []
   let sequence = 1
   return {
@@ -74,6 +79,19 @@ jest.mock('../native/CodeyIme', () => {
               compositionDrained: prefix.length > 0,
               segments: [...prefix, { type: 'input', keys }]
             })
+          },
+          settleComposition: async () => {
+            settleComposition()
+            const prefix = orderedPrefix
+            orderedPrefix = []
+            props.onOrderedInput({
+              sequence: sequence++,
+              receivedAtUptimeMs: 10,
+              nativeDurationMs: 0.1,
+              connectionGeneration: 1,
+              compositionDrained: prefix.length > 0,
+              segments: prefix
+            })
           }
         }))
         return React.createElement(View, {
@@ -87,6 +105,7 @@ jest.mock('../native/CodeyIme', () => {
     __focus: focus,
     __blur: blur,
     __sendOrderedInput: sendOrderedInput,
+    __settleComposition: settleComposition,
     __setOrderedPrefix: (segments: unknown[]) => {
       orderedPrefix = segments
     }
@@ -114,6 +133,7 @@ function connectionDouble(connectError?: Error): ConnectionDouble {
     }),
     attach: jest.fn(async (_width: number, _height: number): Promise<void> => undefined),
     input: jest.fn(async (_keys: string): Promise<void> => undefined),
+    inputMouse: jest.fn(async (): Promise<void> => undefined),
     resize: jest.fn(async (_width: number, _height: number): Promise<void> => undefined),
     onRedraw: jest.fn((listener: (batch: RedrawBatch) => void) => {
       redrawListener = listener
@@ -150,11 +170,13 @@ beforeEach(() => {
     __focus: jest.Mock
     __blur: jest.Mock
     __sendOrderedInput: jest.Mock
+    __settleComposition: jest.Mock
     __setOrderedPrefix: (segments: unknown[]) => void
   }
   nativeIme.__focus.mockClear()
   nativeIme.__blur.mockClear()
   nativeIme.__sendOrderedInput.mockClear()
+  nativeIme.__settleComposition.mockClear()
   nativeIme.__setOrderedPrefix([])
 })
 
@@ -224,7 +246,7 @@ describe('tablet client shell', () => {
       expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(4)
       expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
     })
-    expect(StyleSheet.flatten(screen.getByLabelText('Neovim editor').props.style).minHeight).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('editor-frame').props.style).minHeight).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-1').props.style).height).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-2').props.style).height).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-1').props.style).height).toBe(48)
@@ -245,7 +267,7 @@ describe('tablet client shell', () => {
 
     await waitFor(() => {
       expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(4)
-      expect(StyleSheet.flatten(screen.getByLabelText('Neovim editor').props.style).minHeight).toBe(48)
+      expect(StyleSheet.flatten(screen.getByTestId('editor-frame').props.style).minHeight).toBe(48)
       expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).padding).toBe(8)
     })
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow-scroll').props.contentContainerStyle).gap).toBe(6)
@@ -363,7 +385,7 @@ describe('tablet client shell', () => {
     })
     await waitFor(() => expect(screen.getByText('INSERT')).toBeTruthy())
 
-    fireEvent.press(screen.getByLabelText('Neovim editor'))
+    fireEvent.press(screen.getByTestId('action-pad-keyboard'))
     const nativeIme = jest.requireMock('../native/CodeyIme') as { __focus: jest.Mock }
     expect(nativeIme.__focus).toHaveBeenCalledTimes(1)
 
@@ -400,6 +422,48 @@ describe('tablet client shell', () => {
       expect(actionIme.__sendOrderedInput).toHaveBeenLastCalledWith('<Tab>')
       expect(double.session.input).toHaveBeenNthCalledWith(4, '<Tab>')
     })
+  })
+
+  it('settles composition before a tap click without focusing the IME', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} />
+    )
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+
+    const nativeIme = jest.requireMock('../native/CodeyIme') as {
+      __focus: jest.Mock
+      __settleComposition: jest.Mock
+      __setOrderedPrefix: (segments: unknown[]) => void
+    }
+    nativeIme.__setOrderedPrefix([{ type: 'text', text: 'ready' }])
+    fireEvent(screen.getByTestId('mock-editor-canvas'), 'cellPress', {
+      row: 3,
+      column: 5
+    })
+
+    await waitFor(() => {
+      expect(nativeIme.__settleComposition).toHaveBeenCalledTimes(1)
+      expect(double.session.input).toHaveBeenCalledWith('ready')
+      expect(double.session.inputMouse).toHaveBeenCalledWith({
+        button: 'left',
+        action: 'press',
+        modifier: '',
+        gridId: 0,
+        row: 3,
+        column: 5
+      })
+    })
+    expect(jest.mocked(double.session.input).mock.invocationCallOrder[0]!).toBeLessThan(
+      jest.mocked(double.session.inputMouse).mock.invocationCallOrder[0]!
+    )
+    expect(nativeIme.__focus).not.toHaveBeenCalled()
+
+    fireEvent.press(screen.getByTestId('action-pad-keyboard'))
+    expect(nativeIme.__focus).toHaveBeenCalledTimes(1)
+    expect(double.session.inputMouse).toHaveBeenCalledTimes(1)
   })
 
   it('orders composition before a Ctrl action and enters the controller exactly once', async () => {

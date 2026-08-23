@@ -26,7 +26,9 @@ a Neovim session. Portrait and square windows place the action pad below the
 terminal, with leading and trailing button groups anchored left and right.
 Landscape moves those groups to the top and bottom of a two-column right-hand
 rail so the terminal gains vertical space. The primary design target remains a
-12–14-inch tablet.
+12–14-inch tablet. A completed editor tap is forwarded through Neovim's native
+mouse API to position the cursor; the separate Keyboard action opens the Android
+software keyboard.
 
 ## Development environment
 

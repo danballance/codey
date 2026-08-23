@@ -20,6 +20,7 @@ function actionPadProps(overrides: Partial<ActionPadProps> = {}): ActionPadProps
     onKeyPress: jest.fn(),
     onRawInput: jest.fn(),
     onToggleControl: jest.fn(),
+    onKeyboardPress: jest.fn(),
     ...overrides
   }
 }
@@ -131,7 +132,8 @@ describe('ActionPad', () => {
       'action-pad-up',
       'action-pad-right',
       'action-pad-leader',
-      'action-pad-command'
+      'action-pad-command',
+      'action-pad-keyboard'
     ])
   })
 
@@ -237,6 +239,18 @@ describe('ActionPad', () => {
       disabled: false,
       selected: true
     })
+  })
+
+  it('opens the software keyboard without dispatching Neovim input', () => {
+    const props = actionPadProps()
+    const screen = render(<ActionPad {...props} />)
+
+    fireEvent.press(screen.getByTestId('action-pad-keyboard'))
+
+    expect(props.onKeyboardPress).toHaveBeenCalledTimes(1)
+    expect(props.onKeyPress).not.toHaveBeenCalled()
+    expect(props.onRawInput).not.toHaveBeenCalled()
+    expect(props.onToggleControl).not.toHaveBeenCalled()
   })
 
   it('sends a dual button tap as one native key press', () => {

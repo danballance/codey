@@ -13,6 +13,7 @@ export {
   type ActionGroups,
   type ActionMenu,
   type DualActionButton,
+  type KeyboardActionButton,
   type MenuActionButton,
   type ModifierActionButton,
   type NativeKeyActionButton,

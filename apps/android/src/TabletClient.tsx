@@ -24,7 +24,7 @@ import { TabletClientController } from './controller'
 import { EditorCanvas } from './editor/EditorCanvas'
 import { endpointStore } from './endpoint-store'
 import { DEFAULT_ENDPOINT, validateEndpoint } from './endpoint'
-import { gridSizeForBounds } from './grid'
+import { gridSizeForBounds, type GridCellPosition } from './grid'
 import {
   committedTextToNvimInput,
   specialKeyToNvimInput
@@ -54,11 +54,19 @@ interface ScreenMeasurement {
 }
 
 interface PendingActionInput {
+  readonly kind: 'action'
   readonly startedAtMs: number
   readonly inputLength: number
   readonly firstKeyAfterFocus: boolean
   readonly sample?: PerformanceInputSample
 }
+
+interface PendingMouseInput {
+  readonly kind: 'mouse'
+  readonly position: GridCellPosition
+}
+
+type PendingOrderedInput = PendingActionInput | PendingMouseInput
 
 interface NativeInputTiming {
   readonly deliveredAtMs?: number
@@ -82,7 +90,9 @@ export function TabletClient({ capability }: TabletClientProps) {
     orientation: capability.orientation
   })
   const imeRef = useRef<CodeyImeHandle>(null)
-  const pendingActionInputs = useRef<PendingActionInput[]>([])
+  const pendingOrderedInputs = useRef<PendingOrderedInput[]>([])
+  const orderedDispatchTail = useRef<Promise<void>>(Promise.resolve())
+  const orderedDispatchEpoch = useRef(0)
   const firstKeyAfterFocus = useRef(false)
 
   useEffect(() => {
@@ -138,12 +148,10 @@ export function TabletClient({ capability }: TabletClientProps) {
   }, [client.phase, controller, host, port])
 
   const submitControllerInput = useCallback(
-    (keys: string, tags: PerformanceTags) => {
-      if (keys.length === 0) return
+    (keys: string, tags: PerformanceTags): Promise<void> => {
+      if (keys.length === 0) return Promise.resolve()
       recordPerformance('controller_input_entry', { durationMs: 0, tags })
-      withPerformanceTags(tags, () => {
-        void controller.input(keys)
-      })
+      return withPerformanceTags(tags, () => controller.input(keys))
     },
     [controller]
   )
@@ -168,7 +176,7 @@ export function TabletClient({ capability }: TabletClientProps) {
       })
       recordNativeToJsDelivery(metadata?.receivedAtUptimeMs, tags, timing.deliveredAtMs)
       const keys = committedTextToNvimInput(text)
-      submitControllerInput(keys, tags)
+      void submitControllerInput(keys, tags)
     },
     [submitControllerInput]
   )
@@ -201,44 +209,65 @@ export function TabletClient({ capability }: TabletClientProps) {
         }
       })
       if (keys === null) return
-      submitControllerInput(keys, tags)
+      void submitControllerInput(keys, tags)
     },
     [submitControllerInput]
   )
 
   const submitOrderedInput = useCallback(
     (event: CodeyImeOrderedInputEvent) => {
-      const pending = pendingActionInputs.current.shift()
+      const pending = pendingOrderedInputs.current.shift()
+      const actionPending = pending?.kind === 'action' ? pending : undefined
       const keys = orderedBatchToNvimInput(event)
       const tags: PerformanceTags = {
-        ...pending?.sample,
-        source: 'action-pad',
+        ...actionPending?.sample,
+        source: pending?.kind === 'mouse' ? 'ime' : 'action-pad',
         inputLength: keys.length,
         connectionGeneration: event.connectionGeneration,
         sequence: event.sequence,
         segmentCount: event.segments.length,
-        firstKeyAfterFocus: pending?.firstKeyAfterFocus ?? false
+        firstKeyAfterFocus: actionPending?.firstKeyAfterFocus ?? false
       }
       recordPerformance('native_ime_ordered_dispatch', {
         durationMs: event.nativeDurationMs,
         tags
       })
-      if (pending !== undefined) {
+      if (actionPending !== undefined) {
         recordPerformance('action_pad_to_native_event_delivery', {
-          startedAtMs: pending.startedAtMs,
-          tags: { ...tags, inputLength: pending.inputLength }
+          startedAtMs: actionPending.startedAtMs,
+          tags: { ...tags, inputLength: actionPending.inputLength }
         })
       }
       recordNativeToJsDelivery(event.receivedAtUptimeMs, tags)
-      submitControllerInput(keys, tags)
+      const dispatchEpoch = orderedDispatchEpoch.current
+      const dispatch = orderedDispatchTail.current.then(async () => {
+        if (dispatchEpoch !== orderedDispatchEpoch.current) return
+        await submitControllerInput(keys, tags)
+        if (
+          pending?.kind === 'mouse' &&
+          dispatchEpoch === orderedDispatchEpoch.current &&
+          controller.getState().phase === 'connected'
+        ) {
+          await controller.inputMouse({
+            button: 'left',
+            action: 'press',
+            modifier: '',
+            gridId: 0,
+            row: pending.position.row,
+            column: pending.position.column
+          })
+        }
+      })
+      orderedDispatchTail.current = dispatch.catch(() => undefined)
     },
-    [submitControllerInput]
+    [controller, submitControllerInput]
   )
 
   const sendOrderedActionInput = useCallback((keys: string) => {
     if (keys.length === 0) return
     const startedAtMs = performanceNow()
     const pending = {
+      kind: 'action' as const,
       startedAtMs,
       inputLength: keys.length,
       firstKeyAfterFocus: consumeFirstKeyAfterFocus(firstKeyAfterFocus),
@@ -246,7 +275,7 @@ export function TabletClient({ capability }: TabletClientProps) {
         ? createPerformanceInputSample(startedAtMs)
         : undefined
     }
-    pendingActionInputs.current.push(pending)
+    pendingOrderedInputs.current.push(pending)
     recordPerformance('input_receipt', {
       durationMs: 0,
       tags: {
@@ -257,8 +286,17 @@ export function TabletClient({ capability }: TabletClientProps) {
       }
     })
     void imeRef.current?.sendOrderedInput(keys).catch(() => {
-      const index = pendingActionInputs.current.indexOf(pending)
-      if (index >= 0) pendingActionInputs.current.splice(index, 1)
+      const index = pendingOrderedInputs.current.indexOf(pending)
+      if (index >= 0) pendingOrderedInputs.current.splice(index, 1)
+    })
+  }, [])
+
+  const submitEditorCellPress = useCallback((position: GridCellPosition) => {
+    const pending: PendingMouseInput = { kind: 'mouse', position }
+    pendingOrderedInputs.current.push(pending)
+    void imeRef.current?.settleComposition().catch(() => {
+      const index = pendingOrderedInputs.current.indexOf(pending)
+      if (index >= 0) pendingOrderedInputs.current.splice(index, 1)
     })
   }, [])
 
@@ -291,7 +329,7 @@ export function TabletClient({ capability }: TabletClientProps) {
     setControl(next)
   }, [])
 
-  const focusEditorIme = useCallback(() => {
+  const focusKeyboardIme = useCallback(() => {
     firstKeyAfterFocus.current = true
     void imeRef.current?.focus().catch(() => undefined)
   }, [])
@@ -306,8 +344,10 @@ export function TabletClient({ capability }: TabletClientProps) {
   const mode = client.snapshot?.mode.name.toUpperCase() || '—'
 
   useEffect(() => {
+    orderedDispatchEpoch.current += 1
+    orderedDispatchTail.current = Promise.resolve()
     if (!connected) {
-      pendingActionInputs.current = []
+      pendingOrderedInputs.current = []
       firstKeyAfterFocus.current = false
       controlRef.current = false
       setControl(false)
@@ -381,14 +421,13 @@ export function TabletClient({ capability }: TabletClientProps) {
         ]}
         testID="tablet-client-workspace"
       >
-        <Pressable
-          accessibilityLabel="Neovim editor"
-          disabled={!connected}
-          onPress={focusEditorIme}
+        <View
           style={[styles.editorFrame, compactControls && styles.keyboardCompactEditor]}
+          testID="editor-frame"
         >
           <EditorCanvas
             height={canvasBounds.height}
+            onCellPress={connected ? submitEditorCellPress : undefined}
             onLayout={onEditorLayout}
             performanceSamples={client.performanceSamples}
             snapshot={client.snapshot}
@@ -414,7 +453,7 @@ export function TabletClient({ capability }: TabletClientProps) {
             onOrderedInput={submitOrderedInput}
             style={styles.imeTarget}
           />
-        </Pressable>
+        </View>
 
         <View
           style={[
@@ -430,6 +469,7 @@ export function TabletClient({ capability }: TabletClientProps) {
             enabled={connected}
             mode={mode}
             onKeyPress={submitKeyRow}
+            onKeyboardPress={focusKeyboardIme}
             onRawInput={submitActionInput}
             onToggleControl={toggleControl}
             placement={landscape ? 'right' : 'below'}

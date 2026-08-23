@@ -202,6 +202,35 @@ class ImeInputProcessorTest {
   }
 
   @Test
+  fun `composition settlement returns pending text without appending input`() {
+    val events = mutableListOf<ImeSignal>()
+    val processor = ImeInputProcessor(events::add)
+
+    assertTrue(processor.setComposingText("ready", newCursorPosition = 1))
+    val batch = processor.settleComposition()
+    assertTrue(processor.finishComposingText())
+
+    assertEquals(
+      ImeOrderedBatch(
+        segments = listOf(ImeOrderedSegment.Text("ready")),
+        drainedComposition = true
+      ),
+      batch
+    )
+    assertTrue(events.isEmpty())
+  }
+
+  @Test
+  fun `composition settlement emits an empty synchronization batch when idle`() {
+    val processor = ImeInputProcessor { error("unexpected event: $it") }
+
+    assertEquals(
+      ImeOrderedBatch(segments = emptyList(), drainedComposition = false),
+      processor.settleComposition()
+    )
+  }
+
+  @Test
   fun `ordered input preserves structured controls inside composed multiline text`() {
     val processor = ImeInputProcessor { error("ordered input must not emit separate events: $it") }
 

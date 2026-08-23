@@ -24,6 +24,7 @@ function connectionDouble() {
     connect: jest.fn(async () => undefined),
     attach: jest.fn(async (_width: number, _height: number) => undefined),
     input: jest.fn(async (_keys: string) => undefined),
+    inputMouse: jest.fn(async () => undefined),
     resize: jest.fn(async (_width: number, _height: number): Promise<void> => undefined),
     onRedraw: jest.fn((listener: (batch: RedrawBatch) => void) => {
       redrawListener = listener
@@ -123,6 +124,50 @@ describe('TabletClientController', () => {
     expect(double.session.input).toHaveBeenCalledWith('ihello<Esc>')
     expect(double.session.resize).toHaveBeenCalledWith(110, 35)
     expect(controller.getState().phase).toBe('connected')
+  })
+
+  it('forwards mouse input only to the ready connection', async () => {
+    const double = connectionDouble()
+    const controller = new TabletClientController(() => double)
+    const mouse = {
+      button: 'left',
+      action: 'press',
+      modifier: '',
+      gridId: 0,
+      row: 3,
+      column: 5
+    }
+
+    await controller.inputMouse(mouse)
+    expect(double.session.inputMouse).not.toHaveBeenCalled()
+
+    await controller.connect(endpoint)
+    await controller.inputMouse(mouse)
+    expect(double.session.inputMouse).toHaveBeenCalledWith(mouse)
+
+    await controller.disconnect()
+    await controller.inputMouse(mouse)
+    expect(double.session.inputMouse).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails the current connection when mouse RPC input fails', async () => {
+    const double = connectionDouble()
+    double.session.inputMouse.mockRejectedValueOnce(new Error('mouse rejected'))
+    const controller = new TabletClientController(() => double)
+    await controller.connect(endpoint)
+
+    await controller.inputMouse({
+      button: 'left',
+      action: 'press',
+      row: 0,
+      column: 0
+    })
+
+    expect(double.session.close).toHaveBeenCalledTimes(1)
+    expect(controller.getState()).toMatchObject({
+      phase: 'error',
+      message: 'mouse rejected'
+    })
   })
 
   it('publishes a renderer snapshot only after a redraw flush', async () => {

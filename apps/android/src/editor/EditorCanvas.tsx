@@ -1,5 +1,10 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, View, type LayoutChangeEvent } from 'react-native'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  Pressable,
+  StyleSheet,
+  type GestureResponderEvent,
+  type LayoutChangeEvent
+} from 'react-native'
 import {
   Canvas,
   Picture,
@@ -16,7 +21,11 @@ import type {
 } from '@codey/editor-core'
 
 import type { PublishedPerformanceSample } from '../controller'
-import { EDITOR_CELL_METRICS } from '../grid'
+import {
+  EDITOR_CELL_METRICS,
+  gridCellForPoint,
+  type GridCellPosition
+} from '../grid'
 import {
   performanceDiagnosticsEnabled,
   performanceNow,
@@ -36,6 +45,7 @@ interface EditorCanvasProps {
   readonly width: number
   readonly height: number
   readonly onLayout: (event: LayoutChangeEvent) => void
+  readonly onCellPress?: (position: GridCellPosition) => void
 }
 
 const FONT_SIZE = 16
@@ -47,7 +57,8 @@ export const EditorCanvas = memo(function EditorCanvas({
   performanceSamples = EMPTY_PERFORMANCE_SAMPLES,
   width,
   height,
-  onLayout
+  onLayout,
+  onCellPress
 }: EditorCanvasProps) {
   const diagnosticsEnabled = performanceDiagnosticsEnabled()
   const renderStartedAtMs = diagnosticsEnabled ? performanceNow() : undefined
@@ -60,6 +71,18 @@ export const EditorCanvas = memo(function EditorCanvas({
   const pictureHeight = sanitizedPictureDimension(height)
   const visible = visibleGridSize(grid, pictureWidth, pictureHeight)
   const flushCount = snapshot?.flushCount
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      if (grid === null || onCellPress === undefined) return
+      const position = gridCellForPoint(
+        event.nativeEvent.locationX,
+        event.nativeEvent.locationY,
+        grid
+      )
+      if (position !== null) onCellPress(position)
+    },
+    [grid, onCellPress]
+  )
 
   const { picture, isCurrent: pictureIsCurrent } = useCommittedGridPicture({
     grid,
@@ -138,9 +161,18 @@ export const EditorCanvas = memo(function EditorCanvas({
   })
 
   return (
-    <View onLayout={onLayout} style={styles.frame} testID="editor-canvas-frame">
+    <Pressable
+      accessibilityLabel="Neovim editor"
+      accessibilityRole="button"
+      accessibilityState={{ disabled: grid === null || onCellPress === undefined }}
+      disabled={grid === null || onCellPress === undefined}
+      onLayout={onLayout}
+      onPress={handlePress}
+      style={styles.frame}
+      testID="editor-canvas-frame"
+    >
       <Canvas style={StyleSheet.absoluteFill}>{canvasChildren}</Canvas>
-    </View>
+    </Pressable>
   )
 })
 

@@ -326,6 +326,7 @@ export const ACTION_PAD_MENU = {
       },
       { id: "leader", label: "Leader", type: "menu", menu: LEADER_MENU },
       { id: "command", label: "Cmd", type: "menu", menu: COMMAND_MENU },
+      { id: "keyboard", label: "Keyboard", type: "keyboard" },
     ],
   },
 } as const satisfies ActionMenu;

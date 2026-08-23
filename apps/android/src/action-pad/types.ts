@@ -38,12 +38,17 @@ export interface DualActionButton extends ActionButtonBase {
   readonly menu: ActionMenu
 }
 
+export interface KeyboardActionButton extends ActionButtonBase {
+  readonly type: 'keyboard'
+}
+
 export type ActionButton =
   | ModifierActionButton
   | NativeKeyActionButton
   | NvimInputActionButton
   | MenuActionButton
   | DualActionButton
+  | KeyboardActionButton
 
 export interface ActionGroups {
   readonly leading: readonly ActionButton[]

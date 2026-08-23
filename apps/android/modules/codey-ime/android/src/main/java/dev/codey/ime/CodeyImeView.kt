@@ -158,29 +158,42 @@ internal class CodeyImeView(
     val receivedAtUptimeMs = imeUptimeMillis()
     inputDispatcher.run {
       inputConnections.serialized {
-        val connectionGeneration = inputConnections.current()
         val batch = processor.orderedInput(keys) ?: return@serialized
-        if (batch.drainedComposition) inputConnections.invalidate()
-        val sequence = nextEventSequence.getAndIncrement()
-        val nativeDurationMs =
-          (imeUptimeMillis() - receivedAtUptimeMs).coerceAtLeast(0.0)
-
-        onOrderedInput(
-          mapOf(
-            "sequence" to sequence.toDouble(),
-            "receivedAtUptimeMs" to receivedAtUptimeMs,
-            "nativeDurationMs" to nativeDurationMs,
-            "connectionGeneration" to connectionGeneration.toDouble(),
-            "compositionDrained" to batch.drainedComposition,
-            "segments" to batch.segments.map(::orderedSegmentPayload)
-          )
-        )
-        if (batch.drainedComposition && hasFocus()) {
-          // Invalidation, event delivery, and restart are one main-thread
-          // transaction, so another native input path cannot split the batch.
-          inputMethodManager().restartInput(this)
-        }
+        emitOrderedBatch(receivedAtUptimeMs, batch)
       }
+    }
+  }
+
+  fun settleComposition() {
+    val receivedAtUptimeMs = imeUptimeMillis()
+    inputDispatcher.run {
+      inputConnections.serialized {
+        emitOrderedBatch(receivedAtUptimeMs, processor.settleComposition())
+      }
+    }
+  }
+
+  private fun emitOrderedBatch(receivedAtUptimeMs: Double, batch: ImeOrderedBatch) {
+    val connectionGeneration = inputConnections.current()
+    if (batch.drainedComposition) inputConnections.invalidate()
+    val sequence = nextEventSequence.getAndIncrement()
+    val nativeDurationMs =
+      (imeUptimeMillis() - receivedAtUptimeMs).coerceAtLeast(0.0)
+
+    onOrderedInput(
+      mapOf(
+        "sequence" to sequence.toDouble(),
+        "receivedAtUptimeMs" to receivedAtUptimeMs,
+        "nativeDurationMs" to nativeDurationMs,
+        "connectionGeneration" to connectionGeneration.toDouble(),
+        "compositionDrained" to batch.drainedComposition,
+        "segments" to batch.segments.map(::orderedSegmentPayload)
+      )
+    )
+    if (batch.drainedComposition && hasFocus()) {
+      // Invalidation, event delivery, and restart are one main-thread
+      // transaction, so another native input path cannot split the batch.
+      inputMethodManager().restartInput(this)
     }
   }
 

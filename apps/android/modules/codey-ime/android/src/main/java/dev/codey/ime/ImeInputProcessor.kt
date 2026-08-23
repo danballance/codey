@@ -108,6 +108,13 @@ internal class ImeInputProcessor(
   fun orderedInput(keys: String): ImeOrderedBatch? {
     if (keys.isEmpty()) return null
 
+    return orderedBatch(keys)
+  }
+
+  @Synchronized
+  fun settleComposition(): ImeOrderedBatch = orderedBatch(null)
+
+  private fun orderedBatch(keys: String?): ImeOrderedBatch {
     val composition = composingText
     val segments = mutableListOf<ImeOrderedSegment>()
     if (composition != null) {
@@ -123,7 +130,7 @@ internal class ImeInputProcessor(
         }
       }
     }
-    segments += ImeOrderedSegment.Input(keys)
+    if (keys != null) segments += ImeOrderedSegment.Input(keys)
     return ImeOrderedBatch(segments, drainedComposition = composition != null)
   }
 

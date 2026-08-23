@@ -29,6 +29,7 @@ export interface CodeyImeHandle {
   focus(): Promise<void>
   blur(): Promise<void>
   sendOrderedInput(keys: string): Promise<void>
+  settleComposition(): Promise<void>
 }
 
 export type CodeyImeOrderedSegment =
@@ -50,6 +51,7 @@ interface CodeyImeNativeRef {
   focusIme(): Promise<void>
   blurIme(): Promise<void>
   sendOrderedInput(keys: string): Promise<void>
+  settleComposition(): Promise<void>
 }
 
 interface NativeCodeyImeProps {
@@ -84,7 +86,8 @@ export const CodeyIme = forwardRef<CodeyImeHandle, CodeyImeProps>(function Codey
     () => ({
       focus: async () => nativeRef.current?.focusIme(),
       blur: async () => nativeRef.current?.blurIme(),
-      sendOrderedInput: async (keys) => nativeRef.current?.sendOrderedInput(keys)
+      sendOrderedInput: async (keys) => nativeRef.current?.sendOrderedInput(keys),
+      settleComposition: async () => nativeRef.current?.settleComposition()
     }),
     []
   )

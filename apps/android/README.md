@@ -73,6 +73,28 @@ changes need only a TypeScript reload or rebuild.
 Native-key actions accept the canonical Android/DOM-style names exported by
 `src/input.ts` (for example `Escape`, `ArrowUp`, and `F1`); startup validation
 rejects aliases such as `Esc` before a button can silently dispatch nothing.
+The root menu also includes a local Keyboard action. Unlike configured Neovim
+input actions, it focuses the Android IME without sending editor input or
+consuming one-shot Ctrl.
+
+## Touch cursor and software keyboard
+
+A completed single-finger tap on a visible editor cell is translated to a
+zero-based `nvim_input_mouse` left-button press. The client passes grid `0`, so
+Neovim resolves splits, status lines, and other screen regions from the rendered
+screen coordinates. Active Android composition is committed before the mouse
+event, preserving input order.
+
+Editor taps only target the Neovim screen: they do not open, refocus, close, or
+hide the software keyboard. Use the root action pad's Keyboard button to start
+software-keyboard input. If the keyboard is already open, it remains open while
+tapping elsewhere in the editor.
+
+Neovim remains authoritative. Codey does not change the `'mouse'` option or
+bypass mouse mappings, so a configuration that disables mouse input in the
+current mode intentionally disables tap-to-position as well. The current slice
+supports completed taps only; drag selection, multi-tap, long-press/right-click,
+wheel scrolling, stylus buttons, and multi-touch gestures are not implemented.
 
 ## IME compatibility mode
 

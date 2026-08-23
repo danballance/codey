@@ -8,6 +8,16 @@ export interface CellMetrics {
   readonly height: number
 }
 
+export interface GridDimensions {
+  readonly width: number
+  readonly height: number
+}
+
+export interface GridCellPosition {
+  readonly row: number
+  readonly column: number
+}
+
 export const EDITOR_CELL_METRICS: CellMetrics = Object.freeze({
   width: 10,
   height: 22
@@ -35,6 +45,35 @@ export function gridSizeForBounds(
     columns: Math.min(MAX_GRID_DIMENSION, Math.max(2, Math.floor(width / metrics.width))),
     rows: Math.min(MAX_GRID_DIMENSION, Math.max(2, Math.floor(height / metrics.height)))
   }
+}
+
+export function gridCellForPoint(
+  x: number,
+  y: number,
+  grid: GridDimensions,
+  metrics: CellMetrics = EDITOR_CELL_METRICS
+): GridCellPosition | null {
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    x < 0 ||
+    y < 0 ||
+    !Number.isSafeInteger(grid.width) ||
+    !Number.isSafeInteger(grid.height) ||
+    grid.width <= 0 ||
+    grid.height <= 0 ||
+    !Number.isFinite(metrics.width) ||
+    !Number.isFinite(metrics.height) ||
+    metrics.width <= 0 ||
+    metrics.height <= 0
+  ) {
+    return null
+  }
+
+  const column = Math.floor(x / metrics.width)
+  const row = Math.floor(y / metrics.height)
+  if (column >= grid.width || row >= grid.height) return null
+  return { row, column }
 }
 
 export function sameGridSize(left: GridSize, right: GridSize): boolean {

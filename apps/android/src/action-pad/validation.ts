@@ -90,6 +90,8 @@ function validateButton(value: unknown, path: string): ActionButton {
       requireNativeKey(button.key, `${path}.key`)
       requireRecord(button.menu, `${path}.menu`)
       return button as unknown as ActionButton
+    case 'keyboard':
+      return button as unknown as ActionButton
     default:
       throw new Error(`${path}.type is not a supported action type`)
   }

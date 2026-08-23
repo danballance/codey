@@ -1,5 +1,5 @@
 import { validateEndpoint } from '../endpoint'
-import { gridSizeForBounds } from '../grid'
+import { gridCellForPoint, gridSizeForBounds } from '../grid'
 import {
   committedTextToNvimInput,
   escapeNvimText,
@@ -30,6 +30,20 @@ describe('grid sizing', () => {
       columns: 2,
       rows: 2
     })
+  })
+
+  it('maps touch points to cells and rejects invalid or trailing coordinates', () => {
+    const grid = { width: 3, height: 2 }
+    expect(gridCellForPoint(0, 0, grid)).toEqual({ row: 0, column: 0 })
+    expect(gridCellForPoint(9.999, 21.999, grid)).toEqual({ row: 0, column: 0 })
+    expect(gridCellForPoint(10, 22, grid)).toEqual({ row: 1, column: 1 })
+    expect(gridCellForPoint(29.999, 43.999, grid)).toEqual({ row: 1, column: 2 })
+    expect(gridCellForPoint(30, 0, grid)).toBeNull()
+    expect(gridCellForPoint(0, 44, grid)).toBeNull()
+    expect(gridCellForPoint(-1, 0, grid)).toBeNull()
+    expect(gridCellForPoint(Number.NaN, 0, grid)).toBeNull()
+    expect(gridCellForPoint(0, 0, { width: 0, height: 2 })).toBeNull()
+    expect(gridCellForPoint(0, 0, grid, { width: 0, height: 22 })).toBeNull()
   })
 })
 

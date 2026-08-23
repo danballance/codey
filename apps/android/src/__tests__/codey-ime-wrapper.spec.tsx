@@ -14,19 +14,21 @@ jest.mock('expo', () => {
   const focusIme = jest.fn(async () => undefined)
   const blurIme = jest.fn(async () => undefined)
   const sendOrderedInput = jest.fn(async () => undefined)
+  const settleComposition = jest.fn(async () => undefined)
   const NativeIme = React.forwardRef(
     (props: Record<string, unknown>, ref: unknown) => {
       React.useImperativeHandle(ref, () => ({
         focusIme,
         blurIme,
-        sendOrderedInput
+        sendOrderedInput,
+        settleComposition
       }))
       return React.createElement(View, { ...props, testID: 'native-ime-view' })
     }
   )
   return {
     requireNativeView: jest.fn(() => NativeIme),
-    __imeNativeCalls: { focusIme, blurIme, sendOrderedInput }
+    __imeNativeCalls: { focusIme, blurIme, sendOrderedInput, settleComposition }
   }
 })
 
@@ -48,6 +50,7 @@ it('bridges the public IME handle to the exact private Expo view command names',
       focusIme: jest.Mock
       blurIme: jest.Mock
       sendOrderedInput: jest.Mock
+      settleComposition: jest.Mock
     }
   }).__imeNativeCalls
   const key: CodeyImeKeyEvent = {
@@ -63,11 +66,13 @@ it('bridges the public IME handle to the exact private Expo view command names',
     await ref.current?.focus()
     await ref.current?.blur()
     await ref.current?.sendOrderedInput('<Space>sg')
+    await ref.current?.settleComposition()
   })
 
   expect(nativeCalls.focusIme).toHaveBeenCalledTimes(1)
   expect(nativeCalls.blurIme).toHaveBeenCalledTimes(1)
   expect(nativeCalls.sendOrderedInput).toHaveBeenCalledWith('<Space>sg')
+  expect(nativeCalls.settleComposition).toHaveBeenCalledTimes(1)
   expect(screen.getByTestId('native-ime-view').props.inputMode).toBe('terminal')
 
   fireEvent(screen.getByTestId('native-ime-view'), 'committedText', {

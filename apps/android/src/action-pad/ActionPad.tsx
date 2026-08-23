@@ -23,6 +23,7 @@ export interface ActionPadProps {
   readonly onKeyPress: (key: string) => void
   readonly onRawInput: (input: string) => void
   readonly onToggleControl: () => void
+  readonly onKeyboardPress: () => void
 }
 
 export const ActionPad = memo(function ActionPad({
@@ -36,7 +37,8 @@ export const ActionPad = memo(function ActionPad({
   controlActive,
   onKeyPress,
   onRawInput,
-  onToggleControl
+  onToggleControl,
+  onKeyboardPress
 }: ActionPadProps) {
   const placedRight = placement === 'right'
   const validatedRoot = useMemo(() => {
@@ -89,9 +91,20 @@ export const ActionPad = memo(function ActionPad({
         case 'dual':
           onKeyPress(action.key)
           applyAfterInput()
+          return
+        case 'keyboard':
+          onKeyboardPress()
       }
     },
-    [applyAfterInput, enabled, onKeyPress, onRawInput, onToggleControl, openMenu]
+    [
+      applyAfterInput,
+      enabled,
+      onKeyboardPress,
+      onKeyPress,
+      onRawInput,
+      onToggleControl,
+      openMenu
+    ]
   )
 
   const goBack = useCallback(() => {
