@@ -159,7 +159,7 @@ beforeEach(() => {
 })
 
 describe('tablet client shell', () => {
-  it('keeps portrait and square workspaces stacked while using a flowing landscape rail', () => {
+  it('keeps portrait and square workspaces stacked while grouping the landscape rail', () => {
     const portrait = render(
       <TabletClient capability={tabletCapability(800, 1_280)} />
     )
@@ -192,7 +192,11 @@ describe('tablet client shell', () => {
       borderTopWidth: 0,
       borderLeftWidth: 2
     })
-    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-flow').props.style)).toMatchObject({
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-flow-scroll').props.contentContainerStyle)).toMatchObject({
+      flexGrow: 1,
+      justifyContent: 'space-between'
+    })
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-leading-group').props.style)).toMatchObject({
       flexDirection: 'row',
       flexWrap: 'wrap',
       rowGap: 12
@@ -221,8 +225,10 @@ describe('tablet client shell', () => {
       expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
     })
     expect(StyleSheet.flatten(screen.getByLabelText('Neovim editor').props.style).minHeight).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-2').props.style).height).toBe(48)
   })
 
   it('applies keyboard compaction to the landscape shell while retaining rail controls', async () => {
@@ -242,7 +248,8 @@ describe('tablet client shell', () => {
       expect(StyleSheet.flatten(screen.getByLabelText('Neovim editor').props.style).minHeight).toBe(48)
       expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).padding).toBe(8)
     })
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow').props.style).rowGap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow-scroll').props.contentContainerStyle).gap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-group').props.style).rowGap).toBe(6)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       width: '48%',
       height: 48

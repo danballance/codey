@@ -112,21 +112,24 @@ software-keyboard text.
 
 ### Contextual action pad
 
-The Android command area is a two-row, app-local action tree. Its bundled,
-type-checked configuration describes native keys, complete trusted `nvim_input`
-sequences, submenus, one-shot Ctrl, and the Up/Down buttons whose tap action is a
-single movement while a long press opens navigation choices. Branch traversal is
-local: Neovim receives nothing until a configured action is chosen, which makes
-Back a purely local operation. Navigation menus can remain open for repeated
-movement; one-shot command menus return to the root after dispatch.
+The Android command area is a two-group, app-local action tree. Its named
+`leading` and `trailing` groups describe native keys, complete trusted
+`nvim_input` sequences, submenus, one-shot Ctrl, and the Up/Down buttons whose
+tap action is a single movement while a long press opens navigation choices.
+Branch traversal is local: Neovim receives nothing until a configured action is
+chosen, which makes Back a purely local operation. Navigation menus can remain
+open for repeated movement; one-shot command menus return to the root after
+dispatch.
 
 Below the editor, the action pad normally follows the Figma 213dp treatment.
 When the software keyboard removes at least 120dp of usable height, it compacts
 to 144dp while retaining two 48dp touch rows and yields the remaining space to
 the editor. To the editor's right, it uses a `336dp` rail at full workspace
-height. The rail flattens the two configured rows in order into a scrollable,
-two-column flex flow with the normal 52dp portrait treatment; keyboard
-compaction reduces those controls to 48dp without changing their order.
+height. Below the editor, each group flows across two rows and the groups anchor
+to the left and right. In the right rail, each group flows across two columns;
+the leading group anchors to the top and the trailing group to the bottom of a
+shared vertical scroll area. Keyboard compaction reduces controls from 52dp to
+48dp without changing their group membership or order.
 
 The current Neovim mode and menu breadcrumb are projections in the action pad,
 not a second Neovim state machine. Hardware-key input remains independent of the

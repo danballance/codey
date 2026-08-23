@@ -1,7 +1,6 @@
 import type { NvimSpecialKeyName } from '../input'
 
-export const ACTION_PAD_ROW_COUNT = 2
-export const MAX_ACTIONS_PER_ROW = 6
+export const MAX_ACTIONS_PER_GROUP = 6
 export const MAX_NVIM_INPUT_LENGTH = 16_384
 export const ACTION_PAD_LONG_PRESS_MS = 450
 
@@ -46,14 +45,14 @@ export type ActionButton =
   | MenuActionButton
   | DualActionButton
 
-export type ActionRows = readonly [
-  readonly ActionButton[],
-  readonly ActionButton[]
-]
+export interface ActionGroups {
+  readonly leading: readonly ActionButton[]
+  readonly trailing: readonly ActionButton[]
+}
 
 export interface ActionMenu {
   readonly id: string
   readonly label: string
   readonly afterInput: ActionAfterInput
-  readonly rows: ActionRows
+  readonly groups: ActionGroups
 }

@@ -131,86 +131,180 @@ export const ActionPad = memo(function ActionPad({
 
       {placedRight ? (
         <ScrollView
+          contentContainerStyle={[
+            styles.verticalGroups,
+            compact && styles.compactVerticalGroups
+          ]}
           showsVerticalScrollIndicator={false}
           style={styles.flowScroll}
           testID="action-pad-flow-scroll"
         >
-          <View
-            style={[styles.flow, compact && styles.compactFlow]}
-            testID="action-pad-flow"
-          >
-            {currentMenu.rows.flat().map((action) => (
-              <ActionButtonView
-                key={action.id}
-                action={action}
-                compact={compact}
-                controlActive={controlActive}
-                enabled={enabled}
-                flow
-                onOpenMenu={openMenu}
-                onPress={pressAction}
-              />
-            ))}
-            {menuStack.length > 1 ? (
-              <BackButtonView
-                compact={compact}
-                enabled={enabled}
-                flow
-                onPress={goBack}
-              />
-            ) : null}
-          </View>
+          <ActionGroupView
+            actions={currentMenu.groups.leading}
+            compact={compact}
+            controlActive={controlActive}
+            enabled={enabled}
+            name="leading"
+            onBack={goBack}
+            onOpenMenu={openMenu}
+            onPress={pressAction}
+            placedRight
+            showBack={false}
+          />
+          <ActionGroupView
+            actions={currentMenu.groups.trailing}
+            compact={compact}
+            controlActive={controlActive}
+            enabled={enabled}
+            name="trailing"
+            onBack={goBack}
+            onOpenMenu={openMenu}
+            onPress={pressAction}
+            placedRight
+            showBack={menuStack.length > 1}
+          />
         </ScrollView>
       ) : (
-        <View style={[styles.rows, compact && styles.compactRows]}>
-          {currentMenu.rows.map((row, rowIndex) => (
-            <View
-              key={`${currentMenu.id}-row-${rowIndex}`}
-              style={[styles.row, compact && styles.compactRow]}
-              testID={`action-pad-row-${rowIndex + 1}`}
-            >
-              {row.map((action) => (
-                <ActionButtonView
-                  key={action.id}
-                  action={action}
-                  compact={compact}
-                  controlActive={controlActive}
-                  enabled={enabled}
-                  flow={false}
-                  onOpenMenu={openMenu}
-                  onPress={pressAction}
-                />
-              ))}
-              {rowIndex === 1 && menuStack.length > 1 ? (
-                <BackButtonView
-                  compact={compact}
-                  enabled={enabled}
-                  flow={false}
-                  onPress={goBack}
-                />
-              ) : null}
-            </View>
-          ))}
+        <View
+          style={[styles.horizontalGroups, compact && styles.compactHorizontalGroups]}
+          testID="action-pad-groups"
+        >
+          <ActionGroupView
+            actions={currentMenu.groups.leading}
+            compact={compact}
+            controlActive={controlActive}
+            enabled={enabled}
+            name="leading"
+            onBack={goBack}
+            onOpenMenu={openMenu}
+            onPress={pressAction}
+            placedRight={false}
+            showBack={false}
+          />
+          <ActionGroupView
+            actions={currentMenu.groups.trailing}
+            compact={compact}
+            controlActive={controlActive}
+            enabled={enabled}
+            name="trailing"
+            onBack={goBack}
+            onOpenMenu={openMenu}
+            onPress={pressAction}
+            placedRight={false}
+            showBack={menuStack.length > 1}
+          />
         </View>
       )}
     </View>
   )
 })
 
-function ActionButtonView({
-  action,
+type ActionGroupName = keyof ActionMenu['groups']
+
+type ActionGroupItem =
+  | { readonly kind: 'action'; readonly action: ActionButton }
+  | { readonly kind: 'back' }
+
+function ActionGroupView({
+  actions,
   compact,
   controlActive,
   enabled,
-  flow,
+  name,
+  onBack,
+  onOpenMenu,
+  onPress,
+  placedRight,
+  showBack
+}: {
+  readonly actions: readonly ActionButton[]
+  readonly compact: boolean
+  readonly controlActive: boolean
+  readonly enabled: boolean
+  readonly name: ActionGroupName
+  readonly onBack: () => void
+  readonly onOpenMenu: (menu: ActionMenu) => void
+  readonly onPress: (action: ActionButton) => void
+  readonly placedRight: boolean
+  readonly showBack: boolean
+}) {
+  const items: readonly ActionGroupItem[] = showBack
+    ? [...actions.map((action) => ({ kind: 'action' as const, action })), { kind: 'back' }]
+    : actions.map((action) => ({ kind: 'action' as const, action }))
+
+  const renderItem = (item: ActionGroupItem) => item.kind === 'action' ? (
+    <ActionButtonView
+      key={item.action.id}
+      action={item.action}
+      column={placedRight}
+      compact={compact}
+      controlActive={controlActive}
+      enabled={enabled}
+      onOpenMenu={onOpenMenu}
+      onPress={onPress}
+    />
+  ) : (
+    <BackButtonView
+      key="back"
+      column={placedRight}
+      compact={compact}
+      enabled={enabled}
+      onPress={onBack}
+    />
+  )
+
+  if (placedRight) {
+    return (
+      <View
+        style={[styles.columnGroup, compact && styles.compactColumnGroup]}
+        testID={`action-pad-${name}-group`}
+      >
+        {items.map(renderItem)}
+      </View>
+    )
+  }
+
+  const columnCount = Math.max(1, Math.ceil(items.length / 2))
+  const rows = [items.slice(0, columnCount), items.slice(columnCount)]
+
+  return (
+    <View
+      style={[styles.rowGroup, compact && styles.compactRowGroup]}
+      testID={`action-pad-${name}-group`}
+    >
+      {rows.map((row, rowIndex) => (
+        <View
+          key={`${name}-row-${rowIndex}`}
+          style={[styles.groupRow, compact && styles.compactGroupRow]}
+          testID={`action-pad-${name}-row-${rowIndex + 1}`}
+        >
+          {row.map(renderItem)}
+          {Array.from({ length: columnCount - row.length }, (_, spacerIndex) => (
+            <View
+              key={`${name}-row-${rowIndex}-spacer-${spacerIndex}`}
+              style={styles.buttonSpacer}
+            />
+          ))}
+        </View>
+      ))}
+    </View>
+  )
+}
+
+function ActionButtonView({
+  action,
+  column,
+  compact,
+  controlActive,
+  enabled,
   onOpenMenu,
   onPress
 }: {
   readonly action: ActionButton
+  readonly column: boolean
   readonly compact: boolean
   readonly controlActive: boolean
   readonly enabled: boolean
-  readonly flow: boolean
   readonly onOpenMenu: (menu: ActionMenu) => void
   readonly onPress: (action: ActionButton) => void
 }) {
@@ -247,7 +341,7 @@ function ActionButtonView({
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
-        flow && styles.flowButton,
+        column && styles.columnButton,
         modifierActive && styles.activeButton,
         !enabled && styles.disabled,
         pressed && enabled && styles.pressed
@@ -269,14 +363,14 @@ function ActionButtonView({
 }
 
 function BackButtonView({
+  column,
   compact,
   enabled,
-  flow,
   onPress
 }: {
+  readonly column: boolean
   readonly compact: boolean
   readonly enabled: boolean
-  readonly flow: boolean
   readonly onPress: () => void
 }) {
   return (
@@ -288,7 +382,7 @@ function BackButtonView({
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
-        flow && styles.flowButton,
+        column && styles.columnButton,
         styles.backButton,
         !enabled && styles.disabled,
         pressed && enabled && styles.pressed
@@ -334,7 +428,16 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0
   },
-  flow: {
+  verticalGroups: {
+    flexGrow: 1,
+    width: '100%',
+    justifyContent: 'space-between',
+    gap: 12
+  },
+  compactVerticalGroups: {
+    gap: 6
+  },
+  columnGroup: {
     width: '100%',
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -342,7 +445,7 @@ const styles = StyleSheet.create({
     alignContent: 'flex-start',
     rowGap: 12
   },
-  compactFlow: {
+  compactColumnGroup: {
     rowGap: 6
   },
   header: {
@@ -393,21 +496,36 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
     fontSize: 12
   },
-  rows: {
+  horizontalGroups: {
+    height: 116,
+    flexDirection: 'row',
     gap: 12
   },
-  compactRows: {
+  compactHorizontalGroups: {
+    height: 102,
     gap: 6
   },
-  row: {
+  rowGroup: {
+    minWidth: 0,
+    flex: 1,
+    gap: 12
+  },
+  compactRowGroup: {
+    gap: 6
+  },
+  groupRow: {
     height: 52,
     flexDirection: 'row',
     alignItems: 'stretch',
     gap: 12
   },
-  compactRow: {
+  compactGroupRow: {
     height: 48,
     gap: 6
+  },
+  buttonSpacer: {
+    minWidth: 48,
+    flex: 1
   },
   button: {
     minWidth: 48,
@@ -426,7 +544,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     borderRadius: 8
   },
-  flowButton: {
+  columnButton: {
     width: '48%',
     flex: 0
   },

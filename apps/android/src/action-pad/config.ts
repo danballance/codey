@@ -5,8 +5,8 @@ const UP_NAVIGATION_MENU = {
   id: "up-navigation",
   label: "Up Arrow – Navigation",
   afterInput: "stay",
-  rows: [
-    [
+  groups: {
+    leading: [
       { id: "top", label: "gg Top", type: "input", nvimInput: "gg" },
       { id: "block-up", label: "Block Up", type: "input", nvimInput: "{" },
       {
@@ -21,14 +21,14 @@ const UP_NAVIGATION_MENU = {
         type: "input",
         nvimInput: "10k",
       },
+    ],
+    trailing: [
       {
         id: "screen-top",
         label: "H Screen Top",
         type: "input",
         nvimInput: "H",
       },
-    ],
-    [
       {
         id: "half-page-up",
         label: "Half Page Up",
@@ -42,15 +42,15 @@ const UP_NAVIGATION_MENU = {
         nvimInput: "<C-b>",
       },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 const DOWN_NAVIGATION_MENU = {
   id: "down-navigation",
   label: "Down Arrow – Navigation",
   afterInput: "stay",
-  rows: [
-    [
+  groups: {
+    leading: [
       { id: "bottom", label: "G Bottom", type: "input", nvimInput: "G" },
       { id: "block-down", label: "Block Down", type: "input", nvimInput: "}" },
       {
@@ -65,14 +65,14 @@ const DOWN_NAVIGATION_MENU = {
         type: "input",
         nvimInput: "10j",
       },
+    ],
+    trailing: [
       {
         id: "screen-bottom",
         label: "L Screen Bot",
         type: "input",
         nvimInput: "L",
       },
-    ],
-    [
       {
         id: "half-page-down",
         label: "Half Page Down",
@@ -86,15 +86,15 @@ const DOWN_NAVIGATION_MENU = {
         nvimInput: "<C-f>",
       },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 const SEARCH_MENU = {
   id: "search",
   label: "Search",
   afterInput: "root",
-  rows: [
-    [
+  groups: {
+    leading: [
       {
         id: "grep",
         label: "Grep (Live)",
@@ -114,14 +114,14 @@ const SEARCH_MENU = {
         nvimInput: "<Space>/",
       },
       { id: "symbols", label: "Symbol", type: "input", nvimInput: "gO" },
+    ],
+    trailing: [
       {
         id: "recent",
         label: "Recent Files",
         type: "input",
         nvimInput: "<Space>s.",
       },
-    ],
-    [
       { id: "replace", label: "Replace", type: "input", nvimInput: ":%s/" },
       {
         id: "word",
@@ -136,22 +136,22 @@ const SEARCH_MENU = {
         nvimInput: "<Space>sd",
       },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 const WINDOW_MENU = {
   id: "window",
   label: "Window",
   afterInput: "root",
-  rows: [
-    [
+  groups: {
+    leading: [
       { id: "left", label: "← Left", type: "input", nvimInput: "<C-w>h" },
       { id: "down", label: "↓ Down", type: "input", nvimInput: "<C-w>j" },
       { id: "up", label: "↑ Up", type: "input", nvimInput: "<C-w>k" },
       { id: "right", label: "→ Right", type: "input", nvimInput: "<C-w>l" },
       { id: "split", label: "Split", type: "input", nvimInput: "<C-w>s" },
     ],
-    [
+    trailing: [
       {
         id: "vertical-split",
         label: "V Split",
@@ -162,15 +162,15 @@ const WINDOW_MENU = {
       { id: "only", label: "Only", type: "input", nvimInput: "<C-w>o" },
       { id: "next", label: "Next", type: "input", nvimInput: "<C-w>w" },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 const CODE_MENU = {
   id: "code",
   label: "Code",
   afterInput: "root",
-  rows: [
-    [
+  groups: {
+    leading: [
       {
         id: "definition",
         label: "Definition",
@@ -192,7 +192,7 @@ const CODE_MENU = {
       { id: "type-definition", label: "Type", type: "input", nvimInput: "grt" },
       { id: "hover", label: "Hover", type: "input", nvimInput: "K" },
     ],
-    [
+    trailing: [
       {
         id: "code-action",
         label: "Code Action",
@@ -208,15 +208,15 @@ const CODE_MENU = {
         nvimInput: "<C-w>d",
       },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 const LEADER_MENU = {
   id: "leader",
   label: "Leader",
   afterInput: "root",
-  rows: [
-    [
+  groups: {
+    leading: [
       { id: "search", label: "Search", type: "menu", menu: SEARCH_MENU },
       { id: "files", label: "Files", type: "input", nvimInput: "<Space>sf" },
       {
@@ -228,7 +228,7 @@ const LEADER_MENU = {
       { id: "window", label: "Window", type: "menu", menu: WINDOW_MENU },
       { id: "code", label: "Code", type: "menu", menu: CODE_MENU },
     ],
-    [
+    trailing: [
       {
         id: "project-tree",
         label: "Project Tree",
@@ -244,15 +244,15 @@ const LEADER_MENU = {
       },
       { id: "help", label: "Help", type: "input", nvimInput: "<Space>sh" },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 const COMMAND_MENU = {
   id: "command",
   label: "Cmd",
   afterInput: "root",
-  rows: [
-    [
+  groups: {
+    leading: [
       { id: "save", label: "Save", type: "input", nvimInput: ":w<CR>" },
       {
         id: "save-all",
@@ -267,33 +267,31 @@ const COMMAND_MENU = {
         type: "input",
         nvimInput: ":q!<CR>",
       },
+    ],
+    trailing: [
       {
         id: "write-quit",
         label: "Write and Quit",
         type: "input",
         nvimInput: ":wq<CR>",
       },
-    ],
-    [
       { id: "undo", label: "Undo", type: "input", nvimInput: "u" },
       { id: "redo", label: "Redo", type: "input", nvimInput: "<C-r>" },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 export const ACTION_PAD_MENU = {
   id: "root",
   label: "Home",
   afterInput: "root",
-  rows: [
-    [
+  groups: {
+    leading: [
       { id: "ctrl", label: "Ctrl", type: "modifier", modifier: "ctrl" },
       { id: "escape", label: "Esc", type: "key", key: "Escape" },
       { id: "tab", label: "Tab", type: "key", key: "Tab" },
       { id: "enter", label: "Enter", type: "key", key: "Enter" },
       { id: "backspace", label: "Backspace", type: "key", key: "Backspace" },
-    ],
-    [
       {
         id: "left",
         label: "←",
@@ -301,6 +299,8 @@ export const ACTION_PAD_MENU = {
         type: "key",
         key: "ArrowLeft",
       },
+    ],
+    trailing: [
       {
         id: "down",
         label: "↓",
@@ -327,7 +327,7 @@ export const ACTION_PAD_MENU = {
       { id: "leader", label: "Leader", type: "menu", menu: LEADER_MENU },
       { id: "command", label: "Cmd", type: "menu", menu: COMMAND_MENU },
     ],
-  ],
+  },
 } as const satisfies ActionMenu;
 
 validateActionMenu(ACTION_PAD_MENU);

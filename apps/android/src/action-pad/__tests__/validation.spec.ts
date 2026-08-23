@@ -10,15 +10,19 @@ function validMenu(): ActionMenu {
     id: 'root',
     label: 'Home',
     afterInput: 'root',
-    rows: [
-      [{ id: 'escape', label: 'Esc', type: 'key', key: 'Escape' }],
-      [{ id: 'save', label: 'Save', type: 'input', nvimInput: ':w<CR>' }]
-    ]
+    groups: {
+      leading: [{ id: 'escape', label: 'Esc', type: 'key', key: 'Escape' }],
+      trailing: [{ id: 'save', label: 'Save', type: 'input', nvimInput: ':w<CR>' }]
+    }
   }
 }
 
+function menuActions(menu: ActionMenu) {
+  return [...menu.groups.leading, ...menu.groups.trailing]
+}
+
 describe('validateActionMenu', () => {
-  it('accepts a valid typed two-row tree', () => {
+  it('accepts a valid typed leading/trailing tree', () => {
     expect(() => validateActionMenu(validMenu())).not.toThrow()
   })
 
@@ -27,32 +31,32 @@ describe('validateActionMenu', () => {
     ['menu label', { ...validMenu(), label: '' }, /root\.label must be a non-empty string/],
     [
       'action id',
-      { ...validMenu(), rows: [[{ id: '', label: 'Esc', type: 'key', key: 'Escape' }], []] },
+      { ...validMenu(), groups: { leading: [{ id: '', label: 'Esc', type: 'key', key: 'Escape' }], trailing: [] } },
       /\.id must be a non-empty string/
     ],
     [
       'action label',
-      { ...validMenu(), rows: [[{ id: 'escape', label: ' ', type: 'key', key: 'Escape' }], []] },
+      { ...validMenu(), groups: { leading: [{ id: 'escape', label: ' ', type: 'key', key: 'Escape' }], trailing: [] } },
       /\.label must be a non-empty string/
     ],
     [
       'native key input',
-      { ...validMenu(), rows: [[{ id: 'escape', label: 'Esc', type: 'key', key: '' }], []] },
+      { ...validMenu(), groups: { leading: [{ id: 'escape', label: 'Esc', type: 'key', key: '' }], trailing: [] } },
       /\.key must be a non-empty string/
     ],
     [
       'unsupported native key name',
-      { ...validMenu(), rows: [[{ id: 'escape', label: 'Esc', type: 'key', key: 'Esc' }], []] },
+      { ...validMenu(), groups: { leading: [{ id: 'escape', label: 'Esc', type: 'key', key: 'Esc' }], trailing: [] } },
       /\.key must be a supported native key name/
     ],
     [
       'raw Neovim input',
-      { ...validMenu(), rows: [[{ id: 'save', label: 'Save', type: 'input', nvimInput: '' }], []] },
+      { ...validMenu(), groups: { leading: [{ id: 'save', label: 'Save', type: 'input', nvimInput: '' }], trailing: [] } },
       /\.nvimInput must be a non-empty string/
     ],
     [
       'action type',
-      { ...validMenu(), rows: [[{ id: 'bad', label: 'Bad', type: 'unknown' }], []] },
+      { ...validMenu(), groups: { leading: [{ id: 'bad', label: 'Bad', type: 'unknown' }], trailing: [] } },
       /type is not a supported action type/
     ]
   ])('rejects an invalid %s', (_name, menu, message) => {
@@ -60,14 +64,13 @@ describe('validateActionMenu', () => {
   })
 
   it('uses the active built-in Neovim mappings for code actions', () => {
-    const leader = ACTION_PAD_MENU.rows.flat().find((action) => action.id === 'leader')
+    const leader = menuActions(ACTION_PAD_MENU).find((action) => action.id === 'leader')
     if (leader?.type !== 'menu') throw new Error('Leader menu is missing')
-    const code = leader.menu.rows.flat().find((action) => action.id === 'code')
+    const code = menuActions(leader.menu).find((action) => action.id === 'code')
     if (code?.type !== 'menu') throw new Error('Code menu is missing')
 
     const inputs = Object.fromEntries(
-      code.menu.rows
-        .flat()
+      menuActions(code.menu)
         .filter((action) => action.type === 'input')
         .map((action) => [action.id, action.nvimInput])
     )
@@ -78,10 +81,15 @@ describe('validateActionMenu', () => {
     })
   })
 
-  it('requires exactly two rows and at most six configured actions in each root row', () => {
-    expect(() => validateActionMenu({ ...validMenu(), rows: [[]] })).toThrow(
-      /must contain exactly 2 rows/
+  it('requires leading and trailing arrays with at most six configured actions each', () => {
+    expect(() => validateActionMenu({ ...validMenu(), groups: { leading: [] } })).toThrow(
+      /groups must contain exactly "leading" and "trailing"/
     )
+
+    expect(() => validateActionMenu({
+      ...validMenu(),
+      groups: { ...validMenu().groups, extra: [] }
+    })).toThrow(/groups must contain exactly "leading" and "trailing"/)
 
     const sevenActions = Array.from({ length: 7 }, (_, index) => ({
       id: `action-${index}`,
@@ -89,41 +97,44 @@ describe('validateActionMenu', () => {
       type: 'input',
       nvimInput: 'x'
     }))
-    expect(() => validateActionMenu({ ...validMenu(), rows: [sevenActions, []] })).toThrow(
+    expect(() => validateActionMenu({ ...validMenu(), groups: { leading: sevenActions, trailing: [] } })).toThrow(
       /at most 6 actions/
     )
   })
 
-  it('reserves the sixth slot in a nested second row for generated Back', () => {
+  it('reserves the sixth trailing slot in a nested menu for generated Back', () => {
     const child = {
       id: 'child',
       label: 'Child',
       afterInput: 'stay',
-      rows: [
-        [],
-        Array.from({ length: 6 }, (_, index) => ({
+      groups: {
+        leading: [],
+        trailing: Array.from({ length: 6 }, (_, index) => ({
           id: `child-${index}`,
           label: `Child ${index}`,
           type: 'input',
           nvimInput: 'x'
         }))
-      ]
+      }
     }
     const root = {
       ...validMenu(),
-      rows: [[{ id: 'open-child', label: 'Child', type: 'menu', menu: child }], []]
+      groups: {
+        leading: [{ id: 'open-child', label: 'Child', type: 'menu', menu: child }],
+        trailing: []
+      }
     }
 
     expect(() => validateActionMenu(root)).toThrow(/at most 5 actions \(one slot is reserved for Back\)/)
   })
 
-  it('rejects duplicate sibling IDs even when they are in different rows', () => {
+  it('rejects duplicate sibling IDs even when they are in different groups', () => {
     const duplicate = {
       ...validMenu(),
-      rows: [
-        [{ id: 'same', label: 'First', type: 'input', nvimInput: 'a' }],
-        [{ id: 'same', label: 'Second', type: 'input', nvimInput: 'b' }]
-      ]
+      groups: {
+        leading: [{ id: 'same', label: 'First', type: 'input', nvimInput: 'a' }],
+        trailing: [{ id: 'same', label: 'Second', type: 'input', nvimInput: 'b' }]
+      }
     }
 
     expect(() => validateActionMenu(duplicate)).toThrow(/duplicate action id "same"/)
@@ -132,11 +143,11 @@ describe('validateActionMenu', () => {
   it('enforces the 16,384-character Neovim input limit', () => {
     const atLimit = {
       ...validMenu(),
-      rows: [[{ id: 'input', label: 'Input', type: 'input', nvimInput: 'x'.repeat(MAX_NVIM_INPUT_LENGTH) }], []]
+      groups: { leading: [{ id: 'input', label: 'Input', type: 'input', nvimInput: 'x'.repeat(MAX_NVIM_INPUT_LENGTH) }], trailing: [] }
     }
     const overLimit = {
       ...validMenu(),
-      rows: [[{ id: 'input', label: 'Input', type: 'input', nvimInput: 'x'.repeat(MAX_NVIM_INPUT_LENGTH + 1) }], []]
+      groups: { leading: [{ id: 'input', label: 'Input', type: 'input', nvimInput: 'x'.repeat(MAX_NVIM_INPUT_LENGTH + 1) }], trailing: [] }
     }
 
     expect(() => validateActionMenu(atLimit)).not.toThrow()

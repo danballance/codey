@@ -32,18 +32,18 @@ reflows the existing editor session instead of reconstructing it.
 
 In portrait and square windows, the command area remains below the editor. In
 landscape, the editor uses the available vertical space while the action pad
-moves into a fixed `336dp` rail to its right. In that rail, the configured
-actions flatten into an ordered, scrollable two-column flow with portrait-sized
-buttons. The full-width connection toolbar stays above both. The same action
-pad remains mounted across rotations, so its active menu and input state survive
-the layout change.
+moves into a fixed `336dp` rail to its right. The full-width connection toolbar
+stays above both. The same action pad remains mounted across rotations, so its
+active menu and input state survive the layout change.
 
-The action tree is configured as two ordered button rows. Portrait and square
-windows render those rows directly; landscape preserves their order while
-letting the buttons wrap through the rail. The root menu keeps common native
-keys available and links to groups such as navigation, Leader, Search, and Cmd.
-Entering a group replaces the visible buttons with that group's next choices,
-adds a generated Back button as the final flowing action, and shows the current
+The action tree is configured as named `leading` and `trailing` button groups.
+In portrait and square windows, each group flows across two rows; the leading
+group anchors left and the trailing group right. In landscape, each group flows
+across two columns; the leading group anchors to the top and the trailing group
+to the bottom of a shared vertical scroll area. The root menu keeps common
+native keys available and links to menus such as navigation, Leader, Search,
+and Cmd. Entering a menu replaces the visible buttons with that menu's choices,
+adds a generated Back button as the final trailing action, and shows the current
 path as a breadcrumb. Disconnecting resets the pad and disables its controls.
 
 Up and Down are dual-purpose controls: tap to send one arrow key, or hold for
@@ -55,7 +55,7 @@ composition has been committed.
 
 When the software keyboard reduces the window height by at least `120dp`, the
 pad switches to its compact treatment while preserving `48dp` touch targets.
-The landscape flow remains vertically scrollable when the keyboard leaves too
+The landscape groups remain vertically scrollable when the keyboard leaves too
 little height for every action. The editor and toolbar also relax their minimum
 heights so the 800 × 600dp condensed tablet layout does not overflow.
 
@@ -63,12 +63,12 @@ The bundled action tree is a typed TypeScript configuration in
 `src/action-pad/config.ts`. `src/action-pad/index.ts` exports the `ActionPad`,
 the configured root menu, the validator, and the public menu/button types. The
 model covers native special keys, one-shot Ctrl, submenu branches, trusted raw
-Neovim input sequences, dual tap/hold controls, explicit two-row layouts, and
-the per-menu `afterInput` policy (`root` or `stay`). Keep configured sequences
-in the application bundle: they are trusted code and are passed directly to
-Neovim's input API, so the app does not load action trees from the network or
-accept untrusted user-authored sequences. Ordinary configuration changes need
-only a TypeScript reload or rebuild.
+Neovim input sequences, dual tap/hold controls, explicit leading/trailing
+groups, and the per-menu `afterInput` policy (`root` or `stay`). Keep configured
+sequences in the application bundle: they are trusted code and are passed
+directly to Neovim's input API, so the app does not load action trees from the
+network or accept untrusted user-authored sequences. Ordinary configuration
+changes need only a TypeScript reload or rebuild.
 
 Native-key actions accept the canonical Android/DOM-style names exported by
 `src/input.ts` (for example `Escape`, `ArrowUp`, and `F1`); startup validation

@@ -1,5 +1,5 @@
 import { StyleSheet } from 'react-native'
-import { cleanup, fireEvent, render } from '@testing-library/react-native'
+import { cleanup, fireEvent, render, within } from '@testing-library/react-native'
 
 import {
   ACTION_PAD_LONG_PRESS_MS,
@@ -34,25 +34,60 @@ describe('ActionPad', () => {
     expect(panelStyle.minHeight).toBe(213)
     expect(panelStyle.borderTopWidth).toBe(2)
     expect(panelStyle.width).toBeUndefined()
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-1').props.style)).toMatchObject({
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-groups').props.style)).toMatchObject({
+      height: 116,
+      flexDirection: 'row'
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-1').props.style)).toMatchObject({
       height: 52,
       flexDirection: 'row'
     })
+    expect(screen.getByTestId('action-pad-leading-group')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-trailing-group')).toBeTruthy()
   })
 
-  it('keeps two 48dp touch rows in its keyboard-compact layout', () => {
+  it('keeps two 48dp touch rows in each group in its keyboard-compact layout', () => {
     const screen = render(<ActionPad {...actionPadProps({ compact: true })} />)
 
     expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-groups').props.style).height).toBe(102)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-2').props.style).height).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       minWidth: 48,
       height: 48
     })
   })
 
-  it('uses a roomy scrollable two-column flow for right placement', () => {
+  it('keeps configured group membership while changing the group grid by placement', () => {
+    const portrait = render(<ActionPad {...actionPadProps()} />)
+
+    expect(within(portrait.getByTestId('action-pad-leading-row-1')).getByTestId(
+      'action-pad-ctrl'
+    )).toBeTruthy()
+    expect(within(portrait.getByTestId('action-pad-leading-row-2')).getByTestId(
+      'action-pad-left'
+    )).toBeTruthy()
+    expect(within(portrait.getByTestId('action-pad-trailing-row-1')).getByTestId(
+      'action-pad-down'
+    )).toBeTruthy()
+    expect(within(portrait.getByTestId('action-pad-trailing-row-2')).getByTestId(
+      'action-pad-command'
+    )).toBeTruthy()
+    portrait.unmount()
+
+    const landscape = render(<ActionPad {...actionPadProps({ placement: 'right' })} />)
+    expect(within(landscape.getByTestId('action-pad-leading-group')).getByTestId(
+      'action-pad-ctrl'
+    )).toBeTruthy()
+    expect(within(landscape.getByTestId('action-pad-trailing-group')).getByTestId(
+      'action-pad-command'
+    )).toBeTruthy()
+  })
+
+  it('uses scrollable top/bottom groups with two columns for right placement', () => {
     const screen = render(
       <ActionPad {...actionPadProps({ placement: 'right' })} />
     )
@@ -63,9 +98,13 @@ describe('ActionPad', () => {
       borderTopWidth: 0,
       borderLeftWidth: 2
     })
-    expect(screen.getByTestId('action-pad-flow-scroll')).toBeTruthy()
-    expect(screen.queryByTestId('action-pad-row-1')).toBeNull()
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow').props.style)).toMatchObject({
+    const scroll = screen.getByTestId('action-pad-flow-scroll')
+    expect(StyleSheet.flatten(scroll.props.contentContainerStyle)).toMatchObject({
+      flexGrow: 1,
+      justifyContent: 'space-between'
+    })
+    expect(screen.queryByTestId('action-pad-leading-row-1')).toBeNull()
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-group').props.style)).toMatchObject({
       width: '100%',
       flexDirection: 'row',
       flexWrap: 'wrap',
@@ -73,6 +112,7 @@ describe('ActionPad', () => {
       alignContent: 'flex-start',
       rowGap: 12
     })
+    expect(screen.getByTestId('action-pad-trailing-group')).toBeTruthy()
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       minWidth: 48,
       width: '48%',
@@ -101,7 +141,8 @@ describe('ActionPad', () => {
     )
 
     expect(screen.getByTestId('action-pad-flow-scroll')).toBeTruthy()
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow').props.style).rowGap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow-scroll').props.contentContainerStyle).gap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-group').props.style).rowGap).toBe(6)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       minWidth: 48,
       width: '48%',
@@ -111,7 +152,7 @@ describe('ActionPad', () => {
     })
   })
 
-  it('places generated Back after the final flowing submenu action', () => {
+  it('places generated Back after the final trailing submenu action', () => {
     const screen = render(
       <ActionPad {...actionPadProps({ placement: 'right' })} />
     )
@@ -141,6 +182,9 @@ describe('ActionPad', () => {
     expect(screen.getByLabelText('Current action path: Leader')).toBeTruthy()
     expect(screen.queryByTestId('action-pad-ctrl')).toBeNull()
     expect(screen.getByTestId('action-pad-back')).toBeTruthy()
+    expect(within(screen.getByTestId('action-pad-trailing-row-2')).getByTestId(
+      'action-pad-back'
+    )).toBeTruthy()
 
     fireEvent.press(screen.getByTestId('action-pad-search'))
     expect(screen.getByLabelText('Current action path: Leader / Search')).toBeTruthy()
@@ -238,24 +282,24 @@ describe('ActionPad', () => {
   })
 
   it('does not rebuild its button tree when redraw-facing props are unchanged', () => {
-    let rowReads = 0
+    let groupReads = 0
     const rootMenu = {
       id: ACTION_PAD_MENU.id,
       label: ACTION_PAD_MENU.label,
       afterInput: ACTION_PAD_MENU.afterInput,
-      get rows() {
-        rowReads += 1
-        return ACTION_PAD_MENU.rows
+      get groups() {
+        groupReads += 1
+        return ACTION_PAD_MENU.groups
       }
     } satisfies ActionMenu
     const props = actionPadProps({ rootMenu })
     const screen = render(<ActionPad {...props} />)
-    const readsAfterMount = rowReads
+    const readsAfterMount = groupReads
 
     screen.rerender(<ActionPad {...props} />)
-    expect(rowReads).toBe(readsAfterMount)
+    expect(groupReads).toBe(readsAfterMount)
 
     screen.rerender(<ActionPad {...props} mode="INSERT" />)
-    expect(rowReads).toBeGreaterThan(readsAfterMount)
+    expect(groupReads).toBeGreaterThan(readsAfterMount)
   })
 })

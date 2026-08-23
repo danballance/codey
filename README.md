@@ -23,9 +23,10 @@ The Android path uses a Skia renderer, an Android IME view, and a local Expo
 Kotlin TCP module. Phones remain installable, but a window whose shortest side
 is below `600dp` only shows the unsupported-device explanation and cannot open
 a Neovim session. Portrait and square windows place the action pad below the
-terminal; landscape flows portrait-sized controls through a two-column
-right-hand rail so the terminal gains vertical space. The primary design target
-remains a 12–14-inch tablet.
+terminal, with leading and trailing button groups anchored left and right.
+Landscape moves those groups to the top and bottom of a two-column right-hand
+rail so the terminal gains vertical space. The primary design target remains a
+12–14-inch tablet.
 
 ## Development environment
 

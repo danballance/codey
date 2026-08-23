@@ -1,7 +1,6 @@
 import { isNvimSpecialKeyName } from '../input'
 import {
-  ACTION_PAD_ROW_COUNT,
-  MAX_ACTIONS_PER_ROW,
+  MAX_ACTIONS_PER_GROUP,
   MAX_NVIM_INPUT_LENGTH,
   type ActionButton,
   type ActionMenu
@@ -23,8 +22,14 @@ function validateMenu(
   if (menu.afterInput !== 'root' && menu.afterInput !== 'stay') {
     throw new Error(`${path}.afterInput must be "root" or "stay"`)
   }
-  if (!Array.isArray(menu.rows) || menu.rows.length !== ACTION_PAD_ROW_COUNT) {
-    throw new Error(`${path}.rows must contain exactly ${ACTION_PAD_ROW_COUNT} rows`)
+  const groups = requireRecord(menu.groups, `${path}.groups`)
+  const groupNames = Object.keys(groups)
+  if (
+    groupNames.length !== 2 ||
+    !groupNames.includes('leading') ||
+    !groupNames.includes('trailing')
+  ) {
+    throw new Error(`${path}.groups must contain exactly "leading" and "trailing"`)
   }
   if (ancestors.has(value)) throw new Error(`${path} contains a cyclic menu reference`)
 
@@ -32,16 +37,23 @@ function validateMenu(
   nextAncestors.add(value)
   const siblingIds = new Set<string>()
 
-  menu.rows.forEach((rowValue, rowIndex) => {
-    if (!Array.isArray(rowValue)) throw new Error(`${path}.rows[${rowIndex}] must be an array`)
-    const rowLimit = nested && rowIndex === 1 ? MAX_ACTIONS_PER_ROW - 1 : MAX_ACTIONS_PER_ROW
-    if (rowValue.length > rowLimit) {
-      const reason = nested && rowIndex === 1 ? ' (one slot is reserved for Back)' : ''
-      throw new Error(`${path}.rows[${rowIndex}] may contain at most ${rowLimit} actions${reason}`)
+  for (const groupName of ['leading', 'trailing'] as const) {
+    const groupValue = groups[groupName]
+    if (!Array.isArray(groupValue)) {
+      throw new Error(`${path}.groups.${groupName} must be an array`)
+    }
+    const groupLimit = nested && groupName === 'trailing'
+      ? MAX_ACTIONS_PER_GROUP - 1
+      : MAX_ACTIONS_PER_GROUP
+    if (groupValue.length > groupLimit) {
+      const reason = nested && groupName === 'trailing' ? ' (one slot is reserved for Back)' : ''
+      throw new Error(
+        `${path}.groups.${groupName} may contain at most ${groupLimit} actions${reason}`
+      )
     }
 
-    rowValue.forEach((buttonValue, buttonIndex) => {
-      const buttonPath = `${path}.rows[${rowIndex}][${buttonIndex}]`
+    groupValue.forEach((buttonValue, buttonIndex) => {
+      const buttonPath = `${path}.groups.${groupName}[${buttonIndex}]`
       const button = validateButton(buttonValue, buttonPath)
       if (siblingIds.has(button.id)) throw new Error(`${path} has duplicate action id "${button.id}"`)
       siblingIds.add(button.id)
@@ -50,7 +62,7 @@ function validateMenu(
         validateMenu(button.menu, true, nextAncestors, `${buttonPath}.menu`)
       }
     })
-  })
+  }
 }
 
 function validateButton(value: unknown, path: string): ActionButton {
