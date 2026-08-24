@@ -307,7 +307,7 @@ describe('tablet client shell', () => {
     })
   })
 
-  it('preserves the session, menu, and input state while resizing the editor after rotation', async () => {
+  it('preserves the session, menu, and endpoint state while resizing the editor after rotation', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(
@@ -326,7 +326,6 @@ describe('tablet client shell', () => {
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     expect(double.session.attach).toHaveBeenCalledWith(70, 25)
 
-    fireEvent.press(screen.getByTestId('action-pad-ctrl'))
     fireEvent.press(screen.getByTestId('action-pad-leader'))
     fireEvent.press(screen.getByTestId('action-pad-search'))
     expect(screen.getByLabelText('Current action path: Leader / Search')).toBeTruthy()
@@ -346,10 +345,8 @@ describe('tablet client shell', () => {
 
     fireEvent.press(screen.getByTestId('action-pad-back'))
     fireEvent.press(screen.getByTestId('action-pad-back'))
-    expect(screen.getByTestId('action-pad-ctrl').props.accessibilityState).toEqual({
-      disabled: false,
-      selected: true
-    })
+    expect(screen.getByTestId('action-pad-escape')).toBeTruthy()
+    expect(screen.queryByTestId('action-pad-ctrl')).toBeNull()
 
     fireEvent(screen.getByTestId('mock-editor-canvas'), 'layout', {
       nativeEvent: { layout: { width: 900, height: 440, x: 0, y: 0 } }
@@ -361,7 +358,7 @@ describe('tablet client shell', () => {
     expect(double.session.close).not.toHaveBeenCalled()
   })
 
-  it('keeps one-shot Ctrl for the requested Action Pad action across IME and hardware input', async () => {
+  it('keeps hardware modifiers and configured control mappings as ordinary input', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(
@@ -389,13 +386,12 @@ describe('tablet client shell', () => {
     const nativeIme = jest.requireMock('../native/CodeyIme') as { __focus: jest.Mock }
     expect(nativeIme.__focus).toHaveBeenCalledTimes(1)
 
-    fireEvent.press(screen.getByText('Ctrl'))
     act(() => {
       const ime = screen.getByTestId('mock-codey-ime')
       ime.props.onCommittedText('c')
       ime.props.onKey({
         key: 'ArrowLeft',
-        ctrl: false,
+        ctrl: true,
         alt: false,
         shift: false,
         meta: false,
@@ -407,20 +403,21 @@ describe('tablet client shell', () => {
     })
     await waitFor(() => {
       expect(double.session.input).toHaveBeenNthCalledWith(1, 'c')
-      expect(double.session.input).toHaveBeenNthCalledWith(2, '<Left>')
+      expect(double.session.input).toHaveBeenNthCalledWith(2, '<C-Left>')
     })
 
     fireEvent.press(screen.getByText('Esc'))
     const actionIme = jest.requireMock('../native/CodeyIme') as { __sendOrderedInput: jest.Mock }
     await waitFor(() => {
-      expect(actionIme.__sendOrderedInput).toHaveBeenCalledWith('<C-Esc>')
-      expect(double.session.input).toHaveBeenNthCalledWith(3, '<C-Esc>')
+      expect(actionIme.__sendOrderedInput).toHaveBeenCalledWith('<Esc>')
+      expect(double.session.input).toHaveBeenNthCalledWith(3, '<Esc>')
     })
 
-    fireEvent.press(screen.getByText('Tab'))
+    fireEvent.press(screen.getByTestId('action-pad-command'))
+    fireEvent.press(screen.getByTestId('action-pad-redo'))
     await waitFor(() => {
-      expect(actionIme.__sendOrderedInput).toHaveBeenLastCalledWith('<Tab>')
-      expect(double.session.input).toHaveBeenNthCalledWith(4, '<Tab>')
+      expect(actionIme.__sendOrderedInput).toHaveBeenLastCalledWith('<C-r>')
+      expect(double.session.input).toHaveBeenNthCalledWith(4, '<C-r>')
     })
   })
 
@@ -466,7 +463,7 @@ describe('tablet client shell', () => {
     expect(double.session.inputMouse).toHaveBeenCalledTimes(1)
   })
 
-  it('orders composition before a Ctrl action and enters the controller exactly once', async () => {
+  it('orders composition before a configured action and enters the controller exactly once', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(
@@ -480,13 +477,12 @@ describe('tablet client shell', () => {
       __setOrderedPrefix: (segments: unknown[]) => void
     }
     nativeIme.__setOrderedPrefix([{ type: 'text', text: 'ready' }])
-    fireEvent.press(screen.getByText('Ctrl'))
     fireEvent.press(screen.getByText('Esc'))
 
     await waitFor(() => {
-      expect(nativeIme.__sendOrderedInput).toHaveBeenCalledWith('<C-Esc>')
+      expect(nativeIme.__sendOrderedInput).toHaveBeenCalledWith('<Esc>')
       expect(double.session.input).toHaveBeenCalledTimes(1)
-      expect(double.session.input).toHaveBeenCalledWith('ready<C-Esc>')
+      expect(double.session.input).toHaveBeenCalledWith('ready<Esc>')
     })
   })
 

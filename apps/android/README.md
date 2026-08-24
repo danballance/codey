@@ -36,22 +36,28 @@ moves into a fixed `336dp` rail to its right. The full-width connection toolbar
 stays above both. The same action pad remains mounted across rotations, so its
 active menu and input state survive the layout change.
 
-The action tree is configured as named `leading` and `trailing` button groups.
-In portrait and square windows, each group flows across two rows; the leading
-group anchors left and the trailing group right. In landscape, each group flows
-across two columns; the leading group anchors to the top and the trailing group
-to the bottom of a shared vertical scroll area. The root menu keeps common
-native keys available and links to menus such as navigation, Leader, Search,
-and Cmd. Entering a menu replaces the visible buttons with that menu's choices,
-adds a generated Back button as the final trailing action, and shows the current
-path as a breadcrumb. Disconnecting resets the pad and disables its controls.
+Each menu contains an ordered array of arbitrarily named button groups. In
+portrait and square windows, every group flows across two rows and the groups
+share the available width in declaration order. In landscape, every group flows
+across two columns in a shared vertical scroll area; the first group is placed
+at the top, the last at the bottom, and any intermediate groups are distributed
+between them. Group names have no layout meaning.
 
-Up and Down are dual-purpose controls: tap to send one arrow key, or hold for
-`450ms` to open the corresponding navigation menu. A successful hold suppresses
-the tap. Navigation actions keep their menu open for repeated movement; other
-leaf actions normally return to the root. Each leaf dispatches its complete
-Neovim input sequence in one ordered operation, after any active Android IME
-composition has been committed.
+Buttons configure generic `tap` and `longPress` interaction slots, with at least
+one interaction present. An interaction may send direct Neovim input, open a
+menu, go Back, or focus the Android software keyboard, and independently chooses
+whether the menu stack returns to the root or stays where the interaction left
+it. The bundled Up and Down buttons demonstrate composition of these primitives:
+tap sends `<Up>` or `<Down>`, while a `450ms` hold opens the corresponding
+navigation menu and suppresses the release tap. Entering a menu replaces the
+visible groups and shows its breadcrumb. Back is an ordinary configured button,
+so it appears only where the configuration places it. Disconnecting resets the
+pad and disables its controls.
+
+Every input interaction dispatches its complete Neovim notation in one ordered
+operation, after any active Android IME composition has been committed. Buttons
+in navigation menus use `after: 'stay'` for repeated movement, while one-off
+command buttons use `after: 'root'`.
 
 When the software keyboard reduces the window height by at least `120dp`, the
 pad switches to its compact treatment while preserving `48dp` touch targets.
@@ -61,21 +67,18 @@ heights so the 800 × 600dp condensed tablet layout does not overflow.
 
 The bundled action tree is a typed TypeScript configuration in
 `src/action-pad/config.ts`. `src/action-pad/index.ts` exports the `ActionPad`,
-the configured root menu, the validator, and the public menu/button types. The
-model covers native special keys, one-shot Ctrl, submenu branches, trusted raw
-Neovim input sequences, dual tap/hold controls, explicit leading/trailing
-groups, and the per-menu `afterInput` policy (`root` or `stay`). Keep configured
-sequences in the application bundle: they are trusted code and are passed
-directly to Neovim's input API, so the app does not load action trees from the
-network or accept untrusted user-authored sequences. Ordinary configuration
-changes need only a TypeScript reload or rebuild.
+the configured root menu, and the public menu, group, button, and interaction
+types. The small model covers ordered named groups and reusable input, menu,
+Back, and Keyboard interactions for tap or long press. Special keys and modified
+keys are written directly in Neovim notation, such as `<Esc>`, `<Up>`, and
+`<C-r>`.
 
-Native-key actions accept the canonical Android/DOM-style names exported by
-`src/input.ts` (for example `Escape`, `ArrowUp`, and `F1`); startup validation
-rejects aliases such as `Esc` before a button can silently dispatch nothing.
-The root menu also includes a local Keyboard action. Unlike configured Neovim
-input actions, it focuses the Android IME without sending editor input or
-consuming one-shot Ctrl.
+Keep configured sequences in the application bundle: they are trusted code and
+are passed directly to Neovim's input API, so the app does not load action trees
+from the network or accept untrusted user-authored sequences. Configuration
+authors own group density, fit, identifiers, and navigation placement. Ordinary
+configuration changes need only a TypeScript reload or rebuild. The root menu's
+Keyboard interaction focuses the Android IME without sending editor input.
 
 ## Touch cursor and software keyboard
 

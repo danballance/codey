@@ -3,7 +3,6 @@ import { gridCellForPoint, gridSizeForBounds } from '../grid'
 import {
   committedTextToNvimInput,
   escapeNvimText,
-  keyRowInput,
   specialKeyToNvimInput
 } from '../input'
 
@@ -51,13 +50,6 @@ describe('Neovim key translation', () => {
   it('escapes literal less-than text and preserves committed Unicode', () => {
     expect(escapeNvimText('a<界')).toBe('a<lt>界')
     expect(committedTextToNvimInput('Codey tablet ✓')).toBe('Codey tablet ✓')
-  })
-
-  it('maps the persistent key row and one-shot control modifier', () => {
-    expect(keyRowInput('Escape')).toBe('<Esc>')
-    expect(keyRowInput('ArrowLeft', true)).toBe('<C-Left>')
-    expect(committedTextToNvimInput('c', true)).toBe('<C-c>')
-    expect(committedTextToNvimInput('ab', true)).toBe('<C-a>b')
   })
 
   it('maps special and printable hardware keys with modifiers', () => {

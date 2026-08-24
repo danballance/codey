@@ -1,13 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 
 import { ACTION_PAD_MENU } from './config'
 import {
   ACTION_PAD_LONG_PRESS_MS,
   type ActionButton,
+  type ActionInteraction,
   type ActionMenu
 } from './types'
-import { validateActionMenu } from './validation'
 
 export type ActionPadPlacement = 'below' | 'right'
 
@@ -19,10 +19,7 @@ export interface ActionPadProps {
   readonly resetKey?: string | number
   readonly mode: string
   readonly dimensions: string
-  readonly controlActive: boolean
-  readonly onKeyPress: (key: string) => void
-  readonly onRawInput: (input: string) => void
-  readonly onToggleControl: () => void
+  readonly onInput: (input: string) => void
   readonly onKeyboardPress: () => void
 }
 
@@ -34,84 +31,50 @@ export const ActionPad = memo(function ActionPad({
   resetKey,
   mode,
   dimensions,
-  controlActive,
-  onKeyPress,
-  onRawInput,
-  onToggleControl,
+  onInput,
   onKeyboardPress
 }: ActionPadProps) {
   const placedRight = placement === 'right'
-  const validatedRoot = useMemo(() => {
-    validateActionMenu(rootMenu)
-    return rootMenu
-  }, [rootMenu])
-  const [menuStack, setMenuStack] = useState<readonly ActionMenu[]>([validatedRoot])
+  const [menuStack, setMenuStack] = useState<readonly ActionMenu[]>([rootMenu])
 
   useEffect(() => {
-    setMenuStack([validatedRoot])
-  }, [resetKey, validatedRoot])
+    setMenuStack([rootMenu])
+  }, [resetKey, rootMenu])
 
   useEffect(() => {
-    if (!enabled) setMenuStack([validatedRoot])
-  }, [enabled, validatedRoot])
+    if (!enabled) setMenuStack([rootMenu])
+  }, [enabled, rootMenu])
 
-  const currentMenu = menuStack[menuStack.length - 1] ?? validatedRoot
+  const currentMenu = menuStack[menuStack.length - 1] ?? rootMenu
   const breadcrumb = menuStack
     .slice(1)
     .map((menu) => menu.label)
     .join(' / ')
 
-  const openMenu = useCallback((menu: ActionMenu) => {
-    setMenuStack((previous) => [...previous, menu])
-  }, [])
-
-  const applyAfterInput = useCallback(() => {
-    if (currentMenu.afterInput === 'root') setMenuStack([validatedRoot])
-  }, [currentMenu.afterInput, validatedRoot])
-
-  const pressAction = useCallback(
-    (action: ActionButton) => {
+  const runInteraction = useCallback(
+    (interaction: ActionInteraction) => {
       if (!enabled) return
 
-      switch (action.type) {
-        case 'modifier':
-          onToggleControl()
-          return
-        case 'key':
-          onKeyPress(action.key)
-          applyAfterInput()
-          return
+      switch (interaction.type) {
         case 'input':
-          onRawInput(action.nvimInput)
-          applyAfterInput()
-          return
+          onInput(interaction.nvimInput)
+          break
         case 'menu':
-          openMenu(action.menu)
-          return
-        case 'dual':
-          onKeyPress(action.key)
-          applyAfterInput()
-          return
+          setMenuStack((previous) => [...previous, interaction.menu])
+          break
+        case 'back':
+          setMenuStack((previous) =>
+            previous.length > 1 ? previous.slice(0, previous.length - 1) : previous
+          )
+          break
         case 'keyboard':
           onKeyboardPress()
       }
-    },
-    [
-      applyAfterInput,
-      enabled,
-      onKeyboardPress,
-      onKeyPress,
-      onRawInput,
-      onToggleControl,
-      openMenu
-    ]
-  )
 
-  const goBack = useCallback(() => {
-    setMenuStack((previous) =>
-      previous.length > 1 ? previous.slice(0, previous.length - 1) : previous
-    )
-  }, [])
+      if (interaction.after === 'root') setMenuStack([rootMenu])
+    },
+    [enabled, onInput, onKeyboardPress, rootMenu]
+  )
 
   return (
     <View
@@ -152,117 +115,63 @@ export const ActionPad = memo(function ActionPad({
           style={styles.flowScroll}
           testID="action-pad-flow-scroll"
         >
-          <ActionGroupView
-            actions={currentMenu.groups.leading}
-            compact={compact}
-            controlActive={controlActive}
-            enabled={enabled}
-            name="leading"
-            onBack={goBack}
-            onOpenMenu={openMenu}
-            onPress={pressAction}
-            placedRight
-            showBack={false}
-          />
-          <ActionGroupView
-            actions={currentMenu.groups.trailing}
-            compact={compact}
-            controlActive={controlActive}
-            enabled={enabled}
-            name="trailing"
-            onBack={goBack}
-            onOpenMenu={openMenu}
-            onPress={pressAction}
-            placedRight
-            showBack={menuStack.length > 1}
-          />
+          {currentMenu.groups.map((group) => (
+            <ActionGroupView
+              key={group.id}
+              buttons={group.buttons}
+              compact={compact}
+              enabled={enabled}
+              name={group.id}
+              onInteraction={runInteraction}
+              placedRight
+            />
+          ))}
         </ScrollView>
       ) : (
         <View
           style={[styles.horizontalGroups, compact && styles.compactHorizontalGroups]}
           testID="action-pad-groups"
         >
-          <ActionGroupView
-            actions={currentMenu.groups.leading}
-            compact={compact}
-            controlActive={controlActive}
-            enabled={enabled}
-            name="leading"
-            onBack={goBack}
-            onOpenMenu={openMenu}
-            onPress={pressAction}
-            placedRight={false}
-            showBack={false}
-          />
-          <ActionGroupView
-            actions={currentMenu.groups.trailing}
-            compact={compact}
-            controlActive={controlActive}
-            enabled={enabled}
-            name="trailing"
-            onBack={goBack}
-            onOpenMenu={openMenu}
-            onPress={pressAction}
-            placedRight={false}
-            showBack={menuStack.length > 1}
-          />
+          {currentMenu.groups.map((group) => (
+            <ActionGroupView
+              key={group.id}
+              buttons={group.buttons}
+              compact={compact}
+              enabled={enabled}
+              name={group.id}
+              onInteraction={runInteraction}
+              placedRight={false}
+            />
+          ))}
         </View>
       )}
     </View>
   )
 })
 
-type ActionGroupName = keyof ActionMenu['groups']
-
-type ActionGroupItem =
-  | { readonly kind: 'action'; readonly action: ActionButton }
-  | { readonly kind: 'back' }
-
 function ActionGroupView({
-  actions,
+  buttons,
   compact,
-  controlActive,
   enabled,
   name,
-  onBack,
-  onOpenMenu,
-  onPress,
-  placedRight,
-  showBack
+  onInteraction,
+  placedRight
 }: {
-  readonly actions: readonly ActionButton[]
+  readonly buttons: readonly ActionButton[]
   readonly compact: boolean
-  readonly controlActive: boolean
   readonly enabled: boolean
-  readonly name: ActionGroupName
-  readonly onBack: () => void
-  readonly onOpenMenu: (menu: ActionMenu) => void
-  readonly onPress: (action: ActionButton) => void
+  readonly name: string
+  readonly onInteraction: (interaction: ActionInteraction) => void
   readonly placedRight: boolean
-  readonly showBack: boolean
 }) {
-  const items: readonly ActionGroupItem[] = showBack
-    ? [...actions.map((action) => ({ kind: 'action' as const, action })), { kind: 'back' }]
-    : actions.map((action) => ({ kind: 'action' as const, action }))
-
-  const renderItem = (item: ActionGroupItem) => item.kind === 'action' ? (
+  const renderButton = (button: ActionButton) => (
     <ActionButtonView
-      key={item.action.id}
-      action={item.action}
-      column={placedRight}
-      compact={compact}
-      controlActive={controlActive}
-      enabled={enabled}
-      onOpenMenu={onOpenMenu}
-      onPress={onPress}
-    />
-  ) : (
-    <BackButtonView
-      key="back"
+      key={button.id}
+      button={button}
       column={placedRight}
       compact={compact}
       enabled={enabled}
-      onPress={onBack}
+      onInteraction={onInteraction}
     />
   )
 
@@ -272,13 +181,13 @@ function ActionGroupView({
         style={[styles.columnGroup, compact && styles.compactColumnGroup]}
         testID={`action-pad-${name}-group`}
       >
-        {items.map(renderItem)}
+        {buttons.map(renderButton)}
       </View>
     )
   }
 
-  const columnCount = Math.max(1, Math.ceil(items.length / 2))
-  const rows = [items.slice(0, columnCount), items.slice(columnCount)]
+  const columnCount = Math.max(1, Math.ceil(buttons.length / 2))
+  const rows = [buttons.slice(0, columnCount), buttons.slice(columnCount)]
 
   return (
     <View
@@ -291,7 +200,7 @@ function ActionGroupView({
           style={[styles.groupRow, compact && styles.compactGroupRow]}
           testID={`action-pad-${name}-row-${rowIndex + 1}`}
         >
-          {row.map(renderItem)}
+          {row.map(renderButton)}
           {Array.from({ length: columnCount - row.length }, (_, spacerIndex) => (
             <View
               key={`${name}-row-${rowIndex}-spacer-${spacerIndex}`}
@@ -305,49 +214,49 @@ function ActionGroupView({
 }
 
 function ActionButtonView({
-  action,
+  button,
   column,
   compact,
-  controlActive,
   enabled,
-  onOpenMenu,
-  onPress
+  onInteraction
 }: {
-  readonly action: ActionButton
+  readonly button: ActionButton
   readonly column: boolean
   readonly compact: boolean
-  readonly controlActive: boolean
   readonly enabled: boolean
-  readonly onOpenMenu: (menu: ActionMenu) => void
-  readonly onPress: (action: ActionButton) => void
+  readonly onInteraction: (interaction: ActionInteraction) => void
 }) {
   const longPressTriggered = useRef(false)
-  const modifierActive = action.type === 'modifier' && controlActive
-  const dual = action.type === 'dual'
+  const longPress = button.longPress
+  const tap = button.tap
 
   return (
     <Pressable
-      accessibilityHint={dual ? 'Tap for one key press. Hold for navigation options.' : undefined}
-      accessibilityLabel={action.accessibilityLabel ?? action.label}
+      accessibilityHint={button.accessibilityHint}
+      accessibilityLabel={button.accessibilityLabel ?? button.label}
       accessibilityRole="button"
-      accessibilityState={{ disabled: !enabled, selected: modifierActive }}
-      delayLongPress={dual ? ACTION_PAD_LONG_PRESS_MS : undefined}
+      accessibilityState={{ disabled: !enabled }}
+      delayLongPress={longPress === undefined ? undefined : ACTION_PAD_LONG_PRESS_MS}
       disabled={!enabled}
       onLongPress={
-        dual
-          ? () => {
+        longPress === undefined
+          ? undefined
+          : () => {
               longPressTriggered.current = true
-              onOpenMenu(action.menu)
+              onInteraction(longPress)
             }
-          : undefined
       }
-      onPress={() => {
-        if (longPressTriggered.current) {
-          longPressTriggered.current = false
-          return
-        }
-        onPress(action)
-      }}
+      onPress={
+        tap === undefined
+          ? undefined
+          : () => {
+              if (longPressTriggered.current) {
+                longPressTriggered.current = false
+                return
+              }
+              onInteraction(tap)
+            }
+      }
       onPressIn={() => {
         longPressTriggered.current = false
       }}
@@ -355,61 +264,13 @@ function ActionButtonView({
         styles.button,
         compact && styles.compactButton,
         column && styles.columnButton,
-        modifierActive && styles.activeButton,
         !enabled && styles.disabled,
         pressed && enabled && styles.pressed
       ]}
-      testID={`action-pad-${action.id}`}
+      testID={`action-pad-${button.id}`}
     >
-      <Text
-        numberOfLines={2}
-        style={[
-          styles.buttonText,
-          compact && styles.compactButtonText,
-          modifierActive && styles.activeButtonText
-        ]}
-      >
-        {action.label}
-      </Text>
-    </Pressable>
-  )
-}
-
-function BackButtonView({
-  column,
-  compact,
-  enabled,
-  onPress
-}: {
-  readonly column: boolean
-  readonly compact: boolean
-  readonly enabled: boolean
-  readonly onPress: () => void
-}) {
-  return (
-    <Pressable
-      accessibilityLabel="Back"
-      accessibilityRole="button"
-      disabled={!enabled}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.button,
-        compact && styles.compactButton,
-        column && styles.columnButton,
-        styles.backButton,
-        !enabled && styles.disabled,
-        pressed && enabled && styles.pressed
-      ]}
-      testID="action-pad-back"
-    >
-      <Text
-        style={[
-          styles.buttonText,
-          compact && styles.compactButtonText,
-          styles.backButtonText
-        ]}
-      >
-        Back
+      <Text numberOfLines={2} style={[styles.buttonText, compact && styles.compactButtonText]}>
+        {button.label}
       </Text>
     </Pressable>
   )
@@ -569,21 +430,6 @@ const styles = StyleSheet.create({
   },
   compactButtonText: {
     fontSize: 13
-  },
-  activeButton: {
-    borderColor: '#9ece6a',
-    backgroundColor: 'rgba(158, 206, 106, 0.12)'
-  },
-  activeButtonText: {
-    color: '#9ece6a'
-  },
-  backButton: {
-    borderWidth: 1.5,
-    borderColor: '#bb9af3',
-    backgroundColor: '#1f2335'
-  },
-  backButtonText: {
-    color: '#bb9af3'
   },
   disabled: {
     opacity: 0.45

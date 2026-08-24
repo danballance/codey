@@ -82,8 +82,6 @@ export function TabletClient({ capability }: TabletClientProps) {
   const [host, setHost] = useState(DEFAULT_ENDPOINT.host)
   const [port, setPort] = useState(String(DEFAULT_ENDPOINT.port))
   const [formError, setFormError] = useState('')
-  const [control, setControl] = useState(false)
-  const controlRef = useRef(false)
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds>({ width: 0, height: 0 })
   const [screenMeasurement, setScreenMeasurement] = useState<ScreenMeasurement>({
     height: capability.height,
@@ -300,35 +298,6 @@ export function TabletClient({ capability }: TabletClientProps) {
     })
   }, [])
 
-  const submitKeyRow = useCallback(
-    (key: string) => {
-      const applyControl = controlRef.current
-      const keys = specialKeyToNvimInput({
-        key,
-        modifiers: applyControl ? { ctrl: true } : undefined
-      })
-      if (keys === null) return
-      if (applyControl) {
-        controlRef.current = false
-        setControl(false)
-      }
-      sendOrderedActionInput(keys)
-    },
-    [sendOrderedActionInput]
-  )
-
-  const submitActionInput = useCallback((keys: string) => {
-    controlRef.current = false
-    setControl(false)
-    sendOrderedActionInput(keys)
-  }, [sendOrderedActionInput])
-
-  const toggleControl = useCallback(() => {
-    const next = !controlRef.current
-    controlRef.current = next
-    setControl(next)
-  }, [])
-
   const focusKeyboardIme = useCallback(() => {
     firstKeyAfterFocus.current = true
     void imeRef.current?.focus().catch(() => undefined)
@@ -349,8 +318,6 @@ export function TabletClient({ capability }: TabletClientProps) {
     if (!connected) {
       pendingOrderedInputs.current = []
       firstKeyAfterFocus.current = false
-      controlRef.current = false
-      setControl(false)
       void imeRef.current?.blur().catch(() => undefined)
     }
   }, [connected])
@@ -464,14 +431,11 @@ export function TabletClient({ capability }: TabletClientProps) {
         >
           <ActionPad
             compact={compactActionPad}
-            controlActive={control}
             dimensions={`${client.gridSize.columns} × ${client.gridSize.rows} · ${Math.round(capability.width)} × ${Math.round(capability.height)}dp`}
             enabled={connected}
             mode={mode}
-            onKeyPress={submitKeyRow}
+            onInput={sendOrderedActionInput}
             onKeyboardPress={focusKeyboardIme}
-            onRawInput={submitActionInput}
-            onToggleControl={toggleControl}
             placement={landscape ? 'right' : 'below'}
             resetKey={client.phase}
             rootMenu={ACTION_PAD_MENU}

@@ -1,63 +1,51 @@
-import type { NvimSpecialKeyName } from '../input'
-
-export const MAX_ACTIONS_PER_GROUP = 6
-export const MAX_NVIM_INPUT_LENGTH = 16_384
 export const ACTION_PAD_LONG_PRESS_MS = 450
 
-export type ActionAfterInput = 'root' | 'stay'
+export type ActionAfter = 'root' | 'stay'
+
+export type ActionInteraction =
+  | {
+      readonly type: 'input'
+      readonly nvimInput: string
+      readonly after: ActionAfter
+    }
+  | {
+      readonly type: 'menu'
+      readonly menu: ActionMenu
+      readonly after: ActionAfter
+    }
+  | {
+      readonly type: 'back'
+      readonly after: ActionAfter
+    }
+  | {
+      readonly type: 'keyboard'
+      readonly after: ActionAfter
+    }
 
 interface ActionButtonBase {
   readonly id: string
   readonly label: string
   readonly accessibilityLabel?: string
+  readonly accessibilityHint?: string
 }
 
-export interface ModifierActionButton extends ActionButtonBase {
-  readonly type: 'modifier'
-  readonly modifier: 'ctrl'
-}
+export type ActionButton = ActionButtonBase & (
+  | {
+      readonly tap: ActionInteraction
+      readonly longPress?: ActionInteraction
+    }
+  | {
+      readonly tap?: never
+      readonly longPress: ActionInteraction
+    }
+)
 
-export interface NativeKeyActionButton extends ActionButtonBase {
-  readonly type: 'key'
-  readonly key: NvimSpecialKeyName
-}
-
-export interface NvimInputActionButton extends ActionButtonBase {
-  readonly type: 'input'
-  readonly nvimInput: string
-}
-
-export interface MenuActionButton extends ActionButtonBase {
-  readonly type: 'menu'
-  readonly menu: ActionMenu
-}
-
-export interface DualActionButton extends ActionButtonBase {
-  readonly type: 'dual'
-  readonly key: NvimSpecialKeyName
-  readonly menu: ActionMenu
-}
-
-export interface KeyboardActionButton extends ActionButtonBase {
-  readonly type: 'keyboard'
-}
-
-export type ActionButton =
-  | ModifierActionButton
-  | NativeKeyActionButton
-  | NvimInputActionButton
-  | MenuActionButton
-  | DualActionButton
-  | KeyboardActionButton
-
-export interface ActionGroups {
-  readonly leading: readonly ActionButton[]
-  readonly trailing: readonly ActionButton[]
+export interface ActionGroup {
+  readonly id: string
+  readonly buttons: readonly ActionButton[]
 }
 
 export interface ActionMenu {
-  readonly id: string
   readonly label: string
-  readonly afterInput: ActionAfterInput
-  readonly groups: ActionGroups
+  readonly groups: readonly ActionGroup[]
 }

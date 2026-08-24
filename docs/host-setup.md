@@ -32,9 +32,10 @@ reconnection explicit; restart Neovim, then use Connect again.
 The Android vertical slice targets a 12–14-inch tablet in portrait or landscape.
 It supports windows with a shortest side of at least `600dp`; smaller windows
 and phones show only the unsupported-device screen. Portrait and square windows
-stack the action pad below the terminal, with its button groups anchored left
-and right. Landscape windows place the groups at the top and bottom of a
-scrollable two-column right-hand rail.
+stack the action pad below the terminal, with its ordered button groups sharing
+the available width. Landscape places the same groups in declaration order in a
+scrollable two-column right-hand rail, with the first at the top and the last at
+the bottom.
 
 Enable Android developer options and USB debugging, attach the device, and
 accept its authorization prompt. From `nix develop`, verify that ADB can see it:

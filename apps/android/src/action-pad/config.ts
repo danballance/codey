@@ -1,334 +1,507 @@
-import type { ActionMenu } from "./types";
-import { validateActionMenu } from "./validation";
+import type { ActionMenu } from './types'
 
 const UP_NAVIGATION_MENU = {
-  id: "up-navigation",
-  label: "Up Arrow – Navigation",
-  afterInput: "stay",
-  groups: {
-    leading: [
-      { id: "top", label: "gg Top", type: "input", nvimInput: "gg" },
-      { id: "block-up", label: "Block Up", type: "input", nvimInput: "{" },
-      {
-        id: "five-lines-up",
-        label: "+5 Lines",
-        type: "input",
-        nvimInput: "5k",
-      },
-      {
-        id: "ten-lines-up",
-        label: "+10 Lines",
-        type: "input",
-        nvimInput: "10k",
-      },
-    ],
-    trailing: [
-      {
-        id: "screen-top",
-        label: "H Screen Top",
-        type: "input",
-        nvimInput: "H",
-      },
-      {
-        id: "half-page-up",
-        label: "Half Page Up",
-        type: "input",
-        nvimInput: "<C-u>",
-      },
-      {
-        id: "full-page-up",
-        label: "Full Page Up",
-        type: "input",
-        nvimInput: "<C-b>",
-      },
-    ],
-  },
-} as const satisfies ActionMenu;
+  label: 'Up Arrow – Navigation',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'top',
+          label: 'gg Top',
+          tap: { type: 'input', nvimInput: 'gg', after: 'stay' }
+        },
+        {
+          id: 'block-up',
+          label: 'Block Up',
+          tap: { type: 'input', nvimInput: '{', after: 'stay' }
+        },
+        {
+          id: 'five-lines-up',
+          label: '+5 Lines',
+          tap: { type: 'input', nvimInput: '5k', after: 'stay' }
+        },
+        {
+          id: 'ten-lines-up',
+          label: '+10 Lines',
+          tap: { type: 'input', nvimInput: '10k', after: 'stay' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'screen-top',
+          label: 'H Screen Top',
+          tap: { type: 'input', nvimInput: 'H', after: 'stay' }
+        },
+        {
+          id: 'half-page-up',
+          label: 'Half Page Up',
+          tap: { type: 'input', nvimInput: '<C-u>', after: 'stay' }
+        },
+        {
+          id: 'full-page-up',
+          label: 'Full Page Up',
+          tap: { type: 'input', nvimInput: '<C-b>', after: 'stay' }
+        },
+        {
+          id: 'back',
+          label: 'Back',
+          tap: { type: 'back', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu
 
 const DOWN_NAVIGATION_MENU = {
-  id: "down-navigation",
-  label: "Down Arrow – Navigation",
-  afterInput: "stay",
-  groups: {
-    leading: [
-      { id: "bottom", label: "G Bottom", type: "input", nvimInput: "G" },
-      { id: "block-down", label: "Block Down", type: "input", nvimInput: "}" },
-      {
-        id: "five-lines-down",
-        label: "+5 Lines",
-        type: "input",
-        nvimInput: "5j",
-      },
-      {
-        id: "ten-lines-down",
-        label: "+10 Lines",
-        type: "input",
-        nvimInput: "10j",
-      },
-    ],
-    trailing: [
-      {
-        id: "screen-bottom",
-        label: "L Screen Bot",
-        type: "input",
-        nvimInput: "L",
-      },
-      {
-        id: "half-page-down",
-        label: "Half Page Down",
-        type: "input",
-        nvimInput: "<C-d>",
-      },
-      {
-        id: "full-page-down",
-        label: "Full Page Down",
-        type: "input",
-        nvimInput: "<C-f>",
-      },
-    ],
-  },
-} as const satisfies ActionMenu;
+  label: 'Down Arrow – Navigation',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'bottom',
+          label: 'G Bottom',
+          tap: { type: 'input', nvimInput: 'G', after: 'stay' }
+        },
+        {
+          id: 'block-down',
+          label: 'Block Down',
+          tap: { type: 'input', nvimInput: '}', after: 'stay' }
+        },
+        {
+          id: 'five-lines-down',
+          label: '+5 Lines',
+          tap: { type: 'input', nvimInput: '5j', after: 'stay' }
+        },
+        {
+          id: 'ten-lines-down',
+          label: '+10 Lines',
+          tap: { type: 'input', nvimInput: '10j', after: 'stay' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'screen-bottom',
+          label: 'L Screen Bot',
+          tap: { type: 'input', nvimInput: 'L', after: 'stay' }
+        },
+        {
+          id: 'half-page-down',
+          label: 'Half Page Down',
+          tap: { type: 'input', nvimInput: '<C-d>', after: 'stay' }
+        },
+        {
+          id: 'full-page-down',
+          label: 'Full Page Down',
+          tap: { type: 'input', nvimInput: '<C-f>', after: 'stay' }
+        },
+        {
+          id: 'back',
+          label: 'Back',
+          tap: { type: 'back', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu
 
 const SEARCH_MENU = {
-  id: "search",
-  label: "Search",
-  afterInput: "root",
-  groups: {
-    leading: [
-      {
-        id: "grep",
-        label: "Grep (Live)",
-        type: "input",
-        nvimInput: "<Space>sg",
-      },
-      {
-        id: "files",
-        label: "Find File",
-        type: "input",
-        nvimInput: "<Space>sf",
-      },
-      {
-        id: "buffer",
-        label: "Buffer Search",
-        type: "input",
-        nvimInput: "<Space>/",
-      },
-      { id: "symbols", label: "Symbol", type: "input", nvimInput: "gO" },
-    ],
-    trailing: [
-      {
-        id: "recent",
-        label: "Recent Files",
-        type: "input",
-        nvimInput: "<Space>s.",
-      },
-      { id: "replace", label: "Replace", type: "input", nvimInput: ":%s/" },
-      {
-        id: "word",
-        label: "Word Under Cursor",
-        type: "input",
-        nvimInput: "<Space>sw",
-      },
-      {
-        id: "diagnostics",
-        label: "Diagnostics",
-        type: "input",
-        nvimInput: "<Space>sd",
-      },
-    ],
-  },
-} as const satisfies ActionMenu;
+  label: 'Search',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'grep',
+          label: 'Grep (Live)',
+          tap: { type: 'input', nvimInput: '<Space>sg', after: 'root' }
+        },
+        {
+          id: 'files',
+          label: 'Find File',
+          tap: { type: 'input', nvimInput: '<Space>sf', after: 'root' }
+        },
+        {
+          id: 'buffer',
+          label: 'Buffer Search',
+          tap: { type: 'input', nvimInput: '<Space>/', after: 'root' }
+        },
+        {
+          id: 'symbols',
+          label: 'Symbol',
+          tap: { type: 'input', nvimInput: 'gO', after: 'root' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'recent',
+          label: 'Recent Files',
+          tap: { type: 'input', nvimInput: '<Space>s.', after: 'root' }
+        },
+        {
+          id: 'replace',
+          label: 'Replace',
+          tap: { type: 'input', nvimInput: ':%s/', after: 'root' }
+        },
+        {
+          id: 'word',
+          label: 'Word Under Cursor',
+          tap: { type: 'input', nvimInput: '<Space>sw', after: 'root' }
+        },
+        {
+          id: 'diagnostics',
+          label: 'Diagnostics',
+          tap: { type: 'input', nvimInput: '<Space>sd', after: 'root' }
+        },
+        {
+          id: 'back',
+          label: 'Back',
+          tap: { type: 'back', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu
 
 const WINDOW_MENU = {
-  id: "window",
-  label: "Window",
-  afterInput: "root",
-  groups: {
-    leading: [
-      { id: "left", label: "← Left", type: "input", nvimInput: "<C-w>h" },
-      { id: "down", label: "↓ Down", type: "input", nvimInput: "<C-w>j" },
-      { id: "up", label: "↑ Up", type: "input", nvimInput: "<C-w>k" },
-      { id: "right", label: "→ Right", type: "input", nvimInput: "<C-w>l" },
-      { id: "split", label: "Split", type: "input", nvimInput: "<C-w>s" },
-    ],
-    trailing: [
-      {
-        id: "vertical-split",
-        label: "V Split",
-        type: "input",
-        nvimInput: "<C-w>v",
-      },
-      { id: "close", label: "Close", type: "input", nvimInput: "<C-w>c" },
-      { id: "only", label: "Only", type: "input", nvimInput: "<C-w>o" },
-      { id: "next", label: "Next", type: "input", nvimInput: "<C-w>w" },
-    ],
-  },
-} as const satisfies ActionMenu;
+  label: 'Window',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'left',
+          label: '← Left',
+          tap: { type: 'input', nvimInput: '<C-w>h', after: 'root' }
+        },
+        {
+          id: 'down',
+          label: '↓ Down',
+          tap: { type: 'input', nvimInput: '<C-w>j', after: 'root' }
+        },
+        {
+          id: 'up',
+          label: '↑ Up',
+          tap: { type: 'input', nvimInput: '<C-w>k', after: 'root' }
+        },
+        {
+          id: 'right',
+          label: '→ Right',
+          tap: { type: 'input', nvimInput: '<C-w>l', after: 'root' }
+        },
+        {
+          id: 'split',
+          label: 'Split',
+          tap: { type: 'input', nvimInput: '<C-w>s', after: 'root' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'vertical-split',
+          label: 'V Split',
+          tap: { type: 'input', nvimInput: '<C-w>v', after: 'root' }
+        },
+        {
+          id: 'close',
+          label: 'Close',
+          tap: { type: 'input', nvimInput: '<C-w>c', after: 'root' }
+        },
+        {
+          id: 'only',
+          label: 'Only',
+          tap: { type: 'input', nvimInput: '<C-w>o', after: 'root' }
+        },
+        {
+          id: 'next',
+          label: 'Next',
+          tap: { type: 'input', nvimInput: '<C-w>w', after: 'root' }
+        },
+        {
+          id: 'back',
+          label: 'Back',
+          tap: { type: 'back', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu
 
 const CODE_MENU = {
-  id: "code",
-  label: "Code",
-  afterInput: "root",
-  groups: {
-    leading: [
-      {
-        id: "definition",
-        label: "Definition",
-        type: "input",
-        nvimInput: "grd",
-      },
-      {
-        id: "references",
-        label: "References",
-        type: "input",
-        nvimInput: "grr",
-      },
-      {
-        id: "implementation",
-        label: "Implementation",
-        type: "input",
-        nvimInput: "gri",
-      },
-      { id: "type-definition", label: "Type", type: "input", nvimInput: "grt" },
-      { id: "hover", label: "Hover", type: "input", nvimInput: "K" },
-    ],
-    trailing: [
-      {
-        id: "code-action",
-        label: "Code Action",
-        type: "input",
-        nvimInput: "gra",
-      },
-      { id: "rename", label: "Rename", type: "input", nvimInput: "grn" },
-      { id: "format", label: "Format", type: "input", nvimInput: "<Space>f" },
-      {
-        id: "diagnostic",
-        label: "Diagnostic",
-        type: "input",
-        nvimInput: "<C-w>d",
-      },
-    ],
-  },
-} as const satisfies ActionMenu;
+  label: 'Code',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'definition',
+          label: 'Definition',
+          tap: { type: 'input', nvimInput: 'grd', after: 'root' }
+        },
+        {
+          id: 'references',
+          label: 'References',
+          tap: { type: 'input', nvimInput: 'grr', after: 'root' }
+        },
+        {
+          id: 'implementation',
+          label: 'Implementation',
+          tap: { type: 'input', nvimInput: 'gri', after: 'root' }
+        },
+        {
+          id: 'type-definition',
+          label: 'Type',
+          tap: { type: 'input', nvimInput: 'grt', after: 'root' }
+        },
+        {
+          id: 'hover',
+          label: 'Hover',
+          tap: { type: 'input', nvimInput: 'K', after: 'root' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'code-action',
+          label: 'Code Action',
+          tap: { type: 'input', nvimInput: 'gra', after: 'root' }
+        },
+        {
+          id: 'rename',
+          label: 'Rename',
+          tap: { type: 'input', nvimInput: 'grn', after: 'root' }
+        },
+        {
+          id: 'format',
+          label: 'Format',
+          tap: { type: 'input', nvimInput: '<Space>f', after: 'root' }
+        },
+        {
+          id: 'diagnostic',
+          label: 'Diagnostic',
+          tap: { type: 'input', nvimInput: '<C-w>d', after: 'root' }
+        },
+        {
+          id: 'back',
+          label: 'Back',
+          tap: { type: 'back', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu
 
 const LEADER_MENU = {
-  id: "leader",
-  label: "Leader",
-  afterInput: "root",
-  groups: {
-    leading: [
-      { id: "search", label: "Search", type: "menu", menu: SEARCH_MENU },
-      { id: "files", label: "Files", type: "input", nvimInput: "<Space>sf" },
-      {
-        id: "buffers",
-        label: "Buffers",
-        type: "input",
-        nvimInput: "<Space><Space>",
-      },
-      { id: "window", label: "Window", type: "menu", menu: WINDOW_MENU },
-      { id: "code", label: "Code", type: "menu", menu: CODE_MENU },
-    ],
-    trailing: [
-      {
-        id: "project-tree",
-        label: "Project Tree",
-        type: "input",
-        nvimInput: "<Space>e",
-      },
-      { id: "outline", label: "Outline", type: "input", nvimInput: "<Space>o" },
-      {
-        id: "terminal",
-        label: "Terminal",
-        type: "input",
-        nvimInput: ":terminal<CR>",
-      },
-      { id: "help", label: "Help", type: "input", nvimInput: "<Space>sh" },
-    ],
-  },
-} as const satisfies ActionMenu;
+  label: 'Leader',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'search',
+          label: 'Search',
+          tap: { type: 'menu', menu: SEARCH_MENU, after: 'stay' }
+        },
+        {
+          id: 'files',
+          label: 'Files',
+          tap: { type: 'input', nvimInput: '<Space>sf', after: 'root' }
+        },
+        {
+          id: 'buffers',
+          label: 'Buffers',
+          tap: { type: 'input', nvimInput: '<Space><Space>', after: 'root' }
+        },
+        {
+          id: 'window',
+          label: 'Window',
+          tap: { type: 'menu', menu: WINDOW_MENU, after: 'stay' }
+        },
+        {
+          id: 'code',
+          label: 'Code',
+          tap: { type: 'menu', menu: CODE_MENU, after: 'stay' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'project-tree',
+          label: 'Project Tree',
+          tap: { type: 'input', nvimInput: '<Space>e', after: 'root' }
+        },
+        {
+          id: 'outline',
+          label: 'Outline',
+          tap: { type: 'input', nvimInput: '<Space>o', after: 'root' }
+        },
+        {
+          id: 'terminal',
+          label: 'Terminal',
+          tap: { type: 'input', nvimInput: ':terminal<CR>', after: 'root' }
+        },
+        {
+          id: 'help',
+          label: 'Help',
+          tap: { type: 'input', nvimInput: '<Space>sh', after: 'root' }
+        },
+        {
+          id: 'back',
+          label: 'Back',
+          tap: { type: 'back', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu
 
 const COMMAND_MENU = {
-  id: "command",
-  label: "Cmd",
-  afterInput: "root",
-  groups: {
-    leading: [
-      { id: "save", label: "Save", type: "input", nvimInput: ":w<CR>" },
-      {
-        id: "save-all",
-        label: "Save All",
-        type: "input",
-        nvimInput: ":wa<CR>",
-      },
-      { id: "quit", label: "Quit", type: "input", nvimInput: ":q<CR>" },
-      {
-        id: "force-quit",
-        label: "Force Quit",
-        type: "input",
-        nvimInput: ":q!<CR>",
-      },
-    ],
-    trailing: [
-      {
-        id: "write-quit",
-        label: "Write and Quit",
-        type: "input",
-        nvimInput: ":wq<CR>",
-      },
-      { id: "undo", label: "Undo", type: "input", nvimInput: "u" },
-      { id: "redo", label: "Redo", type: "input", nvimInput: "<C-r>" },
-    ],
-  },
-} as const satisfies ActionMenu;
+  label: 'Cmd',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'save',
+          label: 'Save',
+          tap: { type: 'input', nvimInput: ':w<CR>', after: 'root' }
+        },
+        {
+          id: 'save-all',
+          label: 'Save All',
+          tap: { type: 'input', nvimInput: ':wa<CR>', after: 'root' }
+        },
+        {
+          id: 'quit',
+          label: 'Quit',
+          tap: { type: 'input', nvimInput: ':q<CR>', after: 'root' }
+        },
+        {
+          id: 'force-quit',
+          label: 'Force Quit',
+          tap: { type: 'input', nvimInput: ':q!<CR>', after: 'root' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'write-quit',
+          label: 'Write and Quit',
+          tap: { type: 'input', nvimInput: ':wq<CR>', after: 'root' }
+        },
+        {
+          id: 'undo',
+          label: 'Undo',
+          tap: { type: 'input', nvimInput: 'u', after: 'root' }
+        },
+        {
+          id: 'redo',
+          label: 'Redo',
+          tap: { type: 'input', nvimInput: '<C-r>', after: 'root' }
+        },
+        {
+          id: 'back',
+          label: 'Back',
+          tap: { type: 'back', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu
 
 export const ACTION_PAD_MENU = {
-  id: "root",
-  label: "Home",
-  afterInput: "root",
-  groups: {
-    leading: [
-      { id: "ctrl", label: "Ctrl", type: "modifier", modifier: "ctrl" },
-      { id: "escape", label: "Esc", type: "key", key: "Escape" },
-      { id: "tab", label: "Tab", type: "key", key: "Tab" },
-      { id: "enter", label: "Enter", type: "key", key: "Enter" },
-      { id: "backspace", label: "Backspace", type: "key", key: "Backspace" },
-      {
-        id: "left",
-        label: "←",
-        accessibilityLabel: "Left",
-        type: "key",
-        key: "ArrowLeft",
-      },
-    ],
-    trailing: [
-      {
-        id: "down",
-        label: "↓",
-        accessibilityLabel: "Down; hold for navigation options",
-        type: "dual",
-        key: "ArrowDown",
-        menu: DOWN_NAVIGATION_MENU,
-      },
-      {
-        id: "up",
-        label: "↑",
-        accessibilityLabel: "Up; hold for navigation options",
-        type: "dual",
-        key: "ArrowUp",
-        menu: UP_NAVIGATION_MENU,
-      },
-      {
-        id: "right",
-        label: "→",
-        accessibilityLabel: "Right",
-        type: "key",
-        key: "ArrowRight",
-      },
-      { id: "leader", label: "Leader", type: "menu", menu: LEADER_MENU },
-      { id: "command", label: "Cmd", type: "menu", menu: COMMAND_MENU },
-      { id: "keyboard", label: "Keyboard", type: "keyboard" },
-    ],
-  },
-} as const satisfies ActionMenu;
-
-validateActionMenu(ACTION_PAD_MENU);
+  label: 'Home',
+  groups: [
+    {
+      id: 'leading',
+      buttons: [
+        {
+          id: 'escape',
+          label: 'Esc',
+          tap: { type: 'input', nvimInput: '<Esc>', after: 'root' }
+        },
+        {
+          id: 'tab',
+          label: 'Tab',
+          tap: { type: 'input', nvimInput: '<Tab>', after: 'root' }
+        },
+        {
+          id: 'enter',
+          label: 'Enter',
+          tap: { type: 'input', nvimInput: '<CR>', after: 'root' }
+        },
+        {
+          id: 'backspace',
+          label: 'Backspace',
+          tap: { type: 'input', nvimInput: '<BS>', after: 'root' }
+        },
+        {
+          id: 'left',
+          label: '←',
+          accessibilityLabel: 'Left',
+          tap: { type: 'input', nvimInput: '<Left>', after: 'root' }
+        }
+      ]
+    },
+    {
+      id: 'trailing',
+      buttons: [
+        {
+          id: 'down',
+          label: '↓',
+          accessibilityLabel: 'Down',
+          accessibilityHint: 'Hold for navigation options',
+          tap: { type: 'input', nvimInput: '<Down>', after: 'root' },
+          longPress: { type: 'menu', menu: DOWN_NAVIGATION_MENU, after: 'stay' }
+        },
+        {
+          id: 'up',
+          label: '↑',
+          accessibilityLabel: 'Up',
+          accessibilityHint: 'Hold for navigation options',
+          tap: { type: 'input', nvimInput: '<Up>', after: 'root' },
+          longPress: { type: 'menu', menu: UP_NAVIGATION_MENU, after: 'stay' }
+        },
+        {
+          id: 'right',
+          label: '→',
+          accessibilityLabel: 'Right',
+          tap: { type: 'input', nvimInput: '<Right>', after: 'root' }
+        },
+        {
+          id: 'leader',
+          label: 'Leader',
+          tap: { type: 'menu', menu: LEADER_MENU, after: 'stay' }
+        },
+        {
+          id: 'command',
+          label: 'Cmd',
+          tap: { type: 'menu', menu: COMMAND_MENU, after: 'stay' }
+        },
+        {
+          id: 'keyboard',
+          label: 'Keyboard',
+          tap: { type: 'keyboard', after: 'stay' }
+        }
+      ]
+    }
+  ]
+} as const satisfies ActionMenu

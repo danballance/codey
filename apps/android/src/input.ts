@@ -70,19 +70,8 @@ export function specialKeyToNvimInput(event: NativeSpecialKey): string | null {
   return escapeNvimText(character)
 }
 
-export function keyRowInput(key: string, control = false): string | null {
-  const keyName = SPECIAL_KEYS[key]
-  if (keyName === undefined) return null
-  return modifiedNotation(keyName, control ? { ctrl: true } : undefined)
-}
-
-export function committedTextToNvimInput(text: string, control = false): string {
-  if (!control) return escapeNvimText(text)
-
-  const characters = Array.from(text)
-  if (characters.length === 0) return ''
-  const [character, ...remainder] = characters
-  return `<C-${character === '<' ? 'lt' : character}>${escapeNvimText(remainder.join(''))}`
+export function committedTextToNvimInput(text: string): string {
+  return escapeNvimText(text)
 }
 
 function functionKey(key: string): string | null {
