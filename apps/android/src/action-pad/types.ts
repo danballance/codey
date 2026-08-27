@@ -2,6 +2,12 @@ export const ACTION_PAD_LONG_PRESS_MS = 450
 
 export type ActionAfter = 'root' | 'stay'
 
+export type ActionButtonSize = '1/4' | '1/2'
+
+export interface ActionButtonStyles {
+  readonly size?: ActionButtonSize
+}
+
 export type ActionInteraction =
   | {
       readonly type: 'input'
@@ -27,6 +33,7 @@ interface ActionButtonBase {
   readonly label: string
   readonly accessibilityLabel?: string
   readonly accessibilityHint?: string
+  readonly styles?: ActionButtonStyles
 }
 
 export type ActionButton = ActionButtonBase & (

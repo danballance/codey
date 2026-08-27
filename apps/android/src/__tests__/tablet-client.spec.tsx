@@ -23,6 +23,17 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   }
 }))
 
+jest.mock('../fonts', () => ({
+  CODEY_NERD_FONT_FAMILIES: {
+    regular: 'CodeyNerdFont-Regular',
+    semiBold: 'CodeyNerdFont-SemiBold',
+    bold: 'CodeyNerdFont-Bold',
+    italic: 'CodeyNerdFont-Italic',
+    boldItalic: 'CodeyNerdFont-BoldItalic'
+  },
+  useCodeyNerdFontFaces: jest.fn(() => [true, null])
+}))
+
 jest.mock('../editor/EditorCanvas', () => {
   const React = require('react')
   const { View } = require('react-native')

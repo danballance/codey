@@ -252,16 +252,18 @@ describe('imperative Skia grid picture', () => {
     ])
   })
 
-  it('preserves font variants, reverse colors, decorations, and Unicode', () => {
+  it('preserves font variants, reverse colors, decorations, and Unicode including Nerd glyphs', () => {
     const grid: Grid = {
       id: 1,
-      width: 4,
+      width: 6,
       height: 1,
       cells: [
         { text: 'λ', highlightId: 1 },
         { text: 'B', highlightId: 2 },
         { text: 'é', highlightId: 3 },
-        { text: '界', highlightId: 4 }
+        { text: '界', highlightId: 4 },
+        { text: '\uE0B0', highlightId: 1 },
+        { text: '\u{F0001}', highlightId: 2 }
       ]
     }
     const highlights = definitions({
@@ -285,19 +287,28 @@ describe('imperative Skia grid picture', () => {
       grid,
       defaultColors,
       highlights,
-      width: 40,
+      width: 60,
       height: 22,
       fonts
     })
 
     const state = currentState()
     const text = state.commands.filter(isText)
-    expect(text.map((command) => command.text)).toEqual(['λ', 'B', 'é', '界'])
+    expect(text.map((command) => command.text)).toEqual([
+      'λ',
+      'B',
+      'é',
+      '界',
+      '\uE0B0',
+      '\u{F0001}'
+    ])
     expect(text.map((command) => command.font)).toEqual([
       fonts.normal,
       fonts.bold,
       fonts.italic,
-      fonts.boldItalic
+      fonts.boldItalic,
+      fonts.normal,
+      fonts.bold
     ])
     expect(text[3]).toMatchObject({ x: 30, y: 17, color: '#010203' })
     expect(state.commands.filter(isLine)).toEqual([

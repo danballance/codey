@@ -1,6 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 
+import {
+  CODEY_NERD_FONT_FAMILIES,
+  useCodeyNerdFontFaces
+} from '../fonts'
 import { ACTION_PAD_MENU } from './config'
 import {
   ACTION_PAD_LONG_PRESS_MS,
@@ -35,6 +39,7 @@ export const ActionPad = memo(function ActionPad({
   onKeyboardPress
 }: ActionPadProps) {
   const placedRight = placement === 'right'
+  const [nerdFontFacesLoaded] = useCodeyNerdFontFaces()
   const [menuStack, setMenuStack] = useState<readonly ActionMenu[]>([rootMenu])
 
   useEffect(() => {
@@ -88,18 +93,37 @@ export const ActionPad = memo(function ActionPad({
     >
       <View style={[styles.header, compact && styles.compactHeader]}>
         <View style={[styles.modeBadge, compact && styles.compactModeBadge]}>
-          <Text style={[styles.modeText, compact && styles.compactHeaderText]}>{mode}</Text>
+          <Text
+            style={[
+              styles.modeText,
+              nerdFontFacesLoaded && styles.nerdFontBold,
+              compact && styles.compactHeaderText
+            ]}
+          >
+            {mode}
+          </Text>
         </View>
         {breadcrumb.length > 0 ? (
           <Text
             accessibilityLabel={`Current action path: ${breadcrumb}`}
             numberOfLines={1}
-            style={[styles.breadcrumb, compact && styles.compactHeaderText]}
+            style={[
+              styles.breadcrumb,
+              nerdFontFacesLoaded && styles.nerdFontSemiBold,
+              compact && styles.compactHeaderText
+            ]}
           >
             › {breadcrumb}
           </Text>
         ) : (
-          <Text numberOfLines={1} style={[styles.dimensions, compact && styles.compactHeaderText]}>
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.dimensions,
+              nerdFontFacesLoaded && styles.nerdFontRegular,
+              compact && styles.compactHeaderText
+            ]}
+          >
             {dimensions}
           </Text>
         )}
@@ -121,6 +145,7 @@ export const ActionPad = memo(function ActionPad({
               buttons={group.buttons}
               compact={compact}
               enabled={enabled}
+              fontFacesLoaded={nerdFontFacesLoaded}
               name={group.id}
               onInteraction={runInteraction}
               placedRight
@@ -138,6 +163,7 @@ export const ActionPad = memo(function ActionPad({
               buttons={group.buttons}
               compact={compact}
               enabled={enabled}
+              fontFacesLoaded={nerdFontFacesLoaded}
               name={group.id}
               onInteraction={runInteraction}
               placedRight={false}
@@ -153,6 +179,7 @@ function ActionGroupView({
   buttons,
   compact,
   enabled,
+  fontFacesLoaded,
   name,
   onInteraction,
   placedRight
@@ -160,6 +187,7 @@ function ActionGroupView({
   readonly buttons: readonly ActionButton[]
   readonly compact: boolean
   readonly enabled: boolean
+  readonly fontFacesLoaded: boolean
   readonly name: string
   readonly onInteraction: (interaction: ActionInteraction) => void
   readonly placedRight: boolean
@@ -171,6 +199,7 @@ function ActionGroupView({
       column={placedRight}
       compact={compact}
       enabled={enabled}
+      fontFacesLoaded={fontFacesLoaded}
       onInteraction={onInteraction}
     />
   )
@@ -218,12 +247,14 @@ function ActionButtonView({
   column,
   compact,
   enabled,
+  fontFacesLoaded,
   onInteraction
 }: {
   readonly button: ActionButton
   readonly column: boolean
   readonly compact: boolean
   readonly enabled: boolean
+  readonly fontFacesLoaded: boolean
   readonly onInteraction: (interaction: ActionInteraction) => void
 }) {
   const longPressTriggered = useRef(false)
@@ -264,12 +295,20 @@ function ActionButtonView({
         styles.button,
         compact && styles.compactButton,
         column && styles.columnButton,
+        column && button.styles?.size === '1/4' && styles.quarterColumnButton,
         !enabled && styles.disabled,
         pressed && enabled && styles.pressed
       ]}
       testID={`action-pad-${button.id}`}
     >
-      <Text numberOfLines={2} style={[styles.buttonText, compact && styles.compactButtonText]}>
+      <Text
+        numberOfLines={2}
+        style={[
+          styles.buttonText,
+          fontFacesLoaded && styles.nerdFontSemiBold,
+          compact && styles.compactButtonText
+        ]}
+      >
         {button.label}
       </Text>
     </Pressable>
@@ -315,8 +354,9 @@ const styles = StyleSheet.create({
     width: '100%',
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     alignContent: 'flex-start',
+    columnGap: '4%',
     rowGap: 12
   },
   compactColumnGroup: {
@@ -349,6 +389,18 @@ const styles = StyleSheet.create({
   },
   compactHeaderText: {
     fontSize: 11
+  },
+  nerdFontRegular: {
+    fontFamily: CODEY_NERD_FONT_FAMILIES.regular,
+    fontWeight: 'normal'
+  },
+  nerdFontSemiBold: {
+    fontFamily: CODEY_NERD_FONT_FAMILIES.semiBold,
+    fontWeight: 'normal'
+  },
+  nerdFontBold: {
+    fontFamily: CODEY_NERD_FONT_FAMILIES.bold,
+    fontWeight: 'normal'
   },
   modeText: {
     color: '#9ece6a',
@@ -421,6 +473,9 @@ const styles = StyleSheet.create({
   columnButton: {
     width: '48%',
     flex: 0
+  },
+  quarterColumnButton: {
+    width: '22%'
   },
   buttonText: {
     color: '#c0caf5',

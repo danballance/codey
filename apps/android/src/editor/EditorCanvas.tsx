@@ -9,6 +9,7 @@ import {
   Canvas,
   Picture,
   Rect,
+  Skia,
   matchFont,
   type SkFont,
   type SkPicture
@@ -21,6 +22,11 @@ import type {
 } from '@codey/editor-core'
 
 import type { PublishedPerformanceSample } from '../controller'
+import {
+  useCodeySkiaFontFaces,
+  type CodeySkiaFontFaces,
+  type CodeySkiaFontLoadState
+} from '../fonts/skia'
 import {
   EDITOR_CELL_METRICS,
   gridCellForPoint,
@@ -62,7 +68,8 @@ export const EditorCanvas = memo(function EditorCanvas({
 }: EditorCanvasProps) {
   const diagnosticsEnabled = performanceDiagnosticsEnabled()
   const renderStartedAtMs = diagnosticsEnabled ? performanceNow() : undefined
-  const fonts = useCommittedGridFonts()
+  const fontLoadState = useCodeySkiaFontFaces(FONT_SIZE)
+  const fonts = useCommittedGridFonts(fontLoadState)
 
   const grid = snapshot?.grid ?? null
   const defaultColors = snapshot?.defaultColors ?? null
@@ -210,21 +217,35 @@ interface CommittedGridPictureOptions {
  * layout update, and release only the unpublished StrictMode probe resource
  * from the creating effect's cleanup.
  */
-function useCommittedGridFonts(): GridFontResource | null {
+function useCommittedGridFonts(fontLoadState: CodeySkiaFontLoadState): GridFontResource | null {
   const [resource, setResource] = useState<GridFontResource | null>(null)
 
   useLayoutEffect(() => {
-    const created = createFontResource()
+    if (fontLoadState.status === 'pending') return
+
+    let created: GridFontResource
+    if (fontLoadState.status === 'ready') {
+      try {
+        created = createBundledFontResource(fontLoadState.fonts)
+      } catch {
+        // A loaded face without a usable typeface is a real load failure. Keep
+        // the editor usable with the previous device-font behavior.
+        created = createSystemFontResource()
+      }
+    } else {
+      created = createSystemFontResource()
+    }
     setResource(created)
     return () => {
       if (created.status === 'pending') disposeFontResource(created)
     }
-  }, [])
+  }, [fontLoadState.fonts, fontLoadState.status])
 
   useLayoutEffect(() => {
     if (resource?.status === 'pending') resource.status = 'committed'
   }, [resource])
 
+  if (fontLoadState.status === 'pending') return null
   return resource?.status === 'disposed' ? null : resource
 }
 
@@ -302,7 +323,40 @@ function useCommittedGridPicture({
   }
 }
 
-function createFontResource(): GridFontResource {
+function createBundledFontResource(source: CodeySkiaFontFaces): GridFontResource {
+  const created: SkFont[] = []
+  const create = (font: SkFont): SkFont => {
+    const typeface = font.getTypeface()
+    if (typeface === null) throw new Error('Bundled Nerd Font face has no typeface')
+    try {
+      const clone = Skia.Font(typeface, FONT_SIZE)
+      created.push(clone)
+      return clone
+    } finally {
+      // getTypeface() returns a new host wrapper. Skia.Font retains its own
+      // reference to the native typeface, so the temporary wrapper is ours to
+      // release even when cloning throws.
+      typeface.dispose()
+    }
+  }
+
+  try {
+    return {
+      normal: create(source.normal),
+      bold: create(source.bold),
+      italic: create(source.italic),
+      boldItalic: create(source.boldItalic),
+      status: 'pending'
+    }
+  } catch (error) {
+    for (let index = created.length - 1; index >= 0; index -= 1) {
+      created[index]?.dispose()
+    }
+    throw error
+  }
+}
+
+function createSystemFontResource(): GridFontResource {
   const created: SkFont[] = []
   const create = (style: Parameters<typeof matchFont>[0]): SkFont => {
     const font = matchFont(style)

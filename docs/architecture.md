@@ -61,6 +61,12 @@ converted through those same cell metrics and sent as a zero-based
 the target screen window while retaining authority over its mouse option and
 mappings.
 
+The Android app bundles JetBrainsMono Nerd Font Mono for editor glyphs and all
+action-pad text so Nerd Font private-use characters share one known typeface.
+Each surface handles loading independently: the pad retains system typography
+while pending or unavailable, and the editor falls back to system monospace if
+its four-face load fails.
+
 This slice opts into `ext_linegrid` and `rgb`, but not multigrid or externalized
 command-line, popup-menu, or message UIs.
 
@@ -140,11 +146,19 @@ to 144dp while retaining two 48dp touch rows and yields the remaining space to
 the editor. To the editor's right, it uses a `336dp` rail at full workspace
 height. Below the editor, each group flows across two rows and the groups share
 horizontal space in declaration order. In the right rail, each group flows
-across two columns in a shared vertical scroll area; the first group is at the
-top, the last is at the bottom, and intermediate groups are distributed between
-them. Keyboard compaction reduces controls from 52dp to 48dp without changing
-their group membership or order. The trusted configuration owns group density
-and fit.
+through left-aligned fractional rows in a shared vertical scroll area; the
+default half-sized buttons form two columns. The first group is at the top, the
+last is at the bottom, and intermediate groups are distributed between them.
+Keyboard compaction reduces controls from 52dp to 48dp without changing their
+group membership or order. The trusted configuration owns group density and
+fit.
+
+Buttons may opt into the semantic `styles.size` values `"1/4"` and `"1/2"`.
+The setting is limited to the right rail and defaults to `"1/2"`; the
+below-editor flow ignores it. In the rail, halves map to `48%`, quarters to
+`22%`, and the column gap to `4%`, allowing two halves, four quarters, or one
+half plus two quarters to fill a row in declaration order. This contract is not
+a general React Native style passthrough.
 
 The current Neovim mode and menu breadcrumb are projections in the action pad,
 not a second Neovim state machine. Hardware-key input remains independent of the

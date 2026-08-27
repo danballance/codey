@@ -12,6 +12,21 @@ jest.mock('../performance', () => ({
   recordPerformance: jest.fn()
 }))
 
+jest.mock('../fonts/skia', () => ({
+  useCodeySkiaFontFaces: () => {
+    const state = (
+      globalThis as typeof globalThis & { __editorCanvasTestState: EditorCanvasTestState }
+    ).__editorCanvasTestState
+    if (state.fontLoadStatus === 'pending') {
+      return { status: 'pending', fonts: null, error: null }
+    }
+    if (state.fontLoadStatus === 'error') {
+      return { status: 'error', fonts: null, error: state.fontLoadError }
+    }
+    return { status: 'ready', fonts: state.sourceFonts, error: null }
+  }
+}))
+
 jest.mock('../editor/grid-picture', () => ({
   recordGridPicture: (options: unknown) => {
     const state = (
@@ -47,17 +62,12 @@ jest.mock('@shopify/react-native-skia', () => {
       }),
     Rect: (props: Readonly<Record<string, unknown>>) =>
       React.createElement(View, { ...props, testID: 'skia-cursor' }),
+    Skia: {
+      Font: (typeface: unknown, fontSize: number) =>
+        mockCreateTestFont({ source: 'bundled', typeface, fontSize })
+    },
     matchFont: (style: Readonly<Record<string, unknown>>) => {
-      const state = (
-        globalThis as typeof globalThis & { __editorCanvasTestState: EditorCanvasTestState }
-      ).__editorCanvasTestState
-      const font = {
-        id: state.fonts.length + 1,
-        style,
-        dispose: jest.fn()
-      }
-      state.fonts.push(font)
-      return font
+      return mockCreateTestFont({ source: 'system', ...style })
     }
   }
 })
@@ -76,10 +86,28 @@ interface TestFont {
   readonly dispose: jest.Mock
 }
 
+interface TestSourceFont {
+  readonly getTypeface: jest.Mock
+}
+
+interface TestTypeface {
+  readonly face: string
+  readonly dispose: jest.Mock
+}
+
 interface EditorCanvasTestState {
   readonly recordings: unknown[]
   readonly pictures: TestPicture[]
   readonly fonts: TestFont[]
+  readonly typefaces: TestTypeface[]
+  readonly sourceFonts: {
+    readonly normal: TestSourceFont
+    readonly bold: TestSourceFont
+    readonly italic: TestSourceFont
+    readonly boldItalic: TestSourceFont
+  }
+  fontLoadStatus: 'pending' | 'ready' | 'error'
+  fontLoadError: Error
   diagnosticsEnabled: boolean
 }
 
@@ -126,6 +154,15 @@ describe('EditorCanvas picture lifecycle', () => {
       recordings: [],
       pictures: [],
       fonts: [],
+      typefaces: [],
+      sourceFonts: {
+        normal: sourceFont('normal'),
+        bold: sourceFont('bold'),
+        italic: sourceFont('italic'),
+        boldItalic: sourceFont('boldItalic')
+      },
+      fontLoadStatus: 'ready',
+      fontLoadError: new Error('Bundled font failed'),
       diagnosticsEnabled: false
     }
     jest.mocked(recordPerformance).mockClear()
@@ -180,6 +217,99 @@ describe('EditorCanvas picture lifecycle', () => {
       nativeEvent: { locationX: 1, locationY: 1 }
     })
     expect(onCellPress).not.toHaveBeenCalled()
+  })
+
+  it('does not use the system font while bundled faces are still pending', () => {
+    const state = currentState()
+    state.fontLoadStatus = 'pending'
+    const screen = render(
+      <EditorCanvas height={22} onLayout={jest.fn()} snapshot={snapshot()} width={20} />
+    )
+
+    expect(state.fonts).toHaveLength(0)
+    expect(state.recordings).toHaveLength(0)
+    expect(screen.queryByTestId('skia-picture')).toBeNull()
+
+    state.fontLoadStatus = 'ready'
+    screen.rerender(
+      <EditorCanvas height={22} onLayout={jest.fn()} snapshot={snapshot()} width={20} />
+    )
+    expect(state.fonts).toHaveLength(4)
+    expect(state.fonts.every((font) => font.style.source === 'bundled')).toBe(true)
+    expect(state.recordings).toHaveLength(1)
+  })
+
+  it('uses system monospace only after a bundled-font load error', () => {
+    const state = currentState()
+    state.fontLoadStatus = 'error'
+    const screen = render(
+      <EditorCanvas height={22} onLayout={jest.fn()} snapshot={snapshot()} width={20} />
+    )
+
+    expect(screen.getByTestId('skia-picture')).toBeTruthy()
+    expect(state.fonts).toHaveLength(4)
+    expect(state.fonts.every((font) => font.style.source === 'system')).toBe(true)
+    expect(state.fonts.map((font) => font.style.fontFamily)).toEqual([
+      'monospace',
+      'monospace',
+      'monospace',
+      'monospace'
+    ])
+  })
+
+  it('replaces and disposes a timeout fallback when bundled faces arrive late', () => {
+    const state = currentState()
+    const initial = snapshot()
+    state.fontLoadStatus = 'pending'
+    const screen = render(
+      <EditorCanvas height={22} onLayout={jest.fn()} snapshot={initial} width={20} />
+    )
+    expect(state.fonts).toHaveLength(0)
+    expect(state.pictures).toHaveLength(0)
+
+    state.fontLoadStatus = 'error'
+    screen.rerender(
+      <EditorCanvas height={22} onLayout={jest.fn()} snapshot={initial} width={20} />
+    )
+    const systemFonts = state.fonts.slice()
+    const systemPicture = state.pictures[0]
+    expect(systemFonts).toHaveLength(4)
+    expect(systemFonts.every((font) => font.style.source === 'system')).toBe(true)
+    expect(systemPicture?.dispose).not.toHaveBeenCalled()
+
+    state.fontLoadStatus = 'ready'
+    screen.rerender(
+      <EditorCanvas height={22} onLayout={jest.fn()} snapshot={initial} width={20} />
+    )
+    const bundledFonts = state.fonts.slice(4)
+    expect(bundledFonts).toHaveLength(4)
+    expect(bundledFonts.every((font) => font.style.source === 'bundled')).toBe(true)
+    expect(systemPicture?.dispose).toHaveBeenCalledTimes(1)
+    expect(systemFonts.every((font) => font.dispose.mock.calls.length === 1)).toBe(true)
+    expect(state.pictures).toHaveLength(2)
+    expect(state.pictures[1]?.dispose).not.toHaveBeenCalled()
+
+    screen.unmount()
+    expect(state.pictures[1]?.dispose).toHaveBeenCalledTimes(1)
+    expect(bundledFonts.every((font) => font.dispose.mock.calls.length === 1)).toBe(true)
+  })
+
+  it('releases temporary typefaces and partial clones when a bundled face is unusable', () => {
+    const state = currentState()
+    state.sourceFonts.italic.getTypeface.mockReturnValueOnce(null)
+    const screen = render(
+      <EditorCanvas height={22} onLayout={jest.fn()} snapshot={snapshot()} width={20} />
+    )
+
+    expect(state.typefaces.map(({ face }) => face)).toEqual(['normal', 'bold'])
+    expect(state.typefaces.every(({ dispose }) => dispose.mock.calls.length === 1)).toBe(true)
+    expect(state.fonts).toHaveLength(6)
+    expect(state.fonts.slice(0, 2).every((font) => font.style.source === 'bundled')).toBe(true)
+    expect(state.fonts.slice(0, 2).every((font) => font.dispose.mock.calls.length === 1)).toBe(true)
+    expect(state.fonts.slice(2).every((font) => font.style.source === 'system')).toBe(true)
+
+    screen.unmount()
+    expect(state.fonts.slice(2).every((font) => font.dispose.mock.calls.length === 1)).toBe(true)
   })
 
   it('does not rebuild for cursor, mode, or flush-only snapshots and disposes replacements', () => {
@@ -498,4 +628,25 @@ function currentState(): EditorCanvasTestState {
   return (
     globalThis as typeof globalThis & { __editorCanvasTestState: EditorCanvasTestState }
   ).__editorCanvasTestState
+}
+
+function sourceFont(face: string): TestSourceFont {
+  return {
+    getTypeface: jest.fn(() => {
+      const typeface = { face, dispose: jest.fn() }
+      currentState().typefaces.push(typeface)
+      return typeface
+    })
+  }
+}
+
+function mockCreateTestFont(style: Readonly<Record<string, unknown>>): TestFont {
+  const state = currentState()
+  const font = {
+    id: state.fonts.length + 1,
+    style,
+    dispose: jest.fn()
+  }
+  state.fonts.push(font)
+  return font
 }

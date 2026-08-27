@@ -2,6 +2,10 @@ import { StyleSheet } from 'react-native'
 import { cleanup, fireEvent, render, within } from '@testing-library/react-native'
 
 import {
+  CODEY_NERD_FONT_FAMILIES,
+  useCodeyNerdFontFaces
+} from '../../fonts'
+import {
   ACTION_PAD_LONG_PRESS_MS,
   ACTION_PAD_MENU,
   ActionPad,
@@ -9,7 +13,22 @@ import {
   type ActionPadProps
 } from '..'
 
+jest.mock('../../fonts', () => ({
+  CODEY_NERD_FONT_FAMILIES: {
+    regular: 'CodeyNerdFont-Regular',
+    semiBold: 'CodeyNerdFont-SemiBold',
+    bold: 'CodeyNerdFont-Bold',
+    italic: 'CodeyNerdFont-Italic',
+    boldItalic: 'CodeyNerdFont-BoldItalic'
+  },
+  useCodeyNerdFontFaces: jest.fn(() => [true, null])
+}))
+
 afterEach(cleanup)
+
+beforeEach(() => {
+  jest.mocked(useCodeyNerdFontFaces).mockReturnValue([true, null])
+})
 
 function actionPadProps(overrides: Partial<ActionPadProps> = {}): ActionPadProps {
   return {
@@ -27,6 +46,46 @@ function input(nvimInput: string, after: 'root' | 'stay' = 'stay') {
 }
 
 describe('ActionPad', () => {
+  it('uses bundled faces only after Expo reports them ready', () => {
+    jest.mocked(useCodeyNerdFontFaces).mockReturnValue([false, null])
+    const props = actionPadProps()
+    const screen = render(<ActionPad {...props} />)
+
+    expect(StyleSheet.flatten(screen.getByText('NORMAL').props.style)).toMatchObject({
+      fontFamily: 'monospace',
+      fontWeight: '700'
+    })
+    expect(StyleSheet.flatten(screen.getByText('Esc').props.style).fontFamily).toBeUndefined()
+
+    jest.mocked(useCodeyNerdFontFaces).mockReturnValue([true, null])
+    screen.rerender(<ActionPad {...props} mode="INSERT" />)
+
+    expect(StyleSheet.flatten(screen.getByText('INSERT').props.style)).toMatchObject({
+      fontFamily: CODEY_NERD_FONT_FAMILIES.bold,
+      fontWeight: 'normal'
+    })
+    expect(StyleSheet.flatten(screen.getByText(props.dimensions).props.style)).toMatchObject({
+      fontFamily: CODEY_NERD_FONT_FAMILIES.regular,
+      fontWeight: 'normal'
+    })
+    expect(StyleSheet.flatten(screen.getByText('Esc').props.style)).toMatchObject({
+      fontFamily: CODEY_NERD_FONT_FAMILIES.semiBold,
+      fontWeight: 'normal'
+    })
+
+    jest.mocked(useCodeyNerdFontFaces).mockReturnValue([
+      false,
+      new Error('font unavailable')
+    ])
+    screen.rerender(<ActionPad {...props} mode="REPLACE" />)
+
+    expect(StyleSheet.flatten(screen.getByText('REPLACE').props.style)).toMatchObject({
+      fontFamily: 'monospace',
+      fontWeight: '700'
+    })
+    expect(StyleSheet.flatten(screen.getByText('Esc').props.style).fontFamily).toBeUndefined()
+  })
+
   it('defaults to the roomy below-terminal presentation', () => {
     const screen = render(<ActionPad {...actionPadProps()} />)
 
@@ -70,13 +129,13 @@ describe('ActionPad', () => {
       'action-pad-escape'
     )).toBeTruthy()
     expect(within(portrait.getByTestId('action-pad-leading-row-2')).getByTestId(
-      'action-pad-backspace'
+      'action-pad-command'
     )).toBeTruthy()
     expect(within(portrait.getByTestId('action-pad-trailing-row-1')).getByTestId(
       'action-pad-down'
     )).toBeTruthy()
     expect(within(portrait.getByTestId('action-pad-trailing-row-2')).getByTestId(
-      'action-pad-leader'
+      'action-pad-left'
     )).toBeTruthy()
     portrait.unmount()
 
@@ -85,7 +144,7 @@ describe('ActionPad', () => {
       'action-pad-escape'
     )).toBeTruthy()
     expect(within(landscape.getByTestId('action-pad-trailing-group')).getByTestId(
-      'action-pad-command'
+      'action-pad-motions'
     )).toBeTruthy()
   })
 
@@ -110,8 +169,9 @@ describe('ActionPad', () => {
       width: '100%',
       flexDirection: 'row',
       flexWrap: 'wrap',
-      justifyContent: 'space-between',
+      justifyContent: 'flex-start',
       alignContent: 'flex-start',
+      columnGap: '4%',
       rowGap: 12
     })
     expect(screen.getByTestId('action-pad-trailing-group')).toBeTruthy()
@@ -124,16 +184,17 @@ describe('ActionPad', () => {
     })
     expect(screen.getAllByRole('button').map((button) => button.props.testID)).toEqual([
       'action-pad-escape',
-      'action-pad-tab',
-      'action-pad-enter',
-      'action-pad-backspace',
-      'action-pad-left',
+      'action-pad-directory',
+      'action-pad-command',
+      'action-pad-leader',
+      'action-pad-motions',
+      'action-pad-text-objects',
       'action-pad-down',
       'action-pad-up',
+      'action-pad-left',
       'action-pad-right',
-      'action-pad-leader',
-      'action-pad-command',
-      'action-pad-keyboard'
+      'action-pad-keyboard',
+      'action-pad-enter'
     ])
   })
 
@@ -152,6 +213,124 @@ describe('ActionPad', () => {
       flex: 0,
       borderRadius: 8
     })
+  })
+
+  it('applies configured quarter and half sizes only in the right rail', () => {
+    const rootMenu = {
+      label: 'Home',
+      groups: [
+        {
+          id: 'sized',
+          buttons: [
+            { id: 'default-half', label: 'Default', tap: input('d') },
+            {
+              id: 'explicit-half',
+              label: 'Half',
+              styles: { size: '1/2' },
+              tap: input('h')
+            },
+            {
+              id: 'quarter',
+              label: 'Quarter',
+              styles: { size: '1/4' },
+              tap: input('q')
+            }
+          ]
+        }
+      ]
+    } satisfies ActionMenu
+
+    const right = render(
+      <ActionPad {...actionPadProps({ placement: 'right', rootMenu })} />
+    )
+    expect(StyleSheet.flatten(right.getByTestId('action-pad-sized-group').props.style)).toMatchObject({
+      justifyContent: 'flex-start',
+      columnGap: '4%'
+    })
+    expect(StyleSheet.flatten(right.getByTestId('action-pad-default-half').props.style)).toMatchObject({
+      width: '48%',
+      flex: 0
+    })
+    expect(StyleSheet.flatten(right.getByTestId('action-pad-explicit-half').props.style)).toMatchObject({
+      width: '48%',
+      flex: 0
+    })
+    expect(StyleSheet.flatten(right.getByTestId('action-pad-quarter').props.style)).toMatchObject({
+      minWidth: 48,
+      width: '22%',
+      height: 52,
+      flex: 0
+    })
+    expect(right.getAllByRole('button').map((button) => button.props.testID)).toEqual([
+      'action-pad-default-half',
+      'action-pad-explicit-half',
+      'action-pad-quarter'
+    ])
+    right.unmount()
+
+    const compact = render(
+      <ActionPad {...actionPadProps({ compact: true, placement: 'right', rootMenu })} />
+    )
+    expect(StyleSheet.flatten(compact.getByTestId('action-pad-quarter').props.style)).toMatchObject({
+      minWidth: 48,
+      width: '22%',
+      height: 48,
+      flex: 0
+    })
+    compact.unmount()
+
+    const below = render(<ActionPad {...actionPadProps({ rootMenu })} />)
+    const belowQuarterStyle = StyleSheet.flatten(
+      below.getByTestId('action-pad-quarter').props.style
+    )
+    expect(belowQuarterStyle.flex).toBe(1)
+    expect(belowQuarterStyle.width).toBeUndefined()
+  })
+
+  it('packs four-quarter and mixed fractional rows in declaration order', () => {
+    const quarter = (id: string) => ({
+      id,
+      label: id,
+      styles: { size: '1/4' as const },
+      tap: input(id)
+    })
+    const rootMenu = {
+      label: 'Home',
+      groups: [
+        {
+          id: 'quarters',
+          buttons: [quarter('q1'), quarter('q2'), quarter('q3'), quarter('q4')]
+        },
+        {
+          id: 'mixed',
+          buttons: [
+            { id: 'half', label: 'half', styles: { size: '1/2' }, tap: input('h') },
+            quarter('q5'),
+            quarter('q6')
+          ]
+        }
+      ]
+    } satisfies ActionMenu
+
+    const screen = render(
+      <ActionPad {...actionPadProps({ placement: 'right', rootMenu })} />
+    )
+
+    for (const id of ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']) {
+      expect(StyleSheet.flatten(screen.getByTestId(`action-pad-${id}`).props.style).width)
+        .toBe('22%')
+    }
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-half').props.style).width)
+      .toBe('48%')
+    expect(screen.getAllByRole('button').map((button) => button.props.testID)).toEqual([
+      'action-pad-q1',
+      'action-pad-q2',
+      'action-pad-q3',
+      'action-pad-q4',
+      'action-pad-half',
+      'action-pad-q5',
+      'action-pad-q6'
+    ])
   })
 
   it('renders any number of named groups in declaration order in both placements', () => {

@@ -39,9 +39,18 @@ active menu and input state survive the layout change.
 Each menu contains an ordered array of arbitrarily named button groups. In
 portrait and square windows, every group flows across two rows and the groups
 share the available width in declaration order. In landscape, every group flows
-across two columns in a shared vertical scroll area; the first group is placed
-at the top, the last at the bottom, and any intermediate groups are distributed
-between them. Group names have no layout meaning.
+through left-aligned fractional rows in a shared vertical scroll area; the
+default half-sized buttons form two columns. The first group is placed at the
+top, the last at the bottom, and any intermediate groups are distributed between
+them. Group names have no layout meaning.
+
+A button may set the semantic `styles.size` value to `"1/4"` or `"1/2"`.
+This currently affects only the landscape rail, where an omitted value defaults
+to `"1/2"`. Half and quarter buttons map to `48%` and `22%` widths with a `4%`
+column gap, so two halves, four quarters, or one half and two quarters pack a
+row. The below-editor layout ignores the value and keeps its existing two-row
+flow. `styles` is a small action-pad contract, not an unrestricted React Native
+style passthrough.
 
 Buttons configure generic `tap` and `longPress` interaction slots, with at least
 one interaction present. An interaction may send direct Neovim input, open a
@@ -79,6 +88,12 @@ from the network or accept untrusted user-authored sequences. Configuration
 authors own group density, fit, identifiers, and navigation placement. Ordinary
 configuration changes need only a TypeScript reload or rebuild. The root menu's
 Keyboard interaction focuses the Android IME without sending editor input.
+
+Android bundles JetBrainsMono Nerd Font Mono for editor glyphs and all
+action-pad text, including Nerd Font private-use characters. The editor and pad
+load it independently. The pad retains system typography while its faces are
+pending or unavailable; the editor waits for its four faces and uses system
+monospace if that load fails.
 
 ## Touch cursor and software keyboard
 

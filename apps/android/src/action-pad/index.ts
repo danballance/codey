@@ -8,6 +8,8 @@ export {
   ACTION_PAD_LONG_PRESS_MS,
   type ActionAfter,
   type ActionButton,
+  type ActionButtonSize,
+  type ActionButtonStyles,
   type ActionGroup,
   type ActionInteraction,
   type ActionMenu
