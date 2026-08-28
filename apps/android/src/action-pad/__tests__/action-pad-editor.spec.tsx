@@ -71,12 +71,59 @@ function config(): ActionPadConfig {
   }
 }
 
+function menuManagerConfig(): ActionPadConfig {
+  return {
+    version: 1,
+    rootMenuId: 'home',
+    menus: [
+      {
+        id: 'home', label: 'Home', groups: [{
+          id: 'actions', buttons: [
+            {
+              id: 'launch', label: 'Launch child',
+              tap: { type: 'menu', menuId: 'child', after: 'stay' },
+              longPress: { type: 'group', menuId: 'child', groupId: 'target', after: 'stay' }
+            },
+            {
+              id: 'alternate', label: 'Alternate child',
+              tap: { type: 'group', menuId: 'child', groupId: 'target', after: 'stay' },
+              longPress: { type: 'menu', menuId: 'child', after: 'stay' }
+            }
+          ]
+        }]
+      },
+      {
+        id: 'child', label: 'Child', groups: [{
+          id: 'target', buttons: [{ id: 'back', label: 'Go back', tap: { type: 'back', after: 'stay' } }]
+        }]
+      },
+      {
+        id: 'orphan-parent', label: 'Orphan parent', groups: [{
+          id: 'tools', buttons: [{
+            id: 'open-orphan', label: 'Open orphan child',
+            tap: { type: 'menu', menuId: 'orphan-child', after: 'stay' }
+          }]
+        }]
+      },
+      {
+        id: 'orphan-child', label: 'Orphan child', groups: [{
+          id: 'leaf', buttons: [{
+            id: 'noop', label: 'No-op', tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' }
+          }]
+        }]
+      }
+    ]
+  }
+}
+
 function props(overrides: Partial<ActionPadEditorProps> = {}): ActionPadEditorProps {
   return {
     config: config(), onChange: jest.fn(), connected: true, busy: false, dirty: false,
     sourcePath: '~/.config/nvim/codey/action-pad.yaml', message: '',
     onLoad: jest.fn().mockResolvedValue(undefined), onSave: jest.fn().mockResolvedValue(undefined),
-    onExport: jest.fn().mockResolvedValue(undefined), onCancel: jest.fn(), ...overrides
+    onExport: jest.fn().mockResolvedValue(undefined), onCancel: jest.fn(),
+    initialButton: { menuId: 'home', groupId: 'actions', buttonId: 'input' },
+    ...overrides
   }
 }
 
@@ -100,6 +147,124 @@ function emitLayout(screen: ReturnType<typeof render>, testID: string, y: number
 }
 
 describe('ActionPadEditor', () => {
+  it('opens general entry in Manage menus while a targeted entry opens Button settings', () => {
+    const general = renderEditor({ initialButton: undefined })
+    expect(general.getByTestId('action-pad-menu-manager')).toBeTruthy()
+    expect(general.getByRole('button', { name: 'Manage menus' }).props.accessibilityState.selected).toBe(true)
+    expect(general.queryByTestId('action-pad-button-form')).toBeNull()
+    general.unmount()
+
+    const targeted = renderEditor()
+    expect(targeted.getByTestId('action-pad-button-form')).toBeTruthy()
+    expect(targeted.getByRole('button', { name: 'Button settings' }).props.accessibilityState.selected).toBe(true)
+    expect(targeted.queryByTestId('action-pad-menu-manager')).toBeNull()
+  })
+
+  it('lists label, ID, structure, incoming count and Root, Reachable or Unused status for every menu', () => {
+    const screen = renderEditor({ config: menuManagerConfig(), initialButton: undefined })
+    const expected = [
+      ['Home (home)', 'Root · Reachable', '1 group · 2 buttons · 0 incoming links'],
+      ['Child (child)', 'Reachable', '1 group · 1 button · 4 incoming links'],
+      ['Orphan parent (orphan-parent)', 'Unused', '1 group · 1 button · 0 incoming links'],
+      ['Orphan child (orphan-child)', 'Unused', '1 group · 1 button · 1 incoming link']
+    ] as const
+
+    for (const [index, rowExpected] of expected.entries()) {
+      const row = within(screen.getByTestId(`action-pad-menu-row-${index}`))
+      for (const text of rowExpected) expect(row.getByText(text)).toBeTruthy()
+    }
+    expect(screen.getByTestId('action-pad-remove-unused-menus')).toBeEnabled()
+  })
+
+  it('names exact Tap, Hold, Menu and Group blockers and navigates to the highlighted interaction', () => {
+    const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockClear()
+    const screen = renderEditor({ config: menuManagerConfig(), initialButton: undefined })
+    const expectedLabels = [
+      'Home (home) / actions / Launch child (launch) · Tap Menu action',
+      'Home (home) / actions / Launch child (launch) · Hold Group action',
+      'Home (home) / actions / Alternate child (alternate) · Tap Group action',
+      'Home (home) / actions / Alternate child (alternate) · Hold Menu action'
+    ]
+    const showReferences = () => fireEvent.press(screen.getByRole('button', {
+      name: 'Show 4 blocking references for Child (child)'
+    }))
+
+    showReferences()
+    expectedLabels.forEach((label, index) => {
+      expect(screen.getByTestId(`action-pad-reference-1-${index}`).props.accessibilityLabel).toBe(label)
+    })
+    expect(screen.getByRole('button', { name: 'Delete Child (child)' })).toBeDisabled()
+
+    fireEvent.press(screen.getByTestId('action-pad-reference-1-0'))
+    expect(screen.getByLabelText('Button ID').props.value).toBe('launch')
+    expect(within(screen.getByTestId('action-pad-interaction-tap')).getByText(
+      /^This Tap Menu action links to Child \(child\)\./
+    )).toBeTruthy()
+    fireEvent(screen.getByTestId('action-pad-editor-scroll'), 'contentSizeChange', 600, 2500)
+    emitLayout(screen, 'action-pad-editor-workspace', 300)
+    emitLayout(screen, 'action-pad-editor-details', 200)
+    emitLayout(screen, 'action-pad-button-form', 40)
+    emitLayout(screen, 'action-pad-interaction-tap', 500)
+    expect(scrollTo).toHaveBeenCalledWith({ y: 1040, animated: true })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Manage menus' }))
+    showReferences()
+    fireEvent.press(screen.getByTestId('action-pad-reference-1-1'))
+    expect(screen.getByLabelText('Button ID').props.value).toBe('launch')
+    expect(within(screen.getByTestId('action-pad-interaction-longPress')).getByText(
+      /^This Hold Group action links to Child \(child\)\./
+    )).toBeTruthy()
+
+    fireEvent.press(screen.getByRole('button', { name: 'Manage menus' }))
+    showReferences()
+    fireEvent.press(screen.getByTestId('action-pad-reference-1-2'))
+    expect(screen.getByLabelText('Button ID').props.value).toBe('alternate')
+    expect(within(screen.getByTestId('action-pad-interaction-tap')).getByText(
+      /^This Tap Group action links to Child \(child\)\./
+    )).toBeTruthy()
+
+    fireEvent.press(screen.getByRole('button', { name: 'Manage menus' }))
+    showReferences()
+    fireEvent.press(screen.getByTestId('action-pad-reference-1-3'))
+    expect(screen.getByLabelText('Button ID').props.value).toBe('alternate')
+    expect(within(screen.getByTestId('action-pad-interaction-longPress')).getByText(
+      /^This Hold Menu action links to Child \(child\)\./
+    )).toBeTruthy()
+  })
+
+  it('keeps large blocker sets collapsed and pages them without mounting every reference', () => {
+    const base = config()
+    const home = base.menus[0]!
+    const manyReferences: ActionPadConfig = {
+      ...base,
+      menus: [{
+        ...home,
+        groups: [{
+          id: 'actions',
+          buttons: Array.from({ length: 30 }, (_, index) => ({
+            id: `link-${index + 1}`,
+            label: `Link ${index + 1}`,
+            tap: { type: 'menu' as const, menuId: 'child', after: 'stay' as const }
+          }))
+        }]
+      }, base.menus[1]!]
+    }
+    const screen = renderEditor({ config: manyReferences, initialButton: undefined })
+
+    expect(screen.queryByTestId('action-pad-reference-1-0')).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Show 30 blocking references for Child (child)' }))
+    expect(screen.getByText('Showing 1–25 of 30.')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-reference-1-0')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-reference-1-24')).toBeTruthy()
+    expect(screen.queryByTestId('action-pad-reference-1-25')).toBeNull()
+
+    fireEvent.press(screen.getByRole('button', { name: 'Next references for Child (child)' }))
+    expect(screen.getByText('Showing 26–30 of 30.')).toBeTruthy()
+    expect(screen.queryByTestId('action-pad-reference-1-24')).toBeNull()
+    expect(screen.getByTestId('action-pad-reference-1-25')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-reference-1-29')).toBeTruthy()
+  })
+
   it.each([false, true])('opens the exact scoped button independently of labels or array order (reordered: %s)', (reordered) => {
     let draft: ActionPadConfig = {
       ...config(), menus: [...config().menus, {
@@ -134,7 +299,8 @@ describe('ActionPadEditor', () => {
     { menuId: 'child', groupId: 'actions', buttonId: 'input' }
   ])('keeps the general editor and draft when target $menuId/$groupId/$buttonId is missing', (initialButton) => {
     const screen = renderEditor({ initialButton })
-    expect(screen.getByLabelText('Button label').props.value).toBe('Run input')
+    expect(screen.getByTestId('action-pad-menu-manager')).toBeTruthy()
+    expect(screen.queryByTestId('action-pad-button-form')).toBeNull()
     expect(screen.getByTestId('action-pad-editor-target-notice')).toHaveTextContent(/moved, renamed, or removed/)
     expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
     expect(screen.draft()).toEqual(config())
@@ -149,7 +315,7 @@ describe('ActionPadEditor', () => {
       ...draft, menus: [draft.menus[0]!, { ...child, groups: [{ ...group, buttons: [...group.buttons, ...group.buttons] }] }]
     }
     const screen = renderEditor({ config: duplicate, initialButton: { menuId: 'child', groupId: 'target', buttonId: 'back' } })
-    expect(screen.getByLabelText('Button label').props.value).toBe('Run input')
+    expect(screen.getByTestId('action-pad-menu-manager')).toBeTruthy()
     expect(screen.getByTestId('action-pad-editor-target-notice')).toBeTruthy()
     expect(screen.props.onChange).not.toHaveBeenCalled()
   })
@@ -171,7 +337,7 @@ describe('ActionPadEditor', () => {
     const initialIdDrafts = { 'menus[1].id': 'renamed' }
     const onIdDraftsChange = jest.fn()
     const screen = renderEditor({ initialButton: { menuId: 'renamed', groupId: 'target', buttonId: 'back' }, initialIdDrafts, onIdDraftsChange })
-    expect(screen.getByLabelText('Button label').props.value).toBe('Run input')
+    expect(screen.getByTestId('action-pad-menu-manager')).toBeTruthy()
     expect(screen.getByTestId('action-pad-editor-target-notice')).toBeTruthy()
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
     expect(screen.draft()).toEqual(config())
@@ -188,7 +354,7 @@ describe('ActionPadEditor', () => {
     fireEvent.changeText(screen.getByLabelText('Button ID'), 'renamed-button')
     expect(screen.getByLabelText('Button label').props.value).toBe('Go back')
     fireEvent.press(screen.getByRole('button', { name: 'Choose destination group' }))
-    fireEvent.press(screen.getByRole('button', { name: 'Destination group: Home / actions' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Destination group: Home (home) / actions' }))
     fireEvent.press(screen.getByRole('button', { name: 'Move to group' }))
     fireEvent.press(screen.getByRole('button', { name: 'Move button earlier' }))
     expect(screen.getByLabelText('Button label').props.value).toBe('Go back')
@@ -252,7 +418,6 @@ describe('ActionPadEditor', () => {
     const screen = renderEditor({ initialButton })
     emitLayout(screen, 'action-pad-editor-workspace', 320)
     emitLayout(screen, 'action-pad-editor-details', 240)
-    emitLayout(screen, 'action-pad-button-form', 0)
     fireEvent(screen.getByTestId('action-pad-editor-scroll'), 'contentSizeChange', 600, 2500)
     expect(scrollTo).not.toHaveBeenCalled()
   })
@@ -309,10 +474,10 @@ describe('ActionPadEditor', () => {
       initialButton: { menuId: 'child', groupId: 'target', buttonId: 'back' }
     })
 
-    const selectedMenu = within(screen.getByRole('button', { name: 'Choose menu' })).getByText(childLabel)
-    const selectedButton = within(screen.getByRole('button', { name: 'Choose button' })).getByText(buttonLabel)
+    const selectedMenu = within(screen.getByRole('button', { name: 'Choose menu' })).getByText(`${childLabel} (child)`)
+    const selectedButton = within(screen.getByRole('button', { name: 'Choose button' })).getByText(`${buttonLabel} (back)`)
     fireEvent.press(screen.getByRole('button', { name: 'Choose button' }))
-    const buttonOption = within(screen.getByRole('button', { name: `Button: ${buttonLabel}` })).getByText(buttonLabel)
+    const buttonOption = within(screen.getByRole('button', { name: `Button: ${buttonLabel} (back)` })).getByText(`${buttonLabel} (back)`)
 
     for (const selected of [selectedMenu, selectedButton]) {
       const style = StyleSheet.flatten(selected.props.style)
@@ -550,6 +715,99 @@ describe('ActionPadEditor', () => {
     expect(screen.getByText('The configuration changed while the confirmation was open. Review the new document and try again.')).toBeTruthy()
   })
 
+  it('cancels or confirms individual deletion, updates every picker and preview, and clamps final-index selection', () => {
+    const alert = jest.spyOn(Alert, 'alert')
+    const screen = renderEditor({ config: menuManagerConfig(), initialButton: undefined })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Delete Orphan parent (orphan-parent)' }))
+    expect(alert).toHaveBeenLastCalledWith(
+      'Delete menu?',
+      'Delete Orphan parent (orphan-parent) and all its groups and buttons?',
+      expect.any(Array)
+    )
+    expect(screen.draft().menus).toHaveLength(4)
+    expect(alert.mock.calls.at(-1)?.[2]?.find((item) => item.text === 'Cancel')).toBeDefined()
+
+    fireEvent.press(screen.getByRole('button', { name: 'Delete Orphan parent (orphan-parent)' }))
+    act(() => { alert.mock.calls.at(-1)?.[2]?.find((item) => item.text === 'Delete')?.onPress?.() })
+    expect(screen.draft().menus.map((candidate) => candidate.id)).toEqual(['home', 'child', 'orphan-child'])
+    expect(screen.queryByText('Open orphan child')).toBeNull()
+    expect(within(screen.getByTestId('action-pad-editor-preview')).getByText('No-op')).toBeTruthy()
+
+    fireEvent.press(screen.getByRole('button', { name: 'Choose menu' }))
+    expect(screen.queryByRole('button', { name: 'Menu: Orphan parent (orphan-parent)' })).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Choose menu' }))
+
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Home (home)' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Button settings' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose tap menu' }))
+    expect(screen.queryByRole('button', { name: 'Tap menu: Orphan parent (orphan-parent)' })).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Choose tap menu' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose hold destination menu' }))
+    expect(screen.queryByRole('button', { name: 'Hold destination menu: Orphan parent (orphan-parent)' })).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Choose hold destination menu' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose destination group' }))
+    expect(screen.queryByRole('button', { name: 'Destination group: Orphan parent (orphan-parent) / tools' })).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Choose destination group' }))
+
+    fireEvent.press(screen.getByRole('button', { name: 'Manage menus' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Delete Orphan child (orphan-child)' }))
+    act(() => { alert.mock.calls.at(-1)?.[2]?.find((item) => item.text === 'Delete')?.onPress?.() })
+    expect(screen.draft().menus.map((candidate) => candidate.id)).toEqual(['home', 'child'])
+    expect(within(screen.getByRole('button', { name: 'Choose menu' })).getByText('Child (child)')).toBeTruthy()
+  })
+
+  it('clamps Menu settings selection when repairing a root-missing draft by deleting its only menu', () => {
+    const alert = jest.spyOn(Alert, 'alert')
+    const screen = renderEditor({
+      config: { version: 1, rootMenuId: 'missing', menus: [{ id: 'only', label: 'Only', groups: [] }] },
+      initialButton: undefined
+    })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Only (only)' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Delete menu' }))
+    act(() => { alert.mock.calls.at(-1)?.[2]?.find((item) => item.text === 'Delete')?.onPress?.() })
+    expect(screen.draft().menus).toEqual([])
+    expect(within(screen.getByRole('button', { name: 'Choose menu' })).getByText('No menus')).toBeTruthy()
+    expect(screen.getByText('Add a menu to start building your Action Pad.')).toBeTruthy()
+  })
+
+  it('previews, cancels and atomically removes an internally linked unused subtree', () => {
+    const original = menuManagerConfig()
+    const screen = renderEditor({ config: original, initialButton: undefined })
+
+    fireEvent.press(screen.getByTestId('action-pad-remove-unused-menus'))
+    const confirmation = within(screen.getByTestId('action-pad-cleanup-confirmation'))
+    expect(confirmation.getByText('Orphan parent (orphan-parent)')).toBeTruthy()
+    expect(confirmation.getByText('Orphan child (orphan-child)')).toBeTruthy()
+    expect(confirmation.getByText('Total: 2 menus, 2 groups, and 2 buttons.')).toBeTruthy()
+    fireEvent.press(confirmation.getByRole('button', { name: 'Keep menus' }))
+    expect(screen.queryByTestId('action-pad-cleanup-confirmation')).toBeNull()
+    expect(screen.draft()).toEqual(original)
+
+    fireEvent.press(screen.getByTestId('action-pad-remove-unused-menus'))
+    fireEvent.press(screen.getByTestId('action-pad-confirm-remove-unused-menus'))
+    expect(screen.draft().menus).toEqual(original.menus.slice(0, 2))
+    expect(screen.draft().rootMenuId).toBe('home')
+    expect(screen.queryByTestId('action-pad-menu-row-2')).toBeNull()
+    expect(screen.getByTestId('action-pad-remove-unused-menus')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'No unused menus' })).toBeTruthy()
+  })
+
+  it.each([
+    { name: 'a semantic error', overrides: { config: { ...menuManagerConfig(), rootMenuId: 'missing' } } },
+    { name: 'host work', overrides: { config: menuManagerConfig(), busy: true } },
+    {
+      name: 'a pending ID edit',
+      overrides: { config: menuManagerConfig(), initialIdDrafts: { 'menus[0].id': 'child' } }
+    }
+  ])('disables unused-menu cleanup during $name', ({ overrides }) => {
+    const screen = renderEditor({ ...overrides, initialButton: undefined })
+    expect(screen.getByTestId('action-pad-remove-unused-menus')).toBeDisabled()
+    fireEvent.press(screen.getByTestId('action-pad-remove-unused-menus'))
+    expect(screen.queryByTestId('action-pad-cleanup-confirmation')).toBeNull()
+  })
+
   it('creates menus and groups, updates root IDs and protects linked menus', () => {
     const screen = renderEditor()
     fireEvent.press(screen.getByRole('button', { name: 'Menu settings' }))
@@ -557,7 +815,7 @@ describe('ActionPadEditor', () => {
     expect(screen.draft().rootMenuId).toBe('start')
     expect(screen.getByRole('button', { name: 'Delete menu' })).toBeDisabled()
     fireEvent.press(screen.getByRole('button', { name: 'Choose menu' }))
-    fireEvent.press(screen.getByRole('button', { name: 'Menu: Child' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Menu: Child (child)' }))
     fireEvent.press(screen.getByRole('button', { name: 'Menu settings' }))
     fireEvent.changeText(screen.getByLabelText('Menu ID'), 'tools')
     expect(screen.draft().menus[0]?.groups[0]?.buttons[1]?.tap).toMatchObject({ menuId: 'tools' })
@@ -617,7 +875,7 @@ describe('ActionPadEditor', () => {
   it('moves buttons to a group in another menu and keeps the moved button selected', () => {
     const screen = renderEditor()
     fireEvent.press(screen.getByRole('button', { name: 'Choose destination group' }))
-    fireEvent.press(screen.getByRole('button', { name: 'Destination group: Child / target' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Destination group: Child (child) / target' }))
     fireEvent.press(screen.getByRole('button', { name: 'Move to group' }))
     expect(screen.draft().menus[0]?.groups[0]?.buttons.map((button) => button.id)).toEqual(['open', 'keyboard'])
     expect(screen.draft().menus[1]?.groups[0]?.buttons.map((button) => button.id)).toEqual(['back', 'input'])
@@ -692,7 +950,7 @@ describe('ActionPadEditor', () => {
     const initial = props()
     const screen = render(<ActionPadEditor {...initial} />)
     fireEvent.press(screen.getByRole('button', { name: 'Choose menu' }))
-    fireEvent.press(screen.getByRole('button', { name: 'Menu: Child' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Menu: Child (child)' }))
     fireEvent.press(screen.getByRole('button', { name: 'Menu settings' }))
     fireEvent.changeText(screen.getByLabelText('Menu ID'), 'home')
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
@@ -704,6 +962,7 @@ describe('ActionPadEditor', () => {
     }
     screen.rerender(<ActionPadEditor {...initial} config={replacement} />)
     expect(screen.getByLabelText('Button label').props.value).toBe('Loaded button')
+    expect(within(screen.getByRole('button', { name: 'Choose menu' })).getByText('Loaded root (new-root) · Root')).toBeTruthy()
     expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
     expect(screen.queryByText('A menu with ID “home” already exists. Choose a unique ID.')).toBeNull()
   })

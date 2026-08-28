@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import {
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -22,13 +23,15 @@ import {
   type ConfigIssue
 } from './document'
 import {
+  analyzeActionPadMenus,
   editActionPad,
   groupDeletionReason,
   menuDeletionReason,
   type ActionPadEdit,
   type ButtonLocation,
   type EditableButton,
-  type EditableInteraction
+  type EditableInteraction,
+  type MenuReference
 } from './editing'
 import { type ActionPadButtonTarget } from './types'
 
@@ -50,7 +53,7 @@ export interface ActionPadEditorProps {
   readonly onIdDraftsChange?: (drafts: Readonly<Record<string, string>>) => void
 }
 
-type SelectionKind = 'menu' | 'group' | 'button'
+type SelectionKind = 'manager' | 'menu' | 'group' | 'button'
 interface Choice {
   readonly value: string
   readonly label: string
@@ -66,8 +69,33 @@ interface TextSelection {
   readonly end: number
 }
 
+interface ReferenceGuide {
+  readonly buttonIdentity: string
+  readonly gesture: 'tap' | 'longPress'
+  readonly interactionType: 'menu' | 'group'
+  readonly target: string
+}
+
+interface CleanupMenuSummary {
+  readonly id: string
+  readonly label: string
+  readonly groupCount: number
+  readonly buttonCount: number
+}
+
+interface CleanupConfirmation {
+  readonly config: ActionPadConfig
+  readonly menus: readonly CleanupMenuSummary[]
+  readonly groupCount: number
+  readonly buttonCount: number
+}
+
+type EditorScrollTarget = 'button' | 'tap' | 'longPress'
+type EditorLayoutPart = 'workspace' | 'details' | EditorScrollTarget
+
 // The preview cannot access a session or the native Neovim input bridge.
 const ignorePreviewInput = () => undefined
+const MENU_REFERENCE_PAGE_SIZE = 25
 
 export function ActionPadEditor({
   config,
@@ -95,16 +123,28 @@ export function ActionPadEditor({
   const [menuSelection, setMenuSelection] = useState(() => initialButtonLocation?.menuIndex ?? Math.max(0, config.menus.findIndex((menu) => menu.id === config.rootMenuId)))
   const [groupSelection, setGroupSelection] = useState(initialButtonLocation?.groupIndex ?? 0)
   const [buttonSelection, setButtonSelection] = useState(initialButtonLocation?.buttonIndex ?? 0)
-  const [selectionKind, setSelectionKind] = useState<SelectionKind>('button')
+  const [selectionKind, setSelectionKind] = useState<SelectionKind>(initialButtonLocation ? 'button' : 'manager')
   const [targetNotice, setTargetNotice] = useState(() => initialButton && !initialButtonLocation
     ? 'The selected button could not be found uniquely in this draft. It may have been moved, renamed, or removed. Your draft has been kept; choose a button below.'
     : '')
   const scrollView = useRef<ScrollView>(null)
-  const initialButtonScroll = useRef<{
+  const editorScroll = useRef<{
     pending: boolean
     contentReady: boolean
-    positions: Partial<Record<'workspace' | 'details' | 'button', number>>
-  }>({ pending: !!initialButtonLocation, contentReady: false, positions: {} })
+    target: EditorScrollTarget
+    animated: boolean
+    expectedButtonIdentity: string
+    positionedButtonIdentity: string
+    positions: Partial<Record<EditorLayoutPart, number>>
+  }>({
+    pending: !!initialButtonLocation,
+    contentReady: false,
+    target: 'button',
+    animated: false,
+    expectedButtonIdentity: initialButtonLocation ? buttonIdentityAt(config, initialButtonLocation) : '',
+    positionedButtonIdentity: '',
+    positions: {}
+  })
   const [hostPath, setHostPath] = useState(sourcePath)
   const [exportPath, setExportPath] = useState('')
   const [showExport, setShowExport] = useState(false)
@@ -116,6 +156,8 @@ export function ActionPadEditor({
   const [iconPickerOpen, setIconPickerOpen] = useState(false)
   const [buttonLabelSelection, setButtonLabelSelection] = useState<TextSelection>()
   const [labelFocusRequest, setLabelFocusRequest] = useState(0)
+  const [referenceGuide, setReferenceGuide] = useState<ReferenceGuide>()
+  const [cleanupConfirmation, setCleanupConfirmation] = useState<CleanupConfirmation>()
   const buttonLabelInput = useRef<TextInput>(null)
   const operationInFlight = useRef(false)
   const observedConfig = useRef(config)
@@ -142,7 +184,9 @@ export function ActionPadEditor({
     if (local) return
     // A successful Load/Reload or Save may replace the controlled document.
     // Old field errors and index-based selections do not belong to that file.
-    initialButtonScroll.current.pending = false
+    editorScroll.current.pending = false
+    editorScroll.current.positionedButtonIdentity = ''
+    editorScroll.current.positions = {}
     setTargetNotice('')
     setPendingIds({})
     setEditError(null)
@@ -150,10 +194,12 @@ export function ActionPadEditor({
     setMenuSelection(Math.max(0, config.menus.findIndex((menu) => menu.id === config.rootMenuId)))
     setGroupSelection(0)
     setButtonSelection(0)
-    setSelectionKind('button')
+    setSelectionKind(initialButtonLocation ? 'button' : 'manager')
     setMoveDestination('')
     setIconPickerOpen(false)
     setButtonLabelSelection(undefined)
+    setReferenceGuide(undefined)
+    setCleanupConfirmation(undefined)
     setHostPath(sourcePath)
   }, [config, sourcePath])
 
@@ -179,10 +225,13 @@ export function ActionPadEditor({
   const menuPath = `menus[${menuIndex}]`
   const groupPath = `${menuPath}.groups[${groupIndex}]`
   const buttonPath = `${groupPath}.buttons[${buttonIndex}]`
-  const buttonIdentity = button ? `${menuIndex}:${menu?.id}:${groupIndex}:${group?.id}:${buttonIndex}:${button.id}` : ''
   const groupLocation = { menuIndex, groupIndex }
   const buttonLocation = { ...groupLocation, buttonIndex }
+  const buttonIdentity = button ? buttonIdentityAt(config, buttonLocation) : ''
   const issues = useMemo(() => validateActionPadConfig(config), [config])
+  const menuAnalysis = useMemo(() => analyzeActionPadMenus(config), [config])
+  const selectedMenuAnalysis = menuAnalysis.find((analysis) => analysis.menuIndex === menuIndex)
+  const unusedMenuAnalysis = menuAnalysis.filter((analysis) => !analysis.reachable)
   const displayedIssues = [
     ...issues,
     ...Object.entries(pendingIds).map(([path, pending]) => ({ path, message: pending.message })),
@@ -206,7 +255,7 @@ export function ActionPadEditor({
     candidate.groups.flatMap((candidateGroup, candidateGroupIndex) =>
       candidateMenuIndex === menuIndex && candidateGroupIndex === groupIndex ? [] : [{
         value: `${candidateMenuIndex}:${candidateGroupIndex}`,
-        label: `${candidate.label || candidate.id} / ${candidateGroup.id || 'Unnamed group'}`
+        label: `${menuDisplayName(candidate)} / ${candidateGroup.id || 'Unnamed group'}`
       }]
     )
   )
@@ -306,6 +355,7 @@ export function ActionPadEditor({
     setSelectionKind('button')
     setMoveDestination('')
     setEditError(null)
+    setReferenceGuide(undefined)
   }
 
   function chooseGroup(index: number) {
@@ -314,6 +364,7 @@ export function ActionPadEditor({
     setSelectionKind('button')
     setMoveDestination('')
     setEditError(null)
+    setReferenceGuide(undefined)
   }
 
   function updateButton(patch: Partial<EditableButton>, path: string) {
@@ -338,6 +389,7 @@ export function ActionPadEditor({
 
   function focusIssue(issue: ConfigIssue) {
     const indices = /^menus\[(\d+)\](?:\.groups\[(\d+)\](?:\.buttons\[(\d+)\])?)?/.exec(issue.path)
+    setReferenceGuide(undefined)
     if (!indices) { setSelectionKind('menu'); return }
     setMenuSelection(Number(indices[1]))
     setGroupSelection(Number(indices[2] ?? 0))
@@ -345,21 +397,129 @@ export function ActionPadEditor({
     setSelectionKind(indices[3] !== undefined ? 'button' : indices[2] !== undefined ? 'group' : 'menu')
   }
 
-  function scrollToInitialButton() {
-    const scroll = initialButtonScroll.current
+  function scrollToEditorTarget() {
+    const scroll = editorScroll.current
     const { workspace, details, button: buttonY } = scroll.positions
+    const interactionY = scroll.target === 'button' ? 0 : scroll.positions[scroll.target]
     if (!scroll.pending || !scroll.contentReady || !scrollView.current ||
-      workspace === undefined || details === undefined || buttonY === undefined) return
+      scroll.expectedButtonIdentity !== scroll.positionedButtonIdentity ||
+      workspace === undefined || details === undefined || buttonY === undefined || interactionY === undefined) return
     scroll.pending = false
     // These layouts are relative to successive ancestors. Summing them keeps
-    // the card aligned in both the stacked and side-by-side editor layouts.
-    scrollView.current.scrollTo({ y: workspace + details + buttonY, animated: false })
+    // the target aligned in both the stacked and side-by-side editor layouts.
+    scrollView.current.scrollTo({ y: workspace + details + buttonY + interactionY, animated: scroll.animated })
   }
 
-  function recordInitialButtonLayout(part: 'workspace' | 'details' | 'button', y: number) {
-    if (!initialButtonScroll.current.pending) return
-    initialButtonScroll.current.positions[part] = y
-    scrollToInitialButton()
+  function recordEditorLayout(part: 'workspace' | 'details', y: number): void
+  function recordEditorLayout(part: EditorScrollTarget, y: number, identity: string): void
+  function recordEditorLayout(part: EditorLayoutPart, y: number, identity?: string) {
+    const scroll = editorScroll.current
+    if (part === 'button' || part === 'tap' || part === 'longPress') {
+      if (!identity) return
+      if (scroll.positionedButtonIdentity !== identity) {
+        scroll.positionedButtonIdentity = identity
+        delete scroll.positions.button
+        delete scroll.positions.tap
+        delete scroll.positions.longPress
+      }
+    }
+    scroll.positions[part] = y
+    scrollToEditorTarget()
+  }
+
+  function navigateToReference(
+    location: ButtonLocation,
+    gesture: 'tap' | 'longPress',
+    interactionType: 'menu' | 'group',
+    target: string
+  ) {
+    const sourceButton = config.menus[location.menuIndex]?.groups[location.groupIndex]?.buttons[location.buttonIndex]
+    if (!sourceButton) {
+      setOperationError('That source button no longer exists. Review the latest menu links and try again.')
+      return
+    }
+    const identity = buttonIdentityAt(config, location)
+    const scroll = editorScroll.current
+    scroll.pending = true
+    scroll.target = gesture
+    scroll.animated = true
+    scroll.expectedButtonIdentity = identity
+    setMenuSelection(location.menuIndex)
+    setGroupSelection(location.groupIndex)
+    setButtonSelection(location.buttonIndex)
+    setSelectionKind('button')
+    setMoveDestination('')
+    setEditError(null)
+    setReferenceGuide({ buttonIdentity: identity, gesture, interactionType, target })
+    requestAnimationFrame(scrollToEditorTarget)
+  }
+
+  function editManagedMenu(index: number) {
+    setMenuSelection(index)
+    setGroupSelection(0)
+    setButtonSelection(0)
+    setSelectionKind('menu')
+    setMoveDestination('')
+    setEditError(null)
+    setReferenceGuide(undefined)
+  }
+
+  function deleteManagedMenu(index: number) {
+    const candidate = config.menus[index]
+    if (!candidate) return
+    confirmRemoval(
+      'Delete menu?',
+      `Delete ${menuDisplayName(candidate)} and all its groups and buttons?`,
+      () => apply({ type: 'delete-menu', menuIndex: index }, `menus[${index}]`, (next) => {
+        setMenuSelection(Math.min(index, Math.max(0, next.menus.length - 1)))
+        setGroupSelection(0)
+        setButtonSelection(0)
+        setSelectionKind('manager')
+        setMoveDestination('')
+        setReferenceGuide(undefined)
+      })
+    )
+  }
+
+  function openCleanupConfirmation() {
+    if (busy || hasPendingIds || issues.length > 0 || unusedMenuAnalysis.length === 0) return
+    const menus = unusedMenuAnalysis.flatMap(({ menuIndex: unusedIndex }) => {
+      const unusedMenu = config.menus[unusedIndex]
+      if (!unusedMenu) return []
+      return [{
+        id: unusedMenu.id,
+        label: unusedMenu.label,
+        groupCount: unusedMenu.groups.length,
+        buttonCount: countMenuButtons(unusedMenu)
+      }]
+    })
+    setCleanupConfirmation({
+      config,
+      menus,
+      groupCount: menus.reduce((total, candidate) => total + candidate.groupCount, 0),
+      buttonCount: menus.reduce((total, candidate) => total + candidate.buttonCount, 0)
+    })
+  }
+
+  function removeUnusedMenus() {
+    const confirmation = cleanupConfirmation
+    setCleanupConfirmation(undefined)
+    if (!confirmation) return
+    if (confirmation.config !== config) {
+      setOperationError('The configuration changed while the confirmation was open. Review the new document and try again.')
+      return
+    }
+    const selectedMenuId = menu?.id
+    apply({ type: 'delete-unused-menus' }, 'menus', (next) => {
+      const survivingIndex = selectedMenuId === undefined ? -1 : next.menus.findIndex((candidate) => candidate.id === selectedMenuId)
+      const rootIndex = next.menus.findIndex((candidate) => candidate.id === next.rootMenuId)
+      setMenuSelection(Math.max(0, survivingIndex >= 0 ? survivingIndex : rootIndex))
+      setGroupSelection(0)
+      setButtonSelection(0)
+      setSelectionKind('manager')
+      setMoveDestination('')
+      setReferenceGuide(undefined)
+    })
   }
 
   return (
@@ -383,8 +543,8 @@ export function ActionPadEditor({
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={(_width, height) => {
-          initialButtonScroll.current.contentReady = height > 0
-          scrollToInitialButton()
+          editorScroll.current.contentReady = height > 0
+          scrollToEditorTarget()
         }}
         ref={scrollView}
         style={styles.scroll}
@@ -447,7 +607,7 @@ export function ActionPadEditor({
           </View>
         ) : null}
 
-        <View onLayout={(event) => recordInitialButtonLayout('workspace', event.nativeEvent.layout.y)} style={[styles.workspace, wide && styles.wideWorkspace]} testID="action-pad-editor-workspace">
+        <View onLayout={(event) => recordEditorLayout('workspace', event.nativeEvent.layout.y)} style={[styles.workspace, wide && styles.wideWorkspace]} testID="action-pad-editor-workspace">
           <View style={[styles.navigation, wide && styles.wideNavigation]}>
             <View style={[styles.selectors, wide && styles.verticalSelectors]}>
               <View style={styles.selector}>
@@ -456,7 +616,7 @@ export function ActionPadEditor({
                   fontLoaded={fontLoaded}
                   label="Menu"
                   onChange={(value) => chooseMenu(Number(value))}
-                  options={config.menus.map((candidate, index) => ({ value: String(index), label: `${candidate.label || 'Unnamed menu'}${candidate.id === config.rootMenuId ? ' · Root' : ''}` }))}
+                  options={config.menus.map((candidate, index) => ({ value: String(index), label: `${menuDisplayName(candidate)}${candidate.id === config.rootMenuId ? ' · Root' : ''}` }))}
                   placeholder="No menus"
                   value={menu ? String(menuIndex) : ''}
                 />
@@ -486,8 +646,8 @@ export function ActionPadEditor({
                   disabled={busy || !button}
                   fontLoaded={fontLoaded}
                   label="Button"
-                  onChange={(value) => { setButtonSelection(Number(value)); setSelectionKind('button'); setEditError(null); setMoveDestination('') }}
-                  options={group?.buttons.map((candidate, index) => ({ value: String(index), label: candidate.label || 'Unnamed button' })) ?? []}
+                  onChange={(value) => { setButtonSelection(Number(value)); setSelectionKind('button'); setEditError(null); setMoveDestination(''); setReferenceGuide(undefined) }}
+                  options={group?.buttons.map((candidate, index) => ({ value: String(index), label: buttonDisplayName(candidate) })) ?? []}
                   placeholder="No buttons"
                   value={button ? String(buttonIndex) : ''}
                 />
@@ -503,13 +663,97 @@ export function ActionPadEditor({
               </View>
             </View>
             <View style={[styles.actions, wide && styles.verticalSelectors]}>
-              <EditorButton disabled={busy || !menu} label="Menu settings" onPress={() => setSelectionKind('menu')} selected={kind === 'menu'} />
-              <EditorButton disabled={busy || !group} label="Group settings" onPress={() => setSelectionKind('group')} selected={kind === 'group'} />
-              <EditorButton disabled={busy || !button} label="Button settings" onPress={() => setSelectionKind('button')} selected={kind === 'button'} />
+              <EditorButton disabled={busy} label="Manage menus" onPress={() => { setSelectionKind('manager'); setReferenceGuide(undefined) }} selected={kind === 'manager'} />
+              <EditorButton disabled={busy || !menu} label="Menu settings" onPress={() => { setSelectionKind('menu'); setReferenceGuide(undefined) }} selected={kind === 'menu'} />
+              <EditorButton disabled={busy || !group} label="Group settings" onPress={() => { setSelectionKind('group'); setReferenceGuide(undefined) }} selected={kind === 'group'} />
+              <EditorButton disabled={busy || !button} label="Button settings" onPress={() => { setSelectionKind('button'); setReferenceGuide(undefined) }} selected={kind === 'button'} />
             </View>
           </View>
 
-          <View onLayout={(event) => recordInitialButtonLayout('details', event.nativeEvent.layout.y)} style={styles.details} testID="action-pad-editor-details">
+          <View onLayout={(event) => recordEditorLayout('details', event.nativeEvent.layout.y)} style={styles.details} testID="action-pad-editor-details">
+            {kind === 'manager' ? (
+              <View style={styles.card} testID="action-pad-menu-manager">
+                <Text accessibilityRole="header" style={styles.sectionTitle}>Manage menus</Text>
+                <Text style={styles.muted}>Removing a launcher or clearing its action does not remove the destination menu. Delete menu definitions here when they are no longer needed.</Text>
+                <Text style={styles.muted}>Changes update this recoverable draft immediately. Save writes the YAML and activates the edited Action Pad.</Text>
+
+                <View style={styles.menuList}>
+                  {menuAnalysis.map((analysis) => {
+                    const candidate = config.menus[analysis.menuIndex]
+                    if (!candidate) return null
+                    const root = candidate.id === config.rootMenuId
+                    const displayName = menuDisplayName(candidate)
+                    const buttonCount = countMenuButtons(candidate)
+                    const sourceMenuIndexes = [...new Set(analysis.incoming.map((reference) => reference.location.menuIndex))]
+                    const candidateDeletionReason = root
+                      ? 'Choose another root menu before deleting this menu.'
+                      : sourceMenuIndexes.length > 0
+                        ? `Remove menu links from ${sourceMenuIndexes.map((sourceIndex) => {
+                          const sourceMenu = config.menus[sourceIndex]
+                          return sourceMenu?.label || sourceMenu?.id || `menu ${sourceIndex + 1}`
+                        }).join(', ')} before deleting this menu.`
+                        : undefined
+                    const status = root ? 'Root · Reachable' : analysis.reachable ? 'Reachable' : 'Unused'
+                    return (
+                      <View key={`${candidate.id}-${analysis.menuIndex}`} style={styles.menuRow} testID={`action-pad-menu-row-${analysis.menuIndex}`}>
+                        <View style={styles.menuRowHeader}>
+                          <View style={styles.menuRowTitle}>
+                            <Text style={[styles.menuName, fontLoaded && styles.nerdFont]}>{displayName}</Text>
+                            <Text style={analysis.reachable ? styles.muted : styles.notice}>{status}</Text>
+                          </View>
+                          <Text style={styles.muted}>
+                            {candidate.groups.length} {candidate.groups.length === 1 ? 'group' : 'groups'} · {buttonCount} {buttonCount === 1 ? 'button' : 'buttons'} · {analysis.incoming.length} incoming {analysis.incoming.length === 1 ? 'link' : 'links'}
+                          </Text>
+                        </View>
+                        <View style={styles.actions}>
+                          <EditorButton disabled={busy} label={`Edit ${displayName}`} onPress={() => editManagedMenu(analysis.menuIndex)} />
+                          <EditorButton
+                            disabled={busy || root}
+                            label={root ? `${displayName} is root` : `Make ${displayName} root`}
+                            onPress={() => apply({ type: 'set-root-menu', menuIndex: analysis.menuIndex }, 'rootMenuId')}
+                            selected={root}
+                          />
+                          <EditorButton
+                            danger
+                            disabled={structuralBusy || Boolean(candidateDeletionReason)}
+                            label={`Delete ${displayName}`}
+                            onPress={() => deleteManagedMenu(analysis.menuIndex)}
+                          />
+                        </View>
+                        {candidateDeletionReason ? <Text style={[styles.muted, fontLoaded && styles.nerdFont]}>{candidateDeletionReason}</Text> : null}
+                        {analysis.incoming.length > 0 ? (
+                          <MenuReferenceList
+                            busy={busy}
+                            config={config}
+                            onOpen={(reference) => navigateToReference(reference.location, reference.gesture, reference.interactionType, displayName)}
+                            references={analysis.incoming}
+                            target={displayName}
+                            testIDPrefix={`action-pad-reference-${analysis.menuIndex}`}
+                          />
+                        ) : null}
+                      </View>
+                    )
+                  })}
+                  {config.menus.length === 0 ? <Text style={styles.muted}>No menu definitions yet. Add a menu to start building your Action Pad.</Text> : null}
+                </View>
+
+                <View style={styles.cleanupSection}>
+                  <Text style={styles.label}>Unused menu cleanup</Text>
+                  <Text style={styles.muted}>Unused menus cannot be reached from the root through any Tap or Hold Menu or Group action.</Text>
+                  <EditorButton
+                    danger
+                    disabled={busy || hasPendingIds || issues.length > 0 || unusedMenuAnalysis.length === 0}
+                    label={unusedMenuAnalysis.length === 0 ? 'No unused menus' : `Remove ${unusedMenuAnalysis.length} unused ${unusedMenuAnalysis.length === 1 ? 'menu' : 'menus'}…`}
+                    onPress={openCleanupConfirmation}
+                    testID="action-pad-remove-unused-menus"
+                  />
+                  {hasPendingIds ? <Text style={styles.muted}>Finish or undo pending ID edits before removing menus.</Text> : null}
+                  {issues.length > 0 ? <Text style={styles.muted}>Resolve configuration issues before removing unused menus.</Text> : null}
+                  {!hasPendingIds && issues.length === 0 && unusedMenuAnalysis.length === 0 ? <Text style={styles.muted}>Every menu is reachable from the root.</Text> : null}
+                </View>
+              </View>
+            ) : null}
+
             {kind === 'menu' && menu ? (
               <View style={styles.card} testID="action-pad-menu-form">
                 <Text accessibilityRole="header" style={styles.sectionTitle}>Menu settings</Text>
@@ -519,8 +763,18 @@ export function ActionPadEditor({
                 <FieldIssues issues={displayedIssues} path="rootMenuId" />
                 <ReorderControls busy={structuralBusy} count={config.menus.length} index={menuIndex} item="menu" onMove={(direction) => apply({ type: 'reorder-menu', menuIndex, direction }, menuPath, () => setMenuSelection(menuIndex + direction))} />
                 <Text style={styles.muted}>{menu.groups.length} {menu.groups.length === 1 ? 'group' : 'groups'} in this menu.</Text>
-                <EditorButton danger disabled={structuralBusy || Boolean(deletionReason)} label="Delete menu" onPress={() => confirmRemoval('Delete menu?', `Delete “${menu.label}” and all its groups and buttons?`, () => apply({ type: 'delete-menu', menuIndex }, menuPath, (next) => chooseMenu(Math.min(menuIndex, next.menus.length - 1))))} />
+                <EditorButton danger disabled={structuralBusy || Boolean(deletionReason)} label="Delete menu" onPress={() => confirmRemoval('Delete menu?', `Delete ${menuDisplayName(menu)} and all its groups and buttons?`, () => apply({ type: 'delete-menu', menuIndex }, menuPath, (next) => chooseMenu(Math.max(0, Math.min(menuIndex, next.menus.length - 1)))))} />
                 {deletionReason ? <Text style={[styles.muted, fontLoaded && styles.nerdFont]}>{deletionReason}</Text> : null}
+                {selectedMenuAnalysis && selectedMenuAnalysis.incoming.length > 0 ? (
+                  <MenuReferenceList
+                    busy={busy}
+                    config={config}
+                    onOpen={(reference) => navigateToReference(reference.location, reference.gesture, reference.interactionType, menuDisplayName(menu))}
+                    references={selectedMenuAnalysis.incoming}
+                    target={menuDisplayName(menu)}
+                    testIDPrefix="action-pad-menu-form-reference"
+                  />
+                ) : null}
               </View>
             ) : null}
 
@@ -540,8 +794,11 @@ export function ActionPadEditor({
             ) : null}
 
             {kind === 'button' && button ? (
-              <View onLayout={(event) => recordInitialButtonLayout('button', event.nativeEvent.layout.y)} style={styles.card} testID="action-pad-button-form">
+              <View onLayout={(event) => recordEditorLayout('button', event.nativeEvent.layout.y, buttonIdentity)} style={styles.card} testID="action-pad-button-form">
                 <Text accessibilityRole="header" style={styles.sectionTitle}>Button settings</Text>
+                {referenceGuide?.buttonIdentity === buttonIdentity ? (
+                  <Text accessibilityLiveRegion="polite" style={styles.notice}>The exact blocking action is highlighted below. Change its action type or destination to remove the menu reference.</Text>
+                ) : null}
                 <FormField
                   disabled={busy}
                   fontLoaded={fontLoaded}
@@ -568,8 +825,38 @@ export function ActionPadEditor({
                 <FieldIssues issues={displayedIssues} path={`${buttonPath}.styles.size`} />
                 <FormField disabled={busy} fontLoaded={fontLoaded} hint="Leave blank to use the button label." issues={displayedIssues} label="Accessibility label" onChange={(accessibilityLabel) => updateButton({ accessibilityLabel: accessibilityLabel || undefined }, `${buttonPath}.accessibilityLabel`)} path={`${buttonPath}.accessibilityLabel`} value={button.accessibilityLabel ?? ''} />
                 <FormField disabled={busy} fontLoaded={fontLoaded} issues={displayedIssues} label="Accessibility hint" multiline onChange={(accessibilityHint) => updateButton({ accessibilityHint: accessibilityHint || undefined }, `${buttonPath}.accessibilityHint`)} path={`${buttonPath}.accessibilityHint`} value={button.accessibilityHint ?? ''} />
-                <InteractionForm action={button.tap} config={config} disabled={busy} fontLoaded={fontLoaded} gesture="Tap" issues={displayedIssues} menuId={menu?.id ?? ''} onChange={(tap) => updateButton({ tap }, `${buttonPath}.tap`)} path={`${buttonPath}.tap`} />
-                <InteractionForm action={button.longPress} config={config} disabled={busy} fontLoaded={fontLoaded} gesture="Hold" issues={displayedIssues} menuId={menu?.id ?? ''} onChange={(longPress) => updateButton({ longPress }, `${buttonPath}.longPress`)} path={`${buttonPath}.longPress`} />
+                <InteractionForm
+                  action={button.tap}
+                  config={config}
+                  disabled={busy}
+                  fontLoaded={fontLoaded}
+                  gesture="Tap"
+                  guide={referenceGuide?.buttonIdentity === buttonIdentity && referenceGuide.gesture === 'tap'
+                    ? `This Tap ${referenceGuide.interactionType === 'menu' ? 'Menu' : 'Group'} action links to ${referenceGuide.target}.`
+                    : undefined}
+                  issues={displayedIssues}
+                  menuId={menu?.id ?? ''}
+                  onChange={(tap) => { updateButton({ tap }, `${buttonPath}.tap`); setReferenceGuide(undefined) }}
+                  onLayout={(y) => recordEditorLayout('tap', y, buttonIdentity)}
+                  path={`${buttonPath}.tap`}
+                  testID="action-pad-interaction-tap"
+                />
+                <InteractionForm
+                  action={button.longPress}
+                  config={config}
+                  disabled={busy}
+                  fontLoaded={fontLoaded}
+                  gesture="Hold"
+                  guide={referenceGuide?.buttonIdentity === buttonIdentity && referenceGuide.gesture === 'longPress'
+                    ? `This Hold ${referenceGuide.interactionType === 'menu' ? 'Menu' : 'Group'} action links to ${referenceGuide.target}.`
+                    : undefined}
+                  issues={displayedIssues}
+                  menuId={menu?.id ?? ''}
+                  onChange={(longPress) => { updateButton({ longPress }, `${buttonPath}.longPress`); setReferenceGuide(undefined) }}
+                  onLayout={(y) => recordEditorLayout('longPress', y, buttonIdentity)}
+                  path={`${buttonPath}.longPress`}
+                  testID="action-pad-interaction-longPress"
+                />
                 <ReorderControls busy={structuralBusy} count={group?.buttons.length ?? 0} index={buttonIndex} item="button" onMove={(direction) => apply({ type: 'reorder-button', location: buttonLocation, direction }, buttonPath, () => setButtonSelection(buttonIndex + direction))} />
                 {destinations.length > 0 ? (
                   <View style={styles.section}>
@@ -616,12 +903,135 @@ export function ActionPadEditor({
           </View>
         </View>
       </ScrollView>
+      {cleanupConfirmation ? (
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setCleanupConfirmation(undefined)}
+          transparent
+          visible
+        >
+          <View style={styles.modalBackdrop}>
+            <View accessibilityViewIsModal style={styles.confirmationCard} testID="action-pad-cleanup-confirmation">
+              <Text accessibilityRole="header" style={styles.sectionTitle}>Remove unused menus?</Text>
+              <Text style={styles.muted}>This removes the following unreachable menu definitions and everything inside them from the draft.</Text>
+              <ScrollView keyboardShouldPersistTaps="handled" nestedScrollEnabled style={styles.confirmationList}>
+                {cleanupConfirmation.menus.map((candidate, index) => (
+                  <View key={`${candidate.id}-${index}`} style={styles.confirmationRow}>
+                    <Text style={[styles.menuName, fontLoaded && styles.nerdFont]}>{menuDisplayName(candidate)}</Text>
+                    <Text style={styles.muted}>
+                      {candidate.groupCount} {candidate.groupCount === 1 ? 'group' : 'groups'} · {candidate.buttonCount} {candidate.buttonCount === 1 ? 'button' : 'buttons'}
+                    </Text>
+                  </View>
+                ))}
+              </ScrollView>
+              <Text style={styles.notice}>
+                Total: {cleanupConfirmation.menus.length} {cleanupConfirmation.menus.length === 1 ? 'menu' : 'menus'}, {cleanupConfirmation.groupCount} {cleanupConfirmation.groupCount === 1 ? 'group' : 'groups'}, and {cleanupConfirmation.buttonCount} {cleanupConfirmation.buttonCount === 1 ? 'button' : 'buttons'}.
+              </Text>
+              <Text style={styles.muted}>You can still discard the draft with Cancel. The live Action Pad changes only after Save.</Text>
+              <View style={styles.actions}>
+                <EditorButton disabled={busy} label="Keep menus" onPress={() => setCleanupConfirmation(undefined)} />
+                <EditorButton
+                  danger
+                  disabled={busy}
+                  label={`Delete ${cleanupConfirmation.menus.length} unused ${cleanupConfirmation.menus.length === 1 ? 'menu' : 'menus'}`}
+                  onPress={removeUnusedMenus}
+                  testID="action-pad-confirm-remove-unused-menus"
+                />
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
       <NerdFontIconPicker
         onDismiss={() => setIconPickerOpen(false)}
         onSelect={insertNerdFontIcon}
         visible={iconPickerOpen && fontLoaded && !busy}
       />
     </KeyboardAvoidingView>
+  )
+}
+
+function menuDisplayName(menu: { readonly id: string; readonly label: string }): string {
+  return `${menu.label || 'Unnamed menu'} (${menu.id || 'no ID'})`
+}
+
+function buttonDisplayName(button: { readonly id: string; readonly label: string }): string {
+  return `${button.label || 'Unnamed button'} (${button.id || 'no ID'})`
+}
+
+function countMenuButtons(menu: ActionPadConfig['menus'][number]): number {
+  return menu.groups.reduce((total, group) => total + group.buttons.length, 0)
+}
+
+function buttonIdentityAt(config: ActionPadConfig, location: ButtonLocation): string {
+  const menu = config.menus[location.menuIndex]
+  const group = menu?.groups[location.groupIndex]
+  const button = group?.buttons[location.buttonIndex]
+  if (!menu || !group || !button) return ''
+  return JSON.stringify([location.menuIndex, menu.id, location.groupIndex, group.id, location.buttonIndex, button.id])
+}
+
+function referenceSourceDisplay(config: ActionPadConfig, location: ButtonLocation): string {
+  const menu = config.menus[location.menuIndex]
+  const group = menu?.groups[location.groupIndex]
+  const button = group?.buttons[location.buttonIndex]
+  if (!menu || !group || !button) return 'Missing source button'
+  return `${menuDisplayName(menu)} / ${group.id || 'Unnamed group'} / ${buttonDisplayName(button)}`
+}
+
+function MenuReferenceList({ busy, config, onOpen, references, target, testIDPrefix }: {
+  readonly busy: boolean
+  readonly config: ActionPadConfig
+  readonly onOpen: (reference: MenuReference) => void
+  readonly references: readonly MenuReference[]
+  readonly target: string
+  readonly testIDPrefix: string
+}) {
+  const [page, setPage] = useState<number | null>(null)
+  useEffect(() => { setPage(null) }, [references, target])
+  const pageCount = Math.max(1, Math.ceil(references.length / MENU_REFERENCE_PAGE_SIZE))
+  const currentPage = Math.min(page ?? 0, pageCount - 1)
+  const firstReference = currentPage * MENU_REFERENCE_PAGE_SIZE
+  const visibleReferences = page === null
+    ? []
+    : references.slice(firstReference, firstReference + MENU_REFERENCE_PAGE_SIZE)
+  return (
+    <View style={styles.referenceList}>
+      <Text style={styles.label}>Blocking references</Text>
+      {page === null ? (
+        <EditorButton
+          disabled={busy}
+          label={`Show ${references.length} blocking ${references.length === 1 ? 'reference' : 'references'} for ${target}`}
+          onPress={() => setPage(0)}
+        />
+      ) : (
+        <>
+          <Text style={styles.muted}>
+            Showing {firstReference + 1}–{firstReference + visibleReferences.length} of {references.length}.
+          </Text>
+          {visibleReferences.map((reference, pageIndex) => {
+            const referenceIndex = firstReference + pageIndex
+            const source = referenceSourceDisplay(config, reference.location)
+            const gesture = reference.gesture === 'tap' ? 'Tap' : 'Hold'
+            const interaction = reference.interactionType === 'menu' ? 'Menu' : 'Group'
+            return (
+              <EditorButton
+                disabled={busy}
+                key={`${reference.location.menuIndex}:${reference.location.groupIndex}:${reference.location.buttonIndex}:${reference.gesture}:${reference.interactionType}`}
+                label={`${source} · ${gesture} ${interaction} action`}
+                onPress={() => onOpen(reference)}
+                testID={`${testIDPrefix}-${referenceIndex}`}
+              />
+            )
+          })}
+          <View style={styles.actions}>
+            <EditorButton disabled={busy || currentPage === 0} label={`Previous references for ${target}`} onPress={() => setPage(currentPage - 1)} />
+            <EditorButton disabled={busy || currentPage >= pageCount - 1} label={`Next references for ${target}`} onPress={() => setPage(currentPage + 1)} />
+            <EditorButton disabled={busy} label={`Hide references for ${target}`} onPress={() => setPage(null)} />
+          </View>
+        </>
+      )}
+    </View>
   )
 }
 
@@ -644,16 +1054,19 @@ function findInitialButton(config: ActionPadConfig, target: ActionPadButtonTarge
   return match
 }
 
-function InteractionForm({ action, config, disabled, fontLoaded, gesture, issues, menuId, onChange, path }: {
+function InteractionForm({ action, config, disabled, fontLoaded, gesture, guide, issues, menuId, onChange, onLayout, path, testID }: {
   readonly action: EditableInteraction | undefined
   readonly config: ActionPadConfig
   readonly disabled: boolean
   readonly fontLoaded: boolean
   readonly gesture: 'Tap' | 'Hold'
+  readonly guide?: string
   readonly issues: readonly ConfigIssue[]
   readonly menuId: string
   readonly onChange: (action: EditableInteraction | undefined) => void
+  readonly onLayout: (y: number) => void
   readonly path: string
+  readonly testID: string
 }) {
   function selectType(type: string) {
     if (type === (action?.type ?? 'none')) return
@@ -668,7 +1081,12 @@ function InteractionForm({ action, config, disabled, fontLoaded, gesture, issues
     }
   }
   return (
-    <View style={styles.interaction}>
+    <View
+      onLayout={(event) => onLayout(event.nativeEvent.layout.y)}
+      style={[styles.interaction, guide && styles.guidedInteraction]}
+      testID={testID}
+    >
+      {guide ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{guide} Change this action or destination to remove the reference.</Text> : null}
       <Choices disabled={disabled} label={`${gesture} action`} onChange={selectType} options={[{ value: 'none', label: 'None' }, { value: 'input', label: 'Input' }, { value: 'menu', label: 'Menu' }, { value: 'group', label: 'Group' }, { value: 'back', label: 'Back' }, { value: 'keyboard', label: 'Keyboard' }]} value={action?.type ?? 'none'} />
       <FieldIssues issues={issues} path={path} />
       <FieldIssues issues={issues} path={`${path}.type`} />
@@ -977,6 +1395,13 @@ const styles = StyleSheet.create({
   selector: { minWidth: 155, flex: 1, gap: 8 },
   details: { flex: 1, minWidth: 0, gap: 16 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', gap: 8 },
+  menuList: { gap: 12 },
+  menuRow: { gap: 10, padding: 12, borderWidth: 1, borderColor: '#303946', borderRadius: 10, backgroundColor: '#151b22' },
+  menuRowHeader: { gap: 5 },
+  menuRowTitle: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 },
+  menuName: { flexShrink: 1, color: '#eef4fa', fontSize: 15, fontWeight: '600' },
+  referenceList: { gap: 8, paddingTop: 4 },
+  cleanupSection: { gap: 8, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#27303a' },
   button: { minHeight: 48, minWidth: 48, paddingHorizontal: 14, paddingVertical: 10, justifyContent: 'center', alignItems: 'center', borderRadius: 8, borderWidth: 1, borderColor: '#303946', backgroundColor: '#24283b' },
   buttonText: { color: '#c0caf5', fontSize: 14, fontWeight: '600', textAlign: 'center' },
   primaryButton: { backgroundColor: '#7ee787', borderColor: '#7ee787' },
@@ -995,6 +1420,11 @@ const styles = StyleSheet.create({
   pickerOptions: { maxHeight: 240, borderWidth: 1, borderColor: '#303946', borderRadius: 8, backgroundColor: '#151b22' },
   pickerOption: { minHeight: 48, justifyContent: 'center', padding: 12, borderBottomWidth: 1, borderBottomColor: '#27303a' },
   interaction: { paddingTop: 14, borderTopWidth: 1, borderTopColor: '#27303a', gap: 10 },
+  guidedInteraction: { marginHorizontal: -8, paddingHorizontal: 8, paddingBottom: 8, borderWidth: 1, borderColor: '#e0af68', borderRadius: 8, backgroundColor: '#2b271f' },
+  modalBackdrop: { flex: 1, justifyContent: 'center', padding: 20, backgroundColor: 'rgba(0, 0, 0, 0.72)' },
+  confirmationCard: { width: '100%', maxWidth: 620, maxHeight: '86%', alignSelf: 'center', gap: 12, padding: 18, borderWidth: 1, borderColor: '#744248', borderRadius: 12, backgroundColor: '#111419' },
+  confirmationList: { maxHeight: 280, borderWidth: 1, borderColor: '#303946', borderRadius: 8, backgroundColor: '#151b22' },
+  confirmationRow: { gap: 3, padding: 12, borderBottomWidth: 1, borderBottomColor: '#27303a' },
   previewFrame: { minWidth: 0, overflow: 'hidden', borderRadius: 12 },
   previewRail: { height: 360, width: '100%', maxWidth: 340, alignSelf: 'center' },
   previewBottom: { width: '100%' }

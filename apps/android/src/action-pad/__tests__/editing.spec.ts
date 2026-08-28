@@ -1,6 +1,7 @@
 import { validateActionPadConfig, type ActionPadConfig } from '../document'
 import {
   ActionPadEditError,
+  analyzeActionPadMenus,
   createActionPadId,
   editActionPad,
   groupDeletionReason,
@@ -200,6 +201,151 @@ describe('Action Pad edits', () => {
     })
     expect(groupDeletionReason(unlinked, childGroup)).toBeUndefined()
     expect(editActionPad(unlinked, { type: 'delete-group', location: childGroup }).menus[1]?.groups).toEqual([])
+  })
+
+  it('analyzes exact incoming menu references and root reachability through both gestures and target types', () => {
+    const value = configWithGroupLink()
+    const child = value.menus[1]!
+    const withLeaf: ActionPadConfig = {
+      ...value,
+      menus: [
+        value.menus[0]!,
+        {
+          ...child,
+          groups: child.groups.map((group) => ({
+            ...group,
+            buttons: group.buttons.map((button) => ({
+              ...button,
+              longPress: { type: 'menu', menuId: 'leaf', after: 'stay' }
+            }))
+          }))
+        },
+        value.menus[2]!,
+        { id: 'leaf', label: 'Leaf', groups: [] }
+      ]
+    }
+
+    expect(analyzeActionPadMenus(withLeaf)).toEqual([
+      { menuIndex: 0, reachable: true, incoming: [] },
+      {
+        menuIndex: 1,
+        reachable: true,
+        incoming: [
+          {
+            location: { menuIndex: 0, groupIndex: 0, buttonIndex: 1 },
+            gesture: 'tap', interactionType: 'group'
+          },
+          {
+            location: { menuIndex: 0, groupIndex: 0, buttonIndex: 1 },
+            gesture: 'longPress', interactionType: 'group'
+          }
+        ]
+      },
+      { menuIndex: 2, reachable: false, incoming: [] },
+      {
+        menuIndex: 3,
+        reachable: true,
+        incoming: [{
+          location: { menuIndex: 1, groupIndex: 0, buttonIndex: 0 },
+          gesture: 'longPress', interactionType: 'menu'
+        }]
+      }
+    ])
+  })
+
+  it('excludes references originating inside the target menu from incoming references', () => {
+    const value = config()
+    const child = value.menus[1]!
+    const selfLinked: ActionPadConfig = {
+      ...value,
+      menus: value.menus.map((menu, menuIndex) => menuIndex !== 1 ? menu : ({
+        ...child,
+        groups: child.groups.map((group) => ({
+          ...group,
+          buttons: group.buttons.map((button) => ({
+            ...button,
+            longPress: { type: 'menu', menuId: 'child', after: 'stay' }
+          }))
+        }))
+      }))
+    }
+
+    expect(analyzeActionPadMenus(selfLinked)[1]?.incoming).toEqual([
+      {
+        location: { menuIndex: 0, groupIndex: 0, buttonIndex: 1 },
+        gesture: 'tap', interactionType: 'menu'
+      },
+      {
+        location: { menuIndex: 0, groupIndex: 0, buttonIndex: 1 },
+        gesture: 'longPress', interactionType: 'menu'
+      }
+    ])
+  })
+
+  it('atomically deletes every unreachable menu, including a subtree with internal links', () => {
+    const value = config()
+    const original: ActionPadConfig = {
+      ...value,
+      menus: [
+        ...value.menus,
+        {
+          id: 'orphan-parent', label: 'Orphan parent', groups: [{
+            id: 'actions', buttons: [{
+              id: 'open-child', label: 'Open child',
+              tap: { type: 'menu', menuId: 'orphan-child', after: 'stay' }
+            }]
+          }]
+        },
+        { id: 'orphan-child', label: 'Orphan child', groups: [] }
+      ]
+    }
+    const before = JSON.stringify(original)
+
+    expect(menuDeletionReason(original, 4)).toMatch(/Orphan parent/)
+    const next = editActionPad(original, { type: 'delete-unused-menus' })
+
+    expect(next.menus.map((menu) => menu.id)).toEqual(['home', 'child'])
+    expect(next.rootMenuId).toBe('home')
+    expect(validateActionPadConfig(next)).toEqual([])
+    expect(JSON.stringify(original)).toBe(before)
+  })
+
+  it('preserves menus reachable only through hold and group interactions when deleting unused menus', () => {
+    const value = configWithGroupLink()
+    const home = value.menus[0]!
+    const holdOnly: ActionPadConfig = {
+      ...value,
+      menus: value.menus.map((menu, menuIndex) => menuIndex !== 0 ? menu : ({
+        ...home,
+        groups: home.groups.map((group, groupIndex) => groupIndex !== 0 ? group : ({
+          ...group,
+          buttons: group.buttons.map((button, buttonIndex) => buttonIndex !== 1 ? button : ({
+            ...button,
+            tap: { type: 'input', nvimInput: 'x', after: 'stay' }
+          }))
+        }))
+      }))
+    }
+
+    const next = editActionPad(holdOnly, { type: 'delete-unused-menus' })
+    expect(next.menus.map((menu) => menu.id)).toEqual(['home', 'child'])
+  })
+
+  it('returns the original config when every menu is reachable', () => {
+    const value = config()
+    const withoutUnused: ActionPadConfig = { ...value, menus: value.menus.slice(0, 2) }
+    expect(editActionPad(withoutUnused, { type: 'delete-unused-menus' })).toBe(withoutUnused)
+  })
+
+  it('rejects unused-menu deletion for semantically invalid drafts', () => {
+    const value = config()
+    const invalid: ActionPadConfig = { ...value, rootMenuId: 'missing' }
+    const before = JSON.stringify(invalid)
+
+    expect(() => editActionPad(invalid, { type: 'delete-unused-menus' })).toThrow(
+      'Resolve all configuration issues before removing unused menus.'
+    )
+    expect(JSON.stringify(invalid)).toBe(before)
   })
 
   it('reorders menus, groups and buttons without changing their contents or root', () => {

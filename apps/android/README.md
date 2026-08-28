@@ -119,14 +119,45 @@ directly, without entering selection mode. Holding **Done editing** opens the
 same editor while keeping selection mode enabled. The control also exposes an
 **Open full Action Pad editor** accessibility action. It is not part of the YAML
 and remains available even if every configured button is removed or the host is
-disconnected. The general editor includes menus, groups, buttons, duplication,
-ordering/move controls, all button properties, and a preview. **Group** appears
-alongside the other interaction types, followed by destination-menu and
-destination-group pickers; changing the menu clears the group selection. Menu
-and group renames update links, while deletion is protected when either kind of
-link depends on the target. The preview can navigate pages and substitute
-groups but never sends commands or opens the Neovim keyboard. The existing
-Neovim session remains mounted while ordinary form inputs own keyboard focus.
+disconnected. Opening the full editor without a targeted button starts in
+**Manage menus**. This view lists every definition, with its label and ID,
+group/button and incoming-link counts, and one of these navigation statuses:
+
+- **Root** is the menu selected by `rootMenuId`.
+- **Reachable** menus can be reached from Root through a Tap or Hold **Menu** or
+  **Group** interaction.
+- **Unused** menus cannot be reached from Root, even if they link to one another.
+
+The manager can edit a menu, make it Root, or delete it. The same guarded delete
+action remains available in Menu settings. Root cannot be deleted, and a
+reachable or unused menu with incoming references cannot be deleted
+individually until those links are removed. For each blocking reference, the
+editor names the exact source menu, group, and button, whether the link is on
+Tap or Hold, and whether it is a Menu or Group action. Selecting that reference
+opens and scrolls to the matching interaction so it can be changed or removed.
+IDs are shown with labels where duplicate labels would otherwise be ambiguous.
+
+Removing a visible launcher button, group, or interaction does not implicitly
+delete its destination menu definition. The destination therefore remains in
+menu and destination dropdowns until it is deleted explicitly. After an
+individual deletion in a valid draft, the manager, dropdowns, move destinations,
+preview, and status counts update immediately. While another field is invalid,
+the preview continues to identify and show its last valid snapshot.
+
+When one or more menus are Unused, **Remove unused menus** offers a confirmation
+that lists the affected definitions and their aggregate group/button counts. A
+confirmed cleanup removes the complete root-unreachable set atomically,
+including references between menus in that set, while preserving Root and every
+Reachable menu. Cleanup is unavailable while the draft is invalid or another
+edit is pending.
+
+The general editor also includes groups, buttons, duplication, ordering/move
+controls, all button properties, and a preview. **Group** appears alongside the
+other interaction types, followed by destination-menu and destination-group
+pickers; changing the menu clears the group selection. Menu and group renames
+update links. The preview can navigate pages and substitute groups but never
+sends commands or opens the Neovim keyboard. The existing Neovim session
+remains mounted while ordinary form inputs own keyboard focus.
 
 The primary YAML file lives on the connected Neovim host, not on Android.
 Choose an absolute host path or a path beginning with `~/`. The suggested path
@@ -148,6 +179,12 @@ permission is needed.
 - **Cancel** offers to discard edits, keep editing, or **Keep draft & close**.
   Keeping a draft lets you return later without changing the active pad.
   Neither closing nor discarding writes a host file.
+
+Menu deletions and unused-menu cleanup follow the same draft lifecycle as every
+other edit. They disappear from editor pickers and previews immediately, but the
+live Action Pad and host YAML keep the last activated configuration until a
+successful **Save**. **Keep draft & close** preserves the cleanup locally without
+activating it; discarding the draft restores the last saved definitions.
 
 The app keeps the last valid configuration and incomplete drafts in local
 recovery storage. Editing works offline; host operations require a connection.
@@ -364,15 +401,38 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
    selection mode and the current menu remain. Check that **Done editing** and
    Android Back each exit selection mode, and a `450ms` hold on **Edit Action Pad**
    opens the general editor directly.
-2. Load the starter, change a label/input/size, create and move a button, then
+2. Open **Manage menus** and confirm the configured root is marked Root, menus
+   reachable through Tap/Hold Menu and Group actions are marked Reachable, and
+   a disconnected menu is marked Unused. Create duplicate menu labels and
+   confirm IDs keep menu rows and references distinguishable.
+3. Remove a visible button that launches a menu. Confirm the launcher disappears
+   but its destination definition remains in Manage menus and relevant pickers.
+   Delete an unreferenced non-root menu individually and confirm it disappears
+   immediately from menu selectors, Tap/Hold destination pickers, Group
+   destination pickers, move destinations, and preview navigation.
+4. Attempt to delete a referenced menu. Confirm deletion is disabled and every
+   incoming reference identifies the source menu/group/button, Tap or Hold, and
+   Menu or Group action. Select each kind of reference and confirm the editor
+   navigates and scrolls to that exact interaction. Remove the references, then
+   confirm individual deletion succeeds; Root must remain protected.
+5. Create a disconnected subtree whose unused menus reference one another. Run
+   **Remove unused menus**, inspect and cancel the first confirmation, then
+   confirm it on the second attempt. Verify the complete disconnected set is
+   removed together while Root and all Reachable menus and links are unchanged.
+6. Before saving menu deletions, close with **Keep draft & close** and confirm the
+   live pad and host YAML still use the previous definitions while the editor
+   recovers the cleaned draft. Save, reload, and reopen the app; confirm deleted
+   menus remain absent from the YAML, manager, all pickers, preview, and live
+   Action Pad.
+7. Load the starter, change a label/input/size, create and move a button, then
    Save. Confirm the host file changed and the active pad returns to its root.
-3. Reload, then Export to a different path. Confirm the source stays linked;
+8. Reload, then Export to a different path. Confirm the source stays linked;
    exporting a later unsaved edit must not activate it or clear its dirty state.
-4. Change the source outside Codey and try Save. Confirm the app offers Reload
+9. Change the source outside Codey and try Save. Confirm the app offers Reload
    or Export without overwriting the external change.
-5. Disconnect, edit, and choose **Keep draft & close**. Reopen/restart and
+10. Disconnect, edit, and choose **Keep draft & close**. Reopen/restart and
    reconnect; the draft must remain local until an explicit Save.
-6. Repeat in portrait and landscape, including the smallest supported tablet
+11. Repeat in portrait and landscape, including the smallest supported tablet
    window with the keyboard visible. Confirm forms remain reachable and
    typing or previewing never changes the Neovim buffer. After leaving the
    editor, check the pad's tap/hold behavior and the normal Neovim IME.

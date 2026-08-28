@@ -1,4 +1,4 @@
-import type { ActionPadConfig } from './document'
+import { validateActionPadConfig, type ActionPadConfig } from './document'
 
 export type EditableMenu = ActionPadConfig['menus'][number]
 export type EditableGroup = EditableMenu['groups'][number]
@@ -14,10 +14,23 @@ export interface ButtonLocation extends GroupLocation {
   readonly buttonIndex: number
 }
 
+export interface MenuReference {
+  readonly location: ButtonLocation
+  readonly gesture: 'tap' | 'longPress'
+  readonly interactionType: 'menu' | 'group'
+}
+
+export interface MenuAnalysis {
+  readonly menuIndex: number
+  readonly reachable: boolean
+  readonly incoming: readonly MenuReference[]
+}
+
 export type ActionPadEdit =
   | { readonly type: 'add-menu' }
   | { readonly type: 'update-menu'; readonly menuIndex: number; readonly patch: Partial<Pick<EditableMenu, 'id' | 'label'>> }
   | { readonly type: 'delete-menu'; readonly menuIndex: number }
+  | { readonly type: 'delete-unused-menus' }
   | { readonly type: 'reorder-menu'; readonly menuIndex: number; readonly direction: -1 | 1 }
   | { readonly type: 'set-root-menu'; readonly menuIndex: number }
   | { readonly type: 'add-group'; readonly menuIndex: number }
@@ -47,18 +60,70 @@ export function createActionPadId(prefix: string, existingIds: readonly string[]
   return `${prefix}-${suffix}`
 }
 
+export function analyzeActionPadMenus(config: ActionPadConfig): readonly MenuAnalysis[] {
+  const indexesById = new Map<string, number[]>()
+  config.menus.forEach((menu, menuIndex) => {
+    const indexes = indexesById.get(menu.id) ?? []
+    indexes.push(menuIndex)
+    indexesById.set(menu.id, indexes)
+  })
+
+  const incoming = config.menus.map(() => [] as MenuReference[])
+  config.menus.forEach((menu, menuIndex) => {
+    menu.groups.forEach((group, groupIndex) => {
+      group.buttons.forEach((button, buttonIndex) => {
+        for (const gesture of ['tap', 'longPress'] as const) {
+          const interaction = button[gesture]
+          if (interaction?.type !== 'menu' && interaction?.type !== 'group') continue
+          for (const targetIndex of indexesById.get(interaction.menuId) ?? []) {
+            if (targetIndex === menuIndex) continue
+            incoming[targetIndex]!.push({
+              location: { menuIndex, groupIndex, buttonIndex },
+              gesture,
+              interactionType: interaction.type
+            })
+          }
+        }
+      })
+    })
+  })
+
+  const reachable = new Set<number>()
+  const pending = [...(indexesById.get(config.rootMenuId) ?? [])]
+  while (pending.length > 0) {
+    const menuIndex = pending.pop()!
+    if (reachable.has(menuIndex)) continue
+    reachable.add(menuIndex)
+    const menu = config.menus[menuIndex]
+    if (!menu) continue
+    for (const group of menu.groups) {
+      for (const button of group.buttons) {
+        for (const gesture of ['tap', 'longPress'] as const) {
+          const interaction = button[gesture]
+          if (interaction?.type !== 'menu' && interaction?.type !== 'group') continue
+          pending.push(...(indexesById.get(interaction.menuId) ?? []))
+        }
+      }
+    }
+  }
+
+  return config.menus.map((_, menuIndex) => ({
+    menuIndex,
+    reachable: reachable.has(menuIndex),
+    incoming: incoming[menuIndex]!
+  }))
+}
+
 export function menuDeletionReason(config: ActionPadConfig, menuIndex: number): string | undefined {
   const menu = requireMenu(config, menuIndex)
   if (config.rootMenuId === menu.id) return 'Choose another root menu before deleting this menu.'
-  const references = config.menus.filter((candidate, index) => index !== menuIndex &&
-    candidate.groups.some((group) => group.buttons.some((button) =>
-      [button.tap, button.longPress].some((action) =>
-        (action?.type === 'menu' || action?.type === 'group') && action.menuId === menu.id
-      )
-    ))
-  )
-  if (references.length > 0) {
-    return `Remove menu links from ${references.map((reference) => reference.label || reference.id).join(', ')} before deleting this menu.`
+  const incoming = analyzeActionPadMenus(config)[menuIndex]!.incoming
+  if (incoming.length > 0) {
+    const sourceMenuIndexes = [...new Set(incoming.map((reference) => reference.location.menuIndex))]
+    return `Remove menu links from ${sourceMenuIndexes.map((index) => {
+      const reference = config.menus[index]!
+      return reference.label || reference.id
+    }).join(', ')} before deleting this menu.`
   }
   return undefined
 }
@@ -128,6 +193,17 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
       const reason = menuDeletionReason(config, edit.menuIndex)
       if (reason) throw new ActionPadEditError(reason)
       return { ...config, menus: config.menus.filter((_, index) => index !== edit.menuIndex) }
+    }
+    case 'delete-unused-menus': {
+      if (validateActionPadConfig(config).length > 0) {
+        throw new ActionPadEditError('Resolve all configuration issues before removing unused menus.')
+      }
+      const analyses = analyzeActionPadMenus(config)
+      if (analyses.every((analysis) => analysis.reachable)) return config
+      return {
+        ...config,
+        menus: config.menus.filter((_, menuIndex) => analyses[menuIndex]!.reachable)
+      }
     }
     case 'reorder-menu':
       requireMenu(config, edit.menuIndex)

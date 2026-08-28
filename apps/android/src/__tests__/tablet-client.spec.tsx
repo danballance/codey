@@ -189,6 +189,11 @@ function recoveryRecord(config: ActionPadConfig): string {
   })
 }
 
+function openManagedButton(editor: ReturnType<typeof within>, menu = 'Home (home)') {
+  fireEvent.press(editor.getByRole('button', { name: `Edit ${menu}` }))
+  fireEvent.press(editor.getByRole('button', { name: 'Button settings' }))
+}
+
 afterEach(async () => {
   await act(async () => { await Promise.resolve() })
   cleanup()
@@ -256,6 +261,7 @@ describe('tablet client shell', () => {
       }))
     })
     const editor = within(screen.getByTestId('action-pad-editor'))
+    openManagedButton(editor)
     expect(editor.getByLabelText('Button ID').props.value).toBe('')
     expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(true)
     expect(screen.getByText('Edit Action Pad · unsaved')).toBeTruthy()
@@ -370,7 +376,9 @@ describe('tablet client shell', () => {
       fireEvent.press(control)
     })
     const editor = within(screen.getByTestId('action-pad-editor'))
-    expect(editor.getByLabelText('Button ID').props.value).toBe('escape')
+    expect(editor.getByTestId('action-pad-menu-manager')).toBeTruthy()
+    expect(editor.getByRole('button', { name: 'Manage menus' }).props.accessibilityState.selected).toBe(true)
+    expect(editor.queryByLabelText('Button ID')).toBeNull()
     fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('button', { name: 'Done editing' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Edit Action Pad' })).toBeTruthy()
@@ -394,7 +402,7 @@ describe('tablet client shell', () => {
       fireEvent.press(done)
     })
     const editor = within(screen.getByTestId('action-pad-editor'))
-    expect(editor.getByTestId('action-pad-menu-form')).toBeTruthy()
+    expect(editor.getByTestId('action-pad-menu-manager')).toBeTruthy()
     fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
     expect(screen.getByRole('button', { name: 'Done editing' })).toBeTruthy()
   })
@@ -420,7 +428,9 @@ describe('tablet client shell', () => {
       expect(screen.getByText('Edit Action Pad · unsaved')).toBeTruthy()
       expect(alert).not.toHaveBeenCalled()
       await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
-      expect(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button ID').props.value).toBe('')
+      const editor = within(screen.getByTestId('action-pad-editor'))
+      openManagedButton(editor)
+      expect(editor.getByLabelText('Button ID').props.value).toBe('')
     } finally {
       listener.mockRestore()
       alert.mockRestore()
@@ -469,6 +479,7 @@ describe('tablet client shell', () => {
     await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
     const editor = within(screen.getByTestId('action-pad-editor'))
     const preview = within(screen.getByTestId('action-pad-editor-preview'))
+    openManagedButton(editor)
     fireEvent.changeText(editor.getByLabelText('Button label'), 'Escape now')
     expect(preview.getByText('Escape now')).toBeTruthy()
     fireEvent.press(preview.getByTestId('action-pad-escape'))
@@ -489,7 +500,9 @@ describe('tablet client shell', () => {
       await act(async () => { await Promise.resolve() })
       fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
       await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
-      fireEvent.changeText(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label'), 'Offline edit')
+      const firstEditor = within(screen.getByTestId('action-pad-editor'))
+      openManagedButton(firstEditor)
+      fireEvent.changeText(firstEditor.getByLabelText('Button label'), 'Offline edit')
       fireEvent.press(within(screen.getByTestId('action-pad-editor')).getByRole('button', { name: 'Cancel' }))
       const keep = alert.mock.calls.at(-1)?.[2]?.find((button) => button.text === 'Keep draft & close')
       expect(keep).toBeDefined()
@@ -497,7 +510,9 @@ describe('tablet client shell', () => {
       expect(screen.queryByTestId('action-pad-editor')).toBeNull()
       fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
       await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
-      expect(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label').props.value).toBe('Offline edit')
+      const reopened = within(screen.getByTestId('action-pad-editor'))
+      openManagedButton(reopened)
+      expect(reopened.getByLabelText('Button label').props.value).toBe('Offline edit')
       await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Connect configuration host' })) })
       expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
       expect(double.session.connect).toHaveBeenCalledTimes(1)
@@ -528,6 +543,7 @@ describe('tablet client shell', () => {
     expect(double.session.input).toHaveBeenCalledWith('before editor')
     const inputCount = jest.mocked(double.session.input).mock.calls.length
     const editor = within(screen.getByTestId('action-pad-editor'))
+    openManagedButton(editor)
     fireEvent.changeText(editor.getByLabelText('Tap Neovim input'), ':write<CR>')
     fireEvent.press(within(screen.getByTestId('action-pad-editor-preview')).getByTestId('action-pad-escape'))
     // Even a delayed native callback is ignored while ordinary form fields own focus.
@@ -542,11 +558,18 @@ describe('tablet client shell', () => {
     const path = '/home/test/pad.yaml'
     const exportPath = '/home/test/pad-export.yaml'
     const config: ActionPadConfig = {
-      version: 1, rootMenuId: 'home', menus: [{
-        id: 'home', label: 'Home', groups: [{
-          id: 'main', buttons: [{ id: 'escape', label: 'Esc', tap: { type: 'input', nvimInput: '<Esc>', after: 'root' } }]
-        }]
-      }]
+      version: 1, rootMenuId: 'home', menus: [
+        {
+          id: 'home', label: 'Home', groups: [{
+            id: 'main', buttons: [{ id: 'escape', label: 'Esc', tap: { type: 'input', nvimInput: '<Esc>', after: 'root' } }]
+          }]
+        },
+        {
+          id: 'unused', label: 'Unused', groups: [{
+            id: 'tools', buttons: [{ id: 'noop', label: 'No-op', tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' } }]
+          }]
+        }
+      ]
     }
     let revision = 1
     const files = new Map<string, HostDocument>([[path, {
@@ -569,15 +592,27 @@ describe('tablet client shell', () => {
     const editor = within(screen.getByTestId('action-pad-editor'))
     fireEvent.changeText(editor.getByLabelText('Host YAML path'), path)
     await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Load' })) })
+    expect(editor.getByTestId('action-pad-menu-manager')).toBeTruthy()
+    expect(editor.getByText('Unused (unused)')).toBeTruthy()
+    fireEvent.press(editor.getByTestId('action-pad-remove-unused-menus'))
+    fireEvent.press(editor.getByTestId('action-pad-confirm-remove-unused-menus'))
+    expect(editor.queryByText('Unused (unused)')).toBeNull()
+    openManagedButton(editor)
     expect(editor.getByLabelText('Button label').props.value).toBe('Esc')
     const input = "  <Esc>:echo 'λ'<CR>\n\t "
     fireEvent.changeText(editor.getByLabelText('Button label'), '001 λ')
     fireEvent.changeText(editor.getByLabelText('Tap Neovim input'), input)
     await act(async () => { fireEvent.press(editor.getByTestId('action-pad-editor-save')) })
-    expect(parseActionPadConfig(files.get(path)!.text!).menus[0]?.groups[0]?.buttons[0]).toMatchObject({
+    const saved = parseActionPadConfig(files.get(path)!.text!)
+    expect(saved.menus.map((menu) => menu.id)).toEqual(['home'])
+    expect(saved.menus[0]?.groups[0]?.buttons[0]).toMatchObject({
       label: '001 λ', tap: { nvimInput: input }
     })
+    expect(editor.getByTestId('action-pad-menu-manager')).toBeTruthy()
     await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Load / Reload' })) })
+    expect(parseActionPadConfig(files.get(path)!.text!).menus.map((menu) => menu.id)).toEqual(['home'])
+    expect(editor.queryByText('Unused (unused)')).toBeNull()
+    openManagedButton(editor)
     expect(editor.getByLabelText('Tap Neovim input').props.value).toBe(input)
     fireEvent.press(editor.getByRole('button', { name: 'Export copy…' }))
     fireEvent.changeText(editor.getByLabelText('Export YAML path'), exportPath)

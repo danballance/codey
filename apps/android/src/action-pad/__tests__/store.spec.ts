@@ -1,7 +1,7 @@
 import type { HostDocument, HostDocumentWrite } from '@codey/nvim-session'
 
 import { DEFAULT_ACTION_PAD_CONFIG } from '../config'
-import { serializeActionPadConfig, type ActionPadConfig } from '../document'
+import { parseActionPadConfig, serializeActionPadConfig, type ActionPadConfig } from '../document'
 import { ActionPadConfigStore, actionPadStorageKey, type ActionPadHostDocuments } from '../store'
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -26,6 +26,19 @@ function editLabel(config: ActionPadConfig, label = 'Changed'): ActionPadConfig 
   return {
     ...config,
     menus: config.menus.map((menu, index) => index === 0 ? { ...menu, label } : menu)
+  }
+}
+
+function withUnusedMenu(config: ActionPadConfig): ActionPadConfig {
+  return {
+    ...config,
+    menus: [...config.menus, {
+      id: 'unused', label: 'Unused', groups: [{
+        id: 'tools', buttons: [{
+          id: 'noop', label: 'No-op', tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' }
+        }]
+      }]
+    }]
   }
 }
 
@@ -100,6 +113,32 @@ describe('ActionPadConfigStore', () => {
     expect(test.documents.writeHostDocument).toHaveBeenCalledWith(endpoint, expect.objectContaining({
       path: sourcePath, expectedRevision: '1', expectedResolvedPath: sourcePath
     }))
+  })
+
+  it('recovers a removed menu offline and keeps it absent after save and a fresh reload', async () => {
+    const original = withUnusedMenu(fixture)
+    const test = setup(serializeActionPadConfig(original))
+    await test.connect()
+    const draft = { ...original, menus: original.menus.filter((menu) => menu.id !== 'unused') }
+    test.store.setDraft(draft)
+    await test.store.flushRecovery()
+
+    const restored = new ActionPadConfigStore(test.documents, test.storage)
+    await restored.selectEndpoint(endpoint)
+    expect(restored.getState()).toMatchObject({ activeConfig: original, draft, dirty: true })
+
+    await restored.setConnected(true)
+    await restored.save(sourcePath)
+    expect(restored.getState()).toMatchObject({ activeConfig: draft, draft, dirty: false })
+    expect(parseActionPadConfig(test.files.get(sourcePath)!.text!).menus.map((menu) => menu.id)).toEqual(['home'])
+
+    const reloaded = new ActionPadConfigStore(test.documents, {
+      getItem: jest.fn(async () => null),
+      setItem: jest.fn(async () => undefined)
+    })
+    await reloaded.selectEndpoint(endpoint)
+    await reloaded.setConnected(true)
+    expect(reloaded.getState()).toMatchObject({ activeConfig: draft, draft, dirty: false })
   })
 
   it('creates a chosen new file only on Save and does not overwrite an unlinked existing file', async () => {
