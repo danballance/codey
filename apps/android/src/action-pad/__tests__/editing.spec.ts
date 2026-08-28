@@ -1,5 +1,11 @@
 import { validateActionPadConfig, type ActionPadConfig } from '../document'
-import { ActionPadEditError, createActionPadId, editActionPad, menuDeletionReason } from '../editing'
+import {
+  ActionPadEditError,
+  createActionPadId,
+  editActionPad,
+  groupDeletionReason,
+  menuDeletionReason
+} from '../editing'
 
 function config(): ActionPadConfig {
   return {
@@ -28,6 +34,24 @@ function config(): ActionPadConfig {
       },
       { id: 'unused', label: 'Unused', groups: [] }
     ]
+  }
+}
+
+function configWithGroupLink(): ActionPadConfig {
+  const value = config()
+  return {
+    ...value,
+    menus: value.menus.map((menu, menuIndex) => menuIndex !== 0 ? menu : ({
+      ...menu,
+      groups: menu.groups.map((group, groupIndex) => groupIndex !== 0 ? group : ({
+        ...group,
+        buttons: group.buttons.map((button, buttonIndex) => buttonIndex !== 1 ? button : ({
+          ...button,
+          tap: { type: 'group', menuId: 'child', groupId: 'actions', after: 'stay' },
+          longPress: { type: 'group', menuId: 'child', groupId: 'actions', after: 'root' }
+        }))
+      }))
+    }))
   }
 }
 
@@ -69,6 +93,65 @@ describe('Action Pad edits', () => {
     expect(JSON.stringify(original)).toBe(before)
   })
 
+  it('renames destination menus and groups in both group-action gesture slots', () => {
+    const original = configWithGroupLink()
+    const before = JSON.stringify(original)
+
+    let next = editActionPad(original, { type: 'update-menu', menuIndex: 1, patch: { id: 'tools' } })
+    expect(next.menus[0]?.groups[0]?.buttons[1]).toMatchObject({
+      tap: { type: 'group', menuId: 'tools', groupId: 'actions', after: 'stay' },
+      longPress: { type: 'group', menuId: 'tools', groupId: 'actions', after: 'root' }
+    })
+    next = editActionPad(next, {
+      type: 'update-group',
+      location: { menuIndex: 1, groupIndex: 0 },
+      id: 'options'
+    })
+    expect(next.menus[0]?.groups[0]?.buttons[1]).toMatchObject({
+      tap: { type: 'group', menuId: 'tools', groupId: 'options', after: 'stay' },
+      longPress: { type: 'group', menuId: 'tools', groupId: 'options', after: 'root' }
+    })
+    expect(validateActionPadConfig(next)).toEqual([])
+    expect(JSON.stringify(original)).toBe(before)
+  })
+
+  it('repairs duplicate recovery IDs without guessing which ambiguous links to retarget', () => {
+    const menuDraft = config()
+    const duplicateMenu: ActionPadConfig = {
+      ...menuDraft,
+      menus: [
+        ...menuDraft.menus,
+        { id: 'child', label: 'Duplicate child', groups: [] }
+      ]
+    }
+    const renamedMenu = editActionPad(duplicateMenu, {
+      type: 'update-menu', menuIndex: 1, patch: { id: 'tools' }
+    })
+    expect(renamedMenu.menus[0]?.groups[0]?.buttons[1]).toMatchObject({
+      tap: { type: 'menu', menuId: 'child' },
+      longPress: { type: 'menu', menuId: 'child' }
+    })
+    expect(validateActionPadConfig(renamedMenu)).toEqual([])
+
+    const groupDraft = configWithGroupLink()
+    const child = groupDraft.menus[1]!
+    const duplicateGroup: ActionPadConfig = {
+      ...groupDraft,
+      menus: groupDraft.menus.map((menu, index) => index !== 1 ? menu : ({
+        ...child,
+        groups: [...child.groups, { id: 'actions', buttons: [] }]
+      }))
+    }
+    const renamedGroup = editActionPad(duplicateGroup, {
+      type: 'update-group', location: { menuIndex: 1, groupIndex: 0 }, id: 'options'
+    })
+    expect(renamedGroup.menus[0]?.groups[0]?.buttons[1]).toMatchObject({
+      tap: { type: 'group', menuId: 'child', groupId: 'actions' },
+      longPress: { type: 'group', menuId: 'child', groupId: 'actions' }
+    })
+    expect(validateActionPadConfig(renamedGroup)).toEqual([])
+  })
+
   it('blocks an ambiguous menu rename before any links change', () => {
     const original = config()
     expect(() => editActionPad(original, { type: 'update-menu', menuIndex: 0, patch: { id: 'child' } })).toThrow(ActionPadEditError)
@@ -96,6 +179,27 @@ describe('Action Pad edits', () => {
     expect(next.menus.map((menu) => menu.id)).toEqual(['child', 'unused'])
     next = editActionPad(next, { type: 'delete-menu', menuIndex: 0 })
     expect(next.menus.map((menu) => menu.id)).toEqual(['unused'])
+  })
+
+  it('protects menus and groups referenced by group interactions', () => {
+    const original = configWithGroupLink()
+    const childGroup = { menuIndex: 1, groupIndex: 0 }
+
+    expect(menuDeletionReason(original, 1)).toBe('Remove menu links from Home before deleting this menu.')
+    expect(groupDeletionReason(original, childGroup)).toBe('Remove group links from Home before deleting this group.')
+    expect(() => editActionPad(original, { type: 'delete-menu', menuIndex: 1 })).toThrow(/menu links/)
+    expect(() => editActionPad(original, { type: 'delete-group', location: childGroup })).toThrow(/group links/)
+
+    const unlinked = editActionPad(original, {
+      type: 'update-button',
+      location: { menuIndex: 0, groupIndex: 0, buttonIndex: 1 },
+      patch: {
+        tap: { type: 'input', nvimInput: 'x', after: 'stay' },
+        longPress: undefined
+      }
+    })
+    expect(groupDeletionReason(unlinked, childGroup)).toBeUndefined()
+    expect(editActionPad(unlinked, { type: 'delete-group', location: childGroup }).menus[1]?.groups).toEqual([])
   })
 
   it('reorders menus, groups and buttons without changing their contents or root', () => {

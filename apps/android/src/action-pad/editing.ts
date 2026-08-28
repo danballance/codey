@@ -52,11 +52,29 @@ export function menuDeletionReason(config: ActionPadConfig, menuIndex: number): 
   if (config.rootMenuId === menu.id) return 'Choose another root menu before deleting this menu.'
   const references = config.menus.filter((candidate, index) => index !== menuIndex &&
     candidate.groups.some((group) => group.buttons.some((button) =>
-      [button.tap, button.longPress].some((action) => action?.type === 'menu' && action.menuId === menu.id)
+      [button.tap, button.longPress].some((action) =>
+        (action?.type === 'menu' || action?.type === 'group') && action.menuId === menu.id
+      )
     ))
   )
   if (references.length > 0) {
     return `Remove menu links from ${references.map((reference) => reference.label || reference.id).join(', ')} before deleting this menu.`
+  }
+  return undefined
+}
+
+export function groupDeletionReason(config: ActionPadConfig, location: GroupLocation): string | undefined {
+  const menu = requireMenu(config, location.menuIndex)
+  const group = requireGroup(config, location)
+  const references = config.menus.filter((candidate) =>
+    candidate.groups.some((candidateGroup) => candidateGroup.buttons.some((button) =>
+      [button.tap, button.longPress].some((action) =>
+        action?.type === 'group' && action.menuId === menu.id && action.groupId === group.id
+      )
+    ))
+  )
+  if (references.length > 0) {
+    return `Remove group links from ${references.map((reference) => reference.label || reference.id).join(', ')} before deleting this group.`
   }
   return undefined
 }
@@ -76,11 +94,15 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
     case 'update-menu': {
       const menu = requireMenu(config, edit.menuIndex)
       const newId = edit.patch.id ?? menu.id
+      const sourceIdIsUnique = config.menus.filter((candidate) => candidate.id === menu.id).length === 1
       if (newId !== menu.id && config.menus.some((candidate, index) => index !== edit.menuIndex && candidate.id === newId)) {
         throw new ActionPadEditError(`A menu with ID “${newId}” already exists. Choose a unique ID.`)
       }
       const renamed = replaceMenu(config, edit.menuIndex, { ...menu, ...edit.patch })
-      if (newId === menu.id) return renamed
+      // Recovery drafts may contain duplicate IDs. In that case links cannot
+      // identify which definition they meant, so leave them on the remaining
+      // old ID while the user repairs the selected definition.
+      if (newId === menu.id || !sourceIdIsUnique) return renamed
       return {
         ...renamed,
         rootMenuId: renamed.rootMenuId === menu.id ? newId : renamed.rootMenuId,
@@ -90,10 +112,10 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
             ...group,
             buttons: group.buttons.map((button) => {
               const updated = { ...button }
-              if (button.tap?.type === 'menu' && button.tap.menuId === menu.id) {
+              if ((button.tap?.type === 'menu' || button.tap?.type === 'group') && button.tap.menuId === menu.id) {
                 updated.tap = { ...button.tap, menuId: newId }
               }
-              if (button.longPress?.type === 'menu' && button.longPress.menuId === menu.id) {
+              if ((button.longPress?.type === 'menu' || button.longPress?.type === 'group') && button.longPress.menuId === menu.id) {
                 updated.longPress = { ...button.longPress, menuId: newId }
               }
               return updated
@@ -122,14 +144,37 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
     case 'update-group': {
       const menu = requireMenu(config, edit.location.menuIndex)
       const group = requireGroup(config, edit.location)
+      const sourceIdIsUnique = menu.groups.filter((candidate) => candidate.id === group.id).length === 1
       if (menu.groups.some((candidate, index) => index !== edit.location.groupIndex && candidate.id === edit.id)) {
         throw new ActionPadEditError(`A group with ID “${edit.id}” already exists in this menu.`)
       }
-      return replaceGroup(config, edit.location, { ...group, id: edit.id })
+      const renamed = replaceGroup(config, edit.location, { ...group, id: edit.id })
+      if (edit.id === group.id || !sourceIdIsUnique) return renamed
+      return {
+        ...renamed,
+        menus: renamed.menus.map((candidate) => ({
+          ...candidate,
+          groups: candidate.groups.map((candidateGroup) => ({
+            ...candidateGroup,
+            buttons: candidateGroup.buttons.map((button) => {
+              const updated = { ...button }
+              if (button.tap?.type === 'group' && button.tap.menuId === menu.id && button.tap.groupId === group.id) {
+                updated.tap = { ...button.tap, groupId: edit.id }
+              }
+              if (button.longPress?.type === 'group' && button.longPress.menuId === menu.id && button.longPress.groupId === group.id) {
+                updated.longPress = { ...button.longPress, groupId: edit.id }
+              }
+              return updated
+            })
+          }))
+        }))
+      }
     }
     case 'delete-group': {
       const menu = requireMenu(config, edit.location.menuIndex)
       requireGroup(config, edit.location)
+      const reason = groupDeletionReason(config, edit.location)
+      if (reason) throw new ActionPadEditError(reason)
       return replaceMenu(config, edit.location.menuIndex, {
         ...menu,
         groups: menu.groups.filter((_, index) => index !== edit.location.groupIndex)

@@ -34,66 +34,85 @@ In portrait and square windows, the command area remains below the editor. In
 landscape, the editor uses the available vertical space while the action pad
 moves into a fixed `336dp` rail to its right. The full-width connection toolbar
 stays above both. The same action pad remains mounted across rotations, so its
-active menu and input state survive the layout change.
+active page, transient cluster, and input state survive the layout change.
 
-Each menu contains an ordered array of arbitrarily named button groups. In
-portrait and square windows, every group flows across two rows and the groups
-share the available width in declaration order. In landscape, every group flows
-through left-aligned fractional rows in a shared vertical scroll area; the
-default half-sized buttons form two columns. The first group is placed at the
-top, the last at the bottom, and any intermediate groups are distributed between
-them. Group names have no layout meaning.
+Each menu contains an ordered array of arbitrarily named button groups. A
+`group` interaction can temporarily replace only the invoking group's slot with
+one group from another menu. One transient cluster can be active at a time;
+opening one from a different slot restores the previous slot first, and nested
+group actions continue to use the original host slot. Full-menu actions still
+replace the whole page. Group names have no built-in layout meaning.
 
-A button may set the semantic `styles.size` value to `"1/4"` or `"1/2"`.
-This currently affects only the landscape rail, where an omitted value defaults
-to `"1/2"`. Half and quarter buttons map to `48%` and `22%` widths with a `4%`
-column gap, so two halves, four quarters, or one half and two quarters pack a
-row. The below-editor layout ignores the value and keeps its existing two-row
-flow. `styles` is a small action-pad contract, not an unrestricted React Native
-style passthrough.
+Every base-page group reserves a fixed capacity envelope large enough for all
+group-action targets reachable from its slot. In portrait and square windows,
+a variant reserves `max(1, ceil(buttonCount / 2))` columns across two rows. The
+largest reachable variant determines the slot width, using 48dp minimum cells
+and 6dp internal and inter-group gaps; available surplus is shared
+proportionally. Oversized custom pads remain horizontally scrollable, and a
+cluster swap does not change the content width, scroll position, sibling group
+positions, or scroll-view instance.
+
+In the landscape rail, a button may set the semantic `styles.size` value to
+`"1/4"` or `"1/2"`; an omitted value defaults to `"1/2"`. Default and half
+buttons consume two units, quarter buttons one unit, and each row holds four
+units. A base slot reserves the maximum exact row height of its reachable
+variants. Groups remain in one shared vertical overflow container, so cluster
+swaps keep its extent and offset stable. `styles` is a small action-pad contract,
+not an unrestricted React Native style passthrough.
 
 Buttons configure generic `tap` and `longPress` interaction slots, with at least
 one interaction present. An interaction may send direct Neovim input, open a
-menu, go Back, or focus the Android software keyboard, and independently chooses
-whether the menu stack returns to the root or stays where the interaction left
-it. The bundled Up and Down buttons demonstrate composition of these primitives:
-tap sends `<Up>` or `<Down>`, while a `450ms` hold opens the corresponding
-navigation menu and suppresses the release tap. Entering a menu replaces the
-visible groups and shows its breadcrumb. Back is an ordinary configured button,
-so it appears only where the configuration places it. Disconnecting resets the
-pad and disables its controls.
+whole menu, substitute a destination group, go Back, or focus the Android
+software keyboard. Each independently chooses `after: stay` or `after: root`.
+The bundled Yank, Delete, Motions, and TextObjects buttons open transient option
+clusters on tap. Up and Down send `<Up>` or `<Down>` on tap, while a `450ms` hold
+opens their transient navigation choices and suppresses the release tap. The
+bundled clusters have no Back buttons.
+
+The header shows the full-page breadcrumb separately from the active cluster,
+for example `› Leader / Search · Delete`, and exposes that distinction to
+accessibility services. Opening a full menu first clears the cluster and then
+pushes a page. Back first clears a cluster and pops one page; on Home it only
+clears the cluster. Input or keyboard interactions with `after: stay`, rotation,
+keyboard compaction, selection mode, and app suspension retain it. Any
+`after: root`, disconnect/reset, or activated configuration replacement restores
+the complete root pad.
 
 Every input interaction dispatches its complete Neovim notation in one ordered
-operation, after any active Android IME composition has been committed. Buttons
-in navigation menus use `after: 'stay'` for repeated movement, while one-off
-command buttons use `after: 'root'`.
+operation, after any active Android IME composition has been committed. Inputs
+inside navigation clusters use `after: stay` for repeated movement, while
+one-off commands can use `after: root`. All placements retain 48dp touch targets
+and the same long-press release-suppression guarantees.
 
 When the software keyboard reduces the window height by at least `120dp`, the
-pad switches to its compact treatment while preserving `48dp` touch targets.
-The landscape groups remain vertically scrollable when the keyboard leaves too
-little height for every action. The editor and toolbar also relax their minimum
-heights so the 800 × 600dp condensed tablet layout does not overflow.
+pad switches to its compact treatment while preserving those targets and any
+active cluster. The landscape groups remain vertically scrollable when the
+keyboard leaves too little height for every action. The editor and toolbar also
+relax their minimum heights so the 800 × 600dp condensed tablet layout does not
+overflow.
 
 The starter configuration is `src/action-pad/default.yaml`: one versioned YAML
-document containing all 12 menus. The app validates it using the same parser as
-external configurations. No menu definitions are maintained in TypeScript.
-`src/action-pad/index.ts` exports the renderer, default configuration, document
-parser/validator/serializer, and menu, group, button, and interaction types.
-Special keys and modified keys use Neovim notation, such as `<Esc>`, `<Up>`, and
-`<C-r>`.
+document containing 12 menus, 30 logical groups, and 86 buttons. The app
+validates it using the same parser as external configurations. No menu
+definitions are maintained in TypeScript. `src/action-pad/index.ts` exports the
+renderer, default configuration, document parser/validator/serializer, and
+menu, group, button, and interaction types. Special keys and modified keys use
+Neovim notation, such as `<Esc>`, `<Up>`, and `<C-r>`.
 
 ### Editing and saving Action Pad configuration
 
-Navigate to the menu you want to refine, then tap **Edit Action Pad**, below
-the pad. The visible buttons gain pencil markers; tap anywhere on a button to
-open its editor with that menu, group, and button selected. Both taps and holds
-select a button in this mode. Configured input, menu, Back, and keyboard actions
-are suppressed, so navigate to the desired menu before entering selection mode.
+Navigate to the page or transient cluster you want to refine, then tap **Edit
+Action Pad**, below the pad. The visible buttons gain pencil markers; tap
+anywhere on a button to open its editor with that button's definition selected.
+For a transient replacement this is the target
+`{menuId, groupId, buttonId}`, even though the renderer retains the source slot
+for layout. Both taps and holds select a button in this mode. Configured input,
+menu, group, Back, and keyboard actions are suppressed.
 
-Closing the editor keeps selection mode enabled and preserves the current menu.
-Use **Done editing** or Android Back while the pad is visible to exit selection
-mode and restore normal button actions. A successful **Save** or **Load / Reload**
-still resets the active pad to its root menu.
+Closing the editor keeps selection mode enabled and preserves the current page
+and active cluster. Use **Done editing** or Android Back while the pad is visible
+to exit selection mode and restore normal button actions. A successful **Save**
+or **Load / Reload** still resets the active pad to its complete root layout.
 
 Hold **Edit Action Pad** for `450ms` to open the general configuration editor
 directly, without entering selection mode. Holding **Done editing** opens the
@@ -101,10 +120,13 @@ same editor while keeping selection mode enabled. The control also exposes an
 **Open full Action Pad editor** accessibility action. It is not part of the YAML
 and remains available even if every configured button is removed or the host is
 disconnected. The general editor includes menus, groups, buttons, duplication,
-ordering/move controls, all button properties, and a preview. The preview can
-navigate menus but never sends commands or opens the Neovim keyboard. The
-existing Neovim session remains mounted while ordinary form inputs own keyboard
-focus.
+ordering/move controls, all button properties, and a preview. **Group** appears
+alongside the other interaction types, followed by destination-menu and
+destination-group pickers; changing the menu clears the group selection. Menu
+and group renames update links, while deletion is protected when either kind of
+link depends on the target. The preview can navigate pages and substitute
+groups but never sends commands or opens the Neovim keyboard. The existing
+Neovim session remains mounted while ordinary form inputs own keyboard focus.
 
 The primary YAML file lives on the connected Neovim host, not on Android.
 Choose an absolute host path or a path beginning with `~/`. The suggested path
@@ -162,16 +184,32 @@ menus:
               after: root
 ```
 
+To replace only the invoking group's fixed slot, use both destination IDs:
+
+```yaml
+tap:
+  type: group
+  menuId: delete
+  groupId: options
+  after: stay
+```
+
 Menus, groups, and buttons are ordered lists. Menu IDs are unique throughout
 the document, group IDs within each menu, and button IDs within each group.
-Menu interactions use `menuId`; their targets must exist and references must
-not form cycles. A button needs `tap`, `longPress`, or both. Optional button
-fields are `accessibilityLabel`, `accessibilityHint`, and
-`styles: { size: '1/4' }` or `styles: { size: '1/2' }`. Each interaction has an
-explicit `after: root` or `after: stay`. Quote numeric labels and
-whitespace-sensitive inputs: inputs are preserved exactly, not trimmed.
-Only a single YAML 1.2 document is supported, up to 1 MiB; custom tags,
-anchors/aliases, unknown fields, and unsupported versions are rejected.
+Menu interactions use `menuId`; group interactions require both `menuId` and
+`groupId`. Both destination definitions must exist. Same-menu group links and
+cycles composed of menu and group links are rejected. A button needs `tap`,
+`longPress`, or both. Optional button fields are `accessibilityLabel`,
+`accessibilityHint`, and `styles: { size: '1/4' }` or
+`styles: { size: '1/2' }`. Each interaction has an explicit `after: root` or
+`after: stay`. Quote numeric labels and whitespace-sensitive inputs: inputs are
+preserved exactly, not trimmed. Only a single YAML 1.2 document is supported,
+up to 1 MiB; custom tags, anchors/aliases, unknown fields, and unsupported
+versions are rejected.
+
+This prototype adds group interactions directly to schema version 1. It does
+not provide backward compatibility with older Codey builds that only understand
+the earlier version-1 interaction set.
 
 **Load only configurations you trust.** Input strings are passed directly to
 Neovim and can contain commands, including commands that affect host files or

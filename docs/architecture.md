@@ -124,52 +124,84 @@ Keyboard interaction for opening it.
 
 ### Contextual action pad
 
-The Android command area is a small interpreter for a validated tree of menus,
+The Android command area is a small interpreter for a validated graph of menus,
 ordered groups, buttons, and interactions. Group IDs are arbitrary configuration
 labels with no built-in placement semantics. A button configures `tap`,
 `longPress`, or both from the same interaction union: direct Neovim input,
-opening a menu, going Back, or focusing the Android keyboard. Each interaction
-declares `after: 'root'` or `after: 'stay'`, so return behavior is local to the
-button gesture instead of inherited from its menu.
+opening a whole menu, substituting one destination group, going Back, or
+focusing the Android keyboard. Each interaction declares `after: 'root'` or
+`after: 'stay'`, so return behavior is local to the button gesture instead of
+inherited from its menu.
 
-The bundled Up/Down buttons send `<Up>` or `<Down>` on tap and open navigation
-choices on long press using those same generic interactions. Special and
-modified keys are complete trusted `nvim_input` strings such as `<Esc>` and
-`<C-w>h`. Branch traversal and configured Back interactions are local, so Neovim
-receives nothing for either. Back is rendered as an ordinary button exactly
-where the configuration declares it. Navigation inputs can stay in their menu
-for repetition, while command inputs can return to root.
+A group interaction resolves a destination menu and the exact destination group
+object, then renders that group in the invoking base group's fixed slot. Target
+definition identity and layout identity remain separate: selection mode edits
+the destination `{menuId, groupId, buttonId}`, while the outer rendered group is
+still identified by the current page and original host-group ID. Replacement
+buttons use their actual definition identity. This lets memoized sibling groups
+stay mounted while only the restored and newly substituted slots rerender.
+
+Navigation state is reducer-owned and consists of a full-page stack plus at most
+one active cluster. A `group` interaction with `after: 'stay'` replaces the
+active cluster without adding history; a nested group interaction retains the
+same original host slot. Activating a cluster in another group restores the old
+host first. Opening a whole menu clears the cluster before pushing the page, so
+Back returns to a clean prior page. Back clears a cluster and pops one page; at
+Home it only clears the cluster. Any `after: 'root'`, disable/reset, or active
+configuration replacement clears both page and cluster state. Input and
+keyboard actions with `after: 'stay'`, layout/compact changes, selection mode,
+and suspension preserve it.
+
+The bundled Up/Down buttons send `<Up>` or `<Down>` on tap and substitute their
+navigation choices on long press. Yank, Delete, Motions, and TextObjects use the
+same transient mechanism on tap. Their consolidated `options` groups contain no
+Back button; configured Back remains an ordinary button on full pages. Special
+and modified keys are complete trusted `nvim_input` strings such as `<Esc>` and
+`<C-w>h`. Navigation and Back transitions are local, so Neovim receives nothing
+for either. Inputs can retain a cluster for repetition or return the complete
+pad to root.
 
 Below the editor, the action pad normally follows the Figma 213dp treatment.
 When the software keyboard removes at least 120dp of usable height, it compacts
 to 144dp while retaining two 48dp touch rows and yields the remaining space to
 the editor. To the editor's right, it uses a `336dp` rail at full workspace
-height. Below the editor, each group flows across two rows and the groups share
-horizontal space in declaration order. In the right rail, each group flows
-through left-aligned fractional rows in a shared vertical scroll area; the
-default half-sized buttons form two columns. The first group is at the top, the
-last is at the bottom, and intermediate groups are distributed between them.
-Keyboard compaction reduces controls from 52dp to 48dp without changing their
-group membership or order. The trusted configuration owns group density and
-fit.
+height. The trusted configuration still owns density and can overflow, but a
+cluster swap never changes sibling positions, the scroll-view instance, its
+content extent, or its scroll offset.
 
-Buttons may opt into the semantic `styles.size` values `"1/4"` and `"1/2"`.
-The setting is limited to the right rail and defaults to `"1/2"`; the
-below-editor flow ignores it. In the rail, halves map to `48%`, quarters to
-`22%`, and the column gap to `4%`, allowing two halves, four quarters, or one
-half plus two quarters to fill a row in declaration order. This contract is not
-a general React Native style passthrough.
+Each base-page slot has a fixed capacity envelope computed by following only
+group-action targets reachable from that slot. Below the editor, a variant with
+`buttonCount` buttons needs `max(1, ceil(buttonCount / 2))` columns. The slot
+always renders against the maximum reachable column count with 48dp minimum
+cells and 6dp internal and inter-group gaps. Its minimum basis is
+`columns × 48 + (columns - 1) × 6`; surplus width is distributed
+proportionally. Oversized configurations remain in a horizontal overflow
+container whose content width is fixed across substitutions.
 
-The current Neovim mode and menu breadcrumb are projections in the action pad,
-not a second Neovim state machine. Hardware-key input remains independent of the
-touch-menu path.
+In the right rail, default and half-sized buttons consume two units and quarter
+buttons consume one unit in four-unit rows. A slot reserves the maximum exact
+row height across its reachable variants using the normal or compact button
+height and existing gaps. The shared vertical overflow container therefore
+keeps the same geometry through a substitution. Both placements preserve 48dp
+touch targets and the existing press ownership, long-press, release, and stale
+activation guards.
+
+The current Neovim mode, full-page breadcrumb, and active-cluster label are
+projections in the action-pad header, not a second Neovim state machine. The
+visual context distinguishes them, for example `› Leader / Search · Delete`, and
+the accessibility announcement names the page path separately from the active
+cluster. Hardware-key input remains independent of the touch-menu path.
 
 The action document is YAML data, with `version`, `rootMenuId`, and ordered
-menus, groups, and buttons. The bundled starter and user-selected host files
-share strict parsing, semantic validation, and a resolver that converts menu-ID
-references into the existing runtime tree. The renderer sees only a validated
-tree, whose identity changes after a successful Load/Save rather than on each
-form edit or editor redraw. Its navigation then resets to the configured root.
+menus, groups, and buttons. A `group` interaction carries both `menuId` and
+`groupId`. Strict semantic validation requires both destinations, rejects
+same-menu references and cycles mixed across menu/group links, and the resolver
+preserves destination object identity. The bundled starter and user-selected
+host files use the same parser. The renderer sees only a validated graph, whose
+identity changes after a successful Load/Save rather than on each form edit or
+editor redraw; replacement resets navigation to root. This prototype
+deliberately evolves schema version 1 in place and does not promise that older
+builds can read group-enabled version-1 documents.
 
 The configuration store owns the active document, editable draft, host-file
 identity/revision, and endpoint-specific recovery cache. The separate editor

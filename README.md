@@ -23,13 +23,15 @@ The Android path uses a Skia renderer, an Android IME view, and a local Expo
 Kotlin TCP module. Phones remain installable, but a window whose shortest side
 is below `600dp` only shows the unsupported-device explanation and cannot open
 a Neovim session. Portrait and square windows place the action pad below the
-terminal, with its configured button groups sharing the available horizontal
-space in declaration order. Landscape moves the same ordered groups into a
-two-column right-hand rail so the terminal gains vertical space; the first and
-last groups occupy its top and bottom edges. The primary design target remains
-a 12–14-inch tablet. A completed editor tap is forwarded through Neovim's
-native mouse API to position the cursor; the configured Keyboard interaction
-opens the Android software keyboard.
+terminal; landscape moves it into a scrollable right-hand rail so the terminal
+gains vertical space. Ordered base groups keep fixed capacity envelopes in both
+placements. A configured group action can temporarily replace only its invoking
+slot without moving siblings or changing scroll extent, while Cmd, Leader,
+Search, Window, and Code remain whole-page navigation. The header distinguishes
+the page path from the one active transient cluster. The primary design target
+remains a 12–14-inch tablet. A completed editor tap is forwarded through
+Neovim's native mouse API to position the cursor; the configured Keyboard
+interaction opens the Android software keyboard.
 
 ## Development environment
 

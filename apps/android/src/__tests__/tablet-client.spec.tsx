@@ -631,7 +631,7 @@ describe('tablet client shell', () => {
       flexGrow: 1,
       justifyContent: 'space-between'
     })
-    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-leading-group').props.style)).toMatchObject({
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-core-group').props.style)).toMatchObject({
       flexDirection: 'row',
       flexWrap: 'wrap',
       rowGap: 12
@@ -650,6 +650,7 @@ describe('tablet client shell', () => {
     )
 
     expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(213)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-horizontal-scroll').props.style).height).toBe(110)
     fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
       persist: jest.fn(),
       nativeEvent: { layout: { width: 800, height: 1_160, x: 0, y: 0 } }
@@ -660,10 +661,11 @@ describe('tablet client shell', () => {
       expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
     })
     expect(StyleSheet.flatten(screen.getByTestId('editor-frame').props.style).minHeight).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-2').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-horizontal-scroll').props.style).height).toBe(102)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-navigation-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-navigation-row-2').props.style).height).toBe(48)
   })
 
   it('applies keyboard compaction to the landscape shell while retaining rail controls', async () => {
@@ -684,7 +686,7 @@ describe('tablet client shell', () => {
       expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).padding).toBe(8)
     })
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow-scroll').props.contentContainerStyle).gap).toBe(6)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-group').props.style).rowGap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-group').props.style).rowGap).toBe(6)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       width: '48%',
       height: 48
@@ -965,7 +967,7 @@ describe('tablet client shell', () => {
     expect(screen.queryByText('› Leader / Search')).toBeNull()
   })
 
-  it('opens navigation on hold, keeps it open for repeated moves, and backs out locally', async () => {
+  it('opens transient navigation on hold, keeps it open for repeated moves, and returns through a clean page', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(
@@ -976,8 +978,9 @@ describe('tablet client shell', () => {
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
-    expect(screen.getByText('› Up Arrow – Navigation')).toBeTruthy()
+    expect(screen.getByText('› Home · Up Arrow – Navigation')).toBeTruthy()
     expect(screen.getByText('gg Top')).toBeTruthy()
+    expect(screen.queryByTestId('action-pad-back')).toBeNull()
 
     fireEvent.press(screen.getByText('+5 Lines'))
     const nativeIme = jest.requireMock('../native/CodeyIme') as {
@@ -987,6 +990,9 @@ describe('tablet client shell', () => {
     expect(nativeIme.__sendOrderedInput).toHaveBeenCalledWith('5k')
     expect(screen.getByText('+5 Lines')).toBeTruthy()
 
+    fireEvent.press(screen.getByTestId('action-pad-command'))
+    expect(screen.getByText('› Cmd')).toBeTruthy()
+    expect(screen.queryByText('+5 Lines')).toBeNull()
     fireEvent.press(screen.getByTestId('action-pad-back'))
     expect(screen.getByText('Esc')).toBeTruthy()
     expect(double.session.input).toHaveBeenCalledTimes(1)

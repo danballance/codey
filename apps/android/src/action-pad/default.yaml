@@ -4,7 +4,7 @@ menus:
   - id: 'home'
     label: 'Home'
     groups:
-      - id: 'leading'
+      - id: 'core'
         buttons:
           - id: 'escape'
             label: 'Esc'
@@ -18,6 +18,8 @@ menus:
               type: 'input'
               nvimInput: '<Esc>-'
               after: 'root'
+      - id: 'pages'
+        buttons:
           - id: 'command'
             label: 'Cmd'
             tap:
@@ -30,32 +32,38 @@ menus:
               type: 'menu'
               menuId: 'leader'
               after: 'stay'
+      - id: 'operators'
+        buttons:
           - id: 'yank'
             label: 'Yank'
             tap:
-              type: 'menu'
+              type: 'group'
               menuId: 'yank'
+              groupId: 'options'
               after: 'stay'
           - id: 'delete'
             label: 'Delete'
             tap:
-              type: 'menu'
+              type: 'group'
               menuId: 'delete'
+              groupId: 'options'
               after: 'stay'
-      - id: 'trailing'
-        buttons:
           - id: 'motions'
             label: 'Motions'
             tap:
-              type: 'menu'
+              type: 'group'
               menuId: 'motions'
+              groupId: 'options'
               after: 'stay'
           - id: 'text-objects'
             label: 'TextObjects'
             tap:
-              type: 'menu'
+              type: 'group'
               menuId: 'text-objects'
+              groupId: 'options'
               after: 'stay'
+      - id: 'navigation'
+        buttons:
           - id: 'down'
             label: '⬇'
             accessibilityLabel: 'Down'
@@ -65,8 +73,9 @@ menus:
               nvimInput: '<Down>'
               after: 'root'
             longPress:
-              type: 'menu'
+              type: 'group'
               menuId: 'down-navigation'
+              groupId: 'options'
               after: 'stay'
           - id: 'up'
             label: '⬆'
@@ -77,8 +86,9 @@ menus:
               nvimInput: '<Up>'
               after: 'root'
             longPress:
-              type: 'menu'
+              type: 'group'
               menuId: 'up-navigation'
+              groupId: 'options'
               after: 'stay'
           - id: 'left'
             label: '⬅'
@@ -107,7 +117,7 @@ menus:
   - id: 'command'
     label: 'Cmd'
     groups:
-      - id: 'leading'
+      - id: 'write'
         buttons:
           - id: 'save'
             label: 'Save'
@@ -121,6 +131,14 @@ menus:
               type: 'input'
               nvimInput: ':wa<CR>'
               after: 'root'
+          - id: 'write-quit'
+            label: 'Write and Quit'
+            tap:
+              type: 'input'
+              nvimInput: ':wq<CR>'
+              after: 'root'
+      - id: 'exit'
+        buttons:
           - id: 'quit'
             label: 'Quit'
             tap:
@@ -133,14 +151,8 @@ menus:
               type: 'input'
               nvimInput: ':q!<CR>'
               after: 'root'
-      - id: 'trailing'
+      - id: 'history'
         buttons:
-          - id: 'write-quit'
-            label: 'Write and Quit'
-            tap:
-              type: 'input'
-              nvimInput: ':wq<CR>'
-              after: 'root'
           - id: 'undo'
             label: 'Undo'
             tap:
@@ -153,6 +165,8 @@ menus:
               type: 'input'
               nvimInput: '<C-r>'
               after: 'root'
+      - id: 'navigation'
+        buttons:
           - id: 'back'
             label: 'Back'
             tap:
@@ -161,7 +175,7 @@ menus:
   - id: 'leader'
     label: 'Leader'
     groups:
-      - id: 'leading'
+      - id: 'discovery'
         buttons:
           - id: 'search'
             label: 'Search'
@@ -181,20 +195,14 @@ menus:
               type: 'input'
               nvimInput: '<Space><Space>'
               after: 'root'
+      - id: 'workspace'
+        buttons:
           - id: 'window'
             label: 'Window'
             tap:
               type: 'menu'
               menuId: 'window'
               after: 'stay'
-          - id: 'code'
-            label: 'Code'
-            tap:
-              type: 'menu'
-              menuId: 'code'
-              after: 'stay'
-      - id: 'trailing'
-        buttons:
           - id: 'project-tree'
             label: 'Project Tree'
             tap:
@@ -213,12 +221,24 @@ menus:
               type: 'input'
               nvimInput: ':terminal<CR>'
               after: 'root'
+      - id: 'code'
+        buttons:
+          - id: 'code'
+            label: 'Code'
+            tap:
+              type: 'menu'
+              menuId: 'code'
+              after: 'stay'
+      - id: 'help'
+        buttons:
           - id: 'help'
             label: 'Help'
             tap:
               type: 'input'
               nvimInput: '<Space>sh'
               after: 'root'
+      - id: 'navigation'
+        buttons:
           - id: 'back'
             label: 'Back'
             tap:
@@ -227,7 +247,7 @@ menus:
   - id: 'motions'
     label: 'Motions'
     groups:
-      - id: 'leading'
+      - id: 'options'
         buttons:
           - id: 'save'
             label: 'Save'
@@ -235,8 +255,6 @@ menus:
               type: 'input'
               nvimInput: ':w<CR>'
               after: 'root'
-      - id: 'trailing'
-        buttons:
           - id: 'write-quit'
             label: 'Write and Quit'
             tap:
@@ -246,7 +264,7 @@ menus:
   - id: 'text-objects'
     label: 'TextObjects'
     groups:
-      - id: 'leading'
+      - id: 'options'
         buttons:
           - id: 'save'
             label: 'Save'
@@ -254,8 +272,6 @@ menus:
               type: 'input'
               nvimInput: ':w<CR>'
               after: 'root'
-      - id: 'trailing'
-        buttons:
           - id: 'write-quit'
             label: 'Write and Quit'
             tap:
@@ -265,7 +281,7 @@ menus:
   - id: 'up-navigation'
     label: 'Up Arrow – Navigation'
     groups:
-      - id: 'leading'
+      - id: 'options'
         buttons:
           - id: 'top'
             label: 'gg Top'
@@ -285,14 +301,16 @@ menus:
               type: 'input'
               nvimInput: '5k'
               after: 'stay'
+            styles:
+              size: '1/4'
           - id: 'ten-lines-up'
             label: '+10 Lines'
             tap:
               type: 'input'
               nvimInput: '10k'
               after: 'stay'
-      - id: 'trailing'
-        buttons:
+            styles:
+              size: '1/4'
           - id: 'screen-top'
             label: 'H Screen Top'
             tap:
@@ -311,15 +329,10 @@ menus:
               type: 'input'
               nvimInput: '<C-b>'
               after: 'stay'
-          - id: 'back'
-            label: 'Back'
-            tap:
-              type: 'back'
-              after: 'stay'
   - id: 'down-navigation'
     label: 'Down Arrow – Navigation'
     groups:
-      - id: 'leading'
+      - id: 'options'
         buttons:
           - id: 'bottom'
             label: 'G Bottom'
@@ -339,14 +352,16 @@ menus:
               type: 'input'
               nvimInput: '5j'
               after: 'stay'
+            styles:
+              size: '1/4'
           - id: 'ten-lines-down'
             label: '+10 Lines'
             tap:
               type: 'input'
               nvimInput: '10j'
               after: 'stay'
-      - id: 'trailing'
-        buttons:
+            styles:
+              size: '1/4'
           - id: 'screen-bottom'
             label: 'L Screen Bot'
             tap:
@@ -365,15 +380,10 @@ menus:
               type: 'input'
               nvimInput: '<C-f>'
               after: 'stay'
-          - id: 'back'
-            label: 'Back'
-            tap:
-              type: 'back'
-              after: 'stay'
   - id: 'search'
     label: 'Search'
     groups:
-      - id: 'leading'
+      - id: 'sources'
         buttons:
           - id: 'grep'
             label: 'Grep (Live)'
@@ -399,14 +409,14 @@ menus:
               type: 'input'
               nvimInput: 'gO'
               after: 'root'
-      - id: 'trailing'
-        buttons:
           - id: 'recent'
             label: 'Recent Files'
             tap:
               type: 'input'
               nvimInput: '<Space>s.'
               after: 'root'
+      - id: 'content'
+        buttons:
           - id: 'replace'
             label: 'Replace'
             tap:
@@ -425,6 +435,8 @@ menus:
               type: 'input'
               nvimInput: '<Space>sd'
               after: 'root'
+      - id: 'navigation'
+        buttons:
           - id: 'back'
             label: 'Back'
             tap:
@@ -433,7 +445,7 @@ menus:
   - id: 'window'
     label: 'Window'
     groups:
-      - id: 'leading'
+      - id: 'focus'
         buttons:
           - id: 'left'
             label: '← Left'
@@ -459,25 +471,19 @@ menus:
               type: 'input'
               nvimInput: '<C-w>l'
               after: 'root'
+      - id: 'layout'
+        buttons:
           - id: 'split'
             label: 'Split'
             tap:
               type: 'input'
               nvimInput: '<C-w>s'
               after: 'root'
-      - id: 'trailing'
-        buttons:
           - id: 'vertical-split'
             label: 'V Split'
             tap:
               type: 'input'
               nvimInput: '<C-w>v'
-              after: 'root'
-          - id: 'close'
-            label: 'Close'
-            tap:
-              type: 'input'
-              nvimInput: '<C-w>c'
               after: 'root'
           - id: 'only'
             label: 'Only'
@@ -485,12 +491,22 @@ menus:
               type: 'input'
               nvimInput: '<C-w>o'
               after: 'root'
+      - id: 'window'
+        buttons:
+          - id: 'close'
+            label: 'Close'
+            tap:
+              type: 'input'
+              nvimInput: '<C-w>c'
+              after: 'root'
           - id: 'next'
             label: 'Next'
             tap:
               type: 'input'
               nvimInput: '<C-w>w'
               after: 'root'
+      - id: 'navigation'
+        buttons:
           - id: 'back'
             label: 'Back'
             tap:
@@ -499,7 +515,7 @@ menus:
   - id: 'code'
     label: 'Code'
     groups:
-      - id: 'leading'
+      - id: 'navigate'
         buttons:
           - id: 'definition'
             label: 'Definition'
@@ -525,13 +541,21 @@ menus:
               type: 'input'
               nvimInput: 'grt'
               after: 'root'
+      - id: 'inspect'
+        buttons:
           - id: 'hover'
             label: 'Hover'
             tap:
               type: 'input'
               nvimInput: 'K'
               after: 'root'
-      - id: 'trailing'
+          - id: 'diagnostic'
+            label: 'Diagnostic'
+            tap:
+              type: 'input'
+              nvimInput: '<C-w>d'
+              after: 'root'
+      - id: 'change'
         buttons:
           - id: 'code-action'
             label: 'Code Action'
@@ -551,12 +575,8 @@ menus:
               type: 'input'
               nvimInput: '<Space>f'
               after: 'root'
-          - id: 'diagnostic'
-            label: 'Diagnostic'
-            tap:
-              type: 'input'
-              nvimInput: '<C-w>d'
-              after: 'root'
+      - id: 'navigation'
+        buttons:
           - id: 'back'
             label: 'Back'
             tap:
@@ -565,7 +585,7 @@ menus:
   - id: 'yank'
     label: 'Yank'
     groups:
-      - id: 'leading'
+      - id: 'options'
         buttons:
           - id: 'yank-line'
             label: 'Line'
@@ -573,17 +593,10 @@ menus:
               type: 'input'
               nvimInput: '<Esc>yy<Esc>'
               after: 'root'
-      - id: 'trailing'
-        buttons:
-          - id: 'back'
-            label: 'Back'
-            tap:
-              type: 'back'
-              after: 'stay'
   - id: 'delete'
     label: 'Delete'
     groups:
-      - id: 'leading'
+      - id: 'options'
         buttons:
           - id: 'delete-num-2'
             label: '2'
@@ -623,16 +636,9 @@ menus:
               type: 'input'
               nvimInput: 'b'
               after: 'root'
-      - id: 'trailing'
-        buttons:
           - id: 'delete-line'
             label: 'Line'
             tap:
               type: 'input'
               nvimInput: '<Esc>dd<Esc>'
               after: 'root'
-          - id: 'back'
-            label: 'Back'
-            tap:
-              type: 'back'
-              after: 'stay'

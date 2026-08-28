@@ -20,6 +20,12 @@ export type ActionInteraction =
       readonly after: ActionAfter
     }
   | {
+      readonly type: 'group'
+      readonly menu: ActionMenu
+      readonly group: ActionGroup
+      readonly after: ActionAfter
+    }
+  | {
       readonly type: 'back'
       readonly after: ActionAfter
     }

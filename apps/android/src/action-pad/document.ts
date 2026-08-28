@@ -20,6 +20,7 @@ const MAX_YAML_DEPTH = 24
 export type ActionMenuDefinitionInteraction =
   | { readonly type: 'input'; readonly nvimInput: string; readonly after: ActionAfter }
   | { readonly type: 'menu'; readonly menuId: string; readonly after: ActionAfter }
+  | { readonly type: 'group'; readonly menuId: string; readonly groupId: string; readonly after: ActionAfter }
   | { readonly type: 'back'; readonly after: ActionAfter }
   | { readonly type: 'keyboard'; readonly after: ActionAfter }
 
@@ -137,26 +138,34 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
   }
 
   function interaction(candidate: unknown, path: string) {
-    if (!object(candidate, path, ['type', 'after', 'nvimInput', 'menuId'])) return
+    if (!object(candidate, path, ['type', 'after', 'nvimInput', 'menuId', 'groupId'])) return
     if (candidate.after !== 'root' && candidate.after !== 'stay') {
       issue(`${path}.after`, 'Expected "root" or "stay".')
     }
     switch (candidate.type) {
       case 'input':
         string(candidate.nvimInput, `${path}.nvimInput`, 'input')
-        if ('menuId' in candidate) issue(`${path}.menuId`, 'Only menu interactions have a menuId.')
+        if ('menuId' in candidate) issue(`${path}.menuId`, 'Only menu and group interactions have a menuId.')
+        if ('groupId' in candidate) issue(`${path}.groupId`, 'Only group interactions have a groupId.')
         break
       case 'menu':
         string(candidate.menuId, `${path}.menuId`, 'text')
         if ('nvimInput' in candidate) issue(`${path}.nvimInput`, 'Only input interactions have nvimInput.')
+        if ('groupId' in candidate) issue(`${path}.groupId`, 'Only group interactions have a groupId.')
+        break
+      case 'group':
+        string(candidate.menuId, `${path}.menuId`, 'text')
+        string(candidate.groupId, `${path}.groupId`, 'text')
+        if ('nvimInput' in candidate) issue(`${path}.nvimInput`, 'Only input interactions have nvimInput.')
         break
       case 'back':
       case 'keyboard':
-        if ('menuId' in candidate) issue(`${path}.menuId`, 'Only menu interactions have a menuId.')
+        if ('menuId' in candidate) issue(`${path}.menuId`, 'Only menu and group interactions have a menuId.')
+        if ('groupId' in candidate) issue(`${path}.groupId`, 'Only group interactions have a groupId.')
         if ('nvimInput' in candidate) issue(`${path}.nvimInput`, 'Only input interactions have nvimInput.')
         break
       default:
-        issue(`${path}.type`, 'Expected "input", "menu", "back" or "keyboard".')
+        issue(`${path}.type`, 'Expected "input", "menu", "group", "back" or "keyboard".')
     }
   }
 
@@ -212,20 +221,41 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
 }
 
 function validateGraph(config: ActionPadConfig, issue: (path: string, message: string) => void) {
-  const menuIds = new Set(config.menus.map((menu) => menu.id))
-  const edges = new Map<string, { readonly target: string; readonly path: string }[]>()
+  interface GraphEdge {
+    readonly target: string
+    readonly path: string
+    readonly type: 'menu' | 'group'
+  }
+  const menus = new Map(config.menus.map((menu) => [menu.id, menu]))
+  const menuIds = new Set(menus.keys())
+  const edges = new Map<string, GraphEdge[]>()
   if (!menuIds.has(config.rootMenuId)) issue('rootMenuId', `Missing action menu definition: ${config.rootMenuId}`)
 
   config.menus.forEach((menu, menuIndex) => {
-    const references: { readonly target: string; readonly path: string }[] = []
+    const references: GraphEdge[] = []
     menu.groups.forEach((group, groupIndex) => {
       group.buttons.forEach((button, buttonIndex) => {
         for (const gesture of ['tap', 'longPress'] as const) {
           const interaction = button[gesture]
-          if (interaction?.type !== 'menu') continue
-          const path = `menus[${menuIndex}].groups[${groupIndex}].buttons[${buttonIndex}].${gesture}.menuId`
-          if (!menuIds.has(interaction.menuId)) issue(path, `Missing action menu definition: ${interaction.menuId}`)
-          references.push({ target: interaction.menuId, path })
+          if (interaction?.type !== 'menu' && interaction?.type !== 'group') continue
+          const interactionPath = `menus[${menuIndex}].groups[${groupIndex}].buttons[${buttonIndex}].${gesture}`
+          const menuPath = `${interactionPath}.menuId`
+          const targetMenu = menus.get(interaction.menuId)
+          if (targetMenu === undefined) {
+            issue(menuPath, `Missing action menu definition: ${interaction.menuId}`)
+          } else if (interaction.type === 'group') {
+            const groupPath = `${interactionPath}.groupId`
+            const sameMenu = interaction.menuId === menu.id
+            if (sameMenu) {
+              issue(menuPath, 'Group interactions must target a different menu.')
+            }
+            if (!targetMenu.groups.some((candidate) => candidate.id === interaction.groupId)) {
+              issue(groupPath, `Missing action group definition: ${interaction.menuId}/${interaction.groupId}`)
+            }
+          }
+          if (interaction.type !== 'group' || interaction.menuId !== menu.id) {
+            references.push({ target: interaction.menuId, path: menuPath, type: interaction.type })
+          }
         }
       })
     })
@@ -234,15 +264,19 @@ function validateGraph(config: ActionPadConfig, issue: (path: string, message: s
 
   const complete = new Set<string>()
   const visiting: string[] = []
+  const visitingEdges: GraphEdge[] = []
   function walk(menuId: string) {
     if (complete.has(menuId)) return
     visiting.push(menuId)
     for (const edge of edges.get(menuId) ?? []) {
       const cycleStart = visiting.indexOf(edge.target)
       if (cycleStart >= 0) {
-        issue(edge.path, `Cyclic action menu reference: ${[...visiting.slice(cycleStart), edge.target].join(' -> ')}`)
+        const cycleIncludesGroup = [...visitingEdges.slice(cycleStart), edge].some((candidate) => candidate.type === 'group')
+        issue(edge.path, `Cyclic action ${cycleIncludesGroup ? 'menu/group' : 'menu'} reference: ${[...visiting.slice(cycleStart), edge.target].join(' -> ')}`)
       } else if (menuIds.has(edge.target)) {
+        visitingEdges.push(edge)
         walk(edge.target)
+        visitingEdges.pop()
       }
     }
     visiting.pop()
@@ -337,6 +371,7 @@ function normalizeInteraction(interaction: ActionMenuDefinitionInteraction): Act
   switch (interaction.type) {
     case 'input': return { type: 'input', nvimInput: interaction.nvimInput, after: interaction.after }
     case 'menu': return { type: 'menu', menuId: interaction.menuId, after: interaction.after }
+    case 'group': return { type: 'group', menuId: interaction.menuId, groupId: interaction.groupId, after: interaction.after }
     case 'back': return { type: 'back', after: interaction.after }
     case 'keyboard': return { type: 'keyboard', after: interaction.after }
   }
@@ -371,8 +406,21 @@ export function resolveActionPadConfig(config: ActionPadConfig): ActionMenu {
   const resolved = new Map<string, ActionMenu>()
 
   function resolveInteraction(interaction: ActionMenuDefinitionInteraction): ActionInteraction {
-    if (interaction.type !== 'menu') return { ...interaction }
-    return { type: 'menu', menu: resolveMenu(interaction.menuId), after: interaction.after }
+    if (interaction.type === 'menu') {
+      return { type: 'menu', menu: resolveMenu(interaction.menuId), after: interaction.after }
+    }
+    if (interaction.type === 'group') {
+      const menu = resolveMenu(interaction.menuId)
+      const group = menu.groups.find((candidate) => candidate.id === interaction.groupId)
+      if (group === undefined) {
+        throw new ActionPadConfigError([{
+          path: 'menus',
+          message: `Missing action group definition: ${interaction.menuId}/${interaction.groupId}`
+        }])
+      }
+      return { type: 'group', menu, group, after: interaction.after }
+    }
+    return { ...interaction }
   }
 
   function resolveButton(button: ActionMenuDefinitionButton): ActionButton {

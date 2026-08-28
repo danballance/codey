@@ -56,16 +56,15 @@ describe('action pad YAML document', () => {
       'down-navigation', 'search', 'window', 'code', 'yank', 'delete'
     ])
     const groups = DEFAULT_ACTION_PAD_CONFIG.menus.flatMap((menu) => menu.groups)
-    expect(groups).toHaveLength(24)
-    expect(groups.flatMap((group) => group.buttons)).toHaveLength(90)
+    expect(groups).toHaveLength(30)
+    expect(groups.flatMap((group) => group.buttons)).toHaveLength(86)
     expect(ACTION_PAD_MENU.id).toBe(DEFAULT_ACTION_PAD_CONFIG.rootMenuId)
     expect(resolveActionPadConfig(parseActionPadConfig(defaultYaml))).toEqual(ACTION_PAD_MENU)
     expect(parseActionPadConfig(serializeActionPadConfig(DEFAULT_ACTION_PAD_CONFIG))).toEqual(DEFAULT_ACTION_PAD_CONFIG)
   })
 
-  it('matches every original menu field and ordering against the frozen TypeScript migration baseline', () => {
-    // Derived independently from MENU_DEFINITIONS at commit
-    // 60c294052a02aa641944ff778e41ccaf6b2901c5, with registry keys added as menu IDs.
+  it('matches every starter menu field and ordering against the frozen group-action baseline', () => {
+    // SHA-256 values were regenerated for the reviewed group-scoped starter redesign.
     // SHA-256 covers UTF-8 JSON with recursively sorted object keys; array order,
     // exact strings and omitted/present optional fields are preserved. Deliberate
     // starter changes require an explicitly reviewed update to this baseline.
@@ -74,18 +73,18 @@ describe('action pad YAML document', () => {
       menu.id,
       createHash('sha256').update(JSON.stringify(canonicalValue(menu)), 'utf8').digest('hex')
     ])).toEqual([
-      ['home', '0def47dcecac1ad1ca063b454784bd7ed2a78d9fc49682dfac20d441b404b73f'],
-      ['command', '0d98467f4078eecc3435d79e909b23b0fbf5434f8bb089345184598aa9320ad7'],
-      ['leader', '2ecdaa5a848be57e49d17e2e78367fd871f89527c16a37a2d556739ee16a53a0'],
-      ['motions', '22a16eafd913045d515b31d9c63c8fb8226cdaaff2e3f3c3d30eb93654fb8e6e'],
-      ['text-objects', '63731a53ea7d14c6409868061427da40fe409d78a8dda138d961c0b1c73cdd61'],
-      ['up-navigation', 'f5093ee15a2611bbc863cee55d016f74ba3e80c85280c1600657fe660dda1bd9'],
-      ['down-navigation', '72c1181eb32edc6afa31d6e5e0c7ca027fc3e07d32c9848ba15fe2cec4eafc1f'],
-      ['search', '8fcde459d215e11c024e3fcb6933a3149a28c021f54410a7e815664be92980a3'],
-      ['window', '730132e728ff4a6481a8cf14f1800ce4ec5f056cebc0ec9cddf6a9c5457a1766'],
-      ['code', 'd3f9e868a2579eb2d2842dee06f9c1576e079f1ca368872abf7b0bdbcf2fa9bf'],
-      ['yank', '717be5fe9d0cf6e7515370c6ce4db24ff0f57493ec3222953fb5227a5e13ee95'],
-      ['delete', 'a44e7b503fb39142e59bd2b536ffcf1c4da41eda4a945e763b857fd9d917319b']
+      ['home', '2d5da93ae7fed7d67e0a0a86fdfe28f7df24c6dff971c61cddc2f4c1a5a02a1a'],
+      ['command', '5dbb45f334d1b984364e295869fec236710dcff74d82e9745a5fd5d7f2d85b99'],
+      ['leader', 'e1d1d2526d1c3a8c5a88dffe970b0da0818e31c24259a45c5d83dd1d158c3d9c'],
+      ['motions', '16a4ca6e395d3470a0819726b88db8b343e2aa8fd0bd3083d93ac203ba8c0226'],
+      ['text-objects', 'fbc671fff3163f643ee74876f3834d51148a3ac50cb879cd940d7063f034f081'],
+      ['up-navigation', '013cf3c74d05b01f793fa30fb0beb411da710ebcacc227915fc6fff5ed79f47e'],
+      ['down-navigation', '63970675b9cd721a34dccb5838dbc30ccaf9c3c85900f3d3f6ead517c75f6697'],
+      ['search', '35134ecdb52130bde3a4d9b1558ee5d9cff1495b9b4073648ec3f1037fad459c'],
+      ['window', 'f038cfc67aadc61760fb6fac02c33e52e9109b3ec791224dd31add67beff8c5b'],
+      ['code', '19181a40404e1a9baf087945800f6d91030fbdff667f6e2613cd5f2976c6b1c0'],
+      ['yank', '41c05672f76daef01ea7caf249e3c8f7751deef01f7ada94d8130f677d8fd07f'],
+      ['delete', '662b5ff932c3719f6186228f73cc76f6770d13bd7358668ad1a82da50046aa1a']
     ])
   })
 
@@ -105,6 +104,30 @@ describe('action pad YAML document', () => {
     expect(text).toContain("label: '2'")
     expect(parseActionPadConfig(text)).toEqual(value)
     expect(serializeActionPadConfig(parseActionPadConfig(text))).toBe(text)
+  })
+
+  it('round trips group interactions without changing their destination IDs', () => {
+    const value: ActionPadConfig = {
+      version: 1,
+      rootMenuId: 'home',
+      menus: [
+        {
+          id: 'home', label: 'Home', groups: [{ id: 'actions', buttons: [{
+            id: 'delete', label: 'Delete',
+            tap: { type: 'group', menuId: 'delete', groupId: 'options', after: 'stay' }
+          }] }]
+        },
+        {
+          id: 'delete', label: 'Delete', groups: [{ id: 'options', buttons: [inputButton] }]
+        }
+      ]
+    }
+
+    const source = serializeActionPadConfig(value)
+
+    expect(source).toContain("type: 'group'")
+    expect(parseActionPadConfig(source)).toEqual(value)
+    expect(serializeActionPadConfig(parseActionPadConfig(source))).toBe(source)
   })
 
   it('normalizes formatting without changing array order or filling optional fields', () => {
@@ -157,6 +180,9 @@ describe('action pad document validation', () => {
     [{ ...inputButton, tap: { type: 'input', nvimInput: '', after: 'root' } }, 'tap.nvimInput'],
     [{ ...inputButton, tap: { type: 'input', nvimInput: 'x', after: 'back' } }, 'tap.after'],
     [{ ...inputButton, tap: { type: 'input', nvimInput: 'x', menuId: 'home', after: 'root' } }, 'tap.menuId'],
+    [{ ...inputButton, tap: { type: 'input', nvimInput: 'x', groupId: 'actions', after: 'root' } }, 'tap.groupId'],
+    [{ ...inputButton, tap: { type: 'menu', menuId: 'child', groupId: 'actions', after: 'root' } }, 'tap.groupId'],
+    [{ ...inputButton, tap: { type: 'group', menuId: 'child', groupId: 'actions', nvimInput: 'x', after: 'root' } }, 'tap.nvimInput'],
     [{ ...inputButton, tap: { type: 'back', nvimInput: 'x', after: 'root' } }, 'tap.nvimInput'],
     [{ ...inputButton, tap: { type: 'shell', after: 'root' } }, 'tap.type'],
     [{ id: 'empty', label: 'Empty' }, 'tap']
@@ -214,6 +240,69 @@ describe('action pad document validation', () => {
     ])
   })
 
+  it('validates both group destination IDs and prohibits same-menu group links', () => {
+    const target = { id: 'target', label: 'Target', groups: [{ id: 'options', buttons: [inputButton] }] }
+    const linked = (menuId: string, groupId: string): ActionPadConfig => ({
+      ...config(),
+      menus: [
+        {
+          ...config().menus[0]!,
+          groups: [{ id: 'actions', buttons: [{
+            id: 'open', label: 'Open',
+            tap: { type: 'group', menuId, groupId, after: 'stay' }
+          }] }]
+        },
+        target
+      ]
+    })
+
+    expect(validateActionPadConfig(linked('missing', 'options'))).toEqual([
+      expect.objectContaining({
+        path: 'menus[0].groups[0].buttons[0].tap.menuId',
+        message: 'Missing action menu definition: missing'
+      })
+    ])
+    expect(validateActionPadConfig(linked('target', 'missing'))).toEqual([
+      expect.objectContaining({
+        path: 'menus[0].groups[0].buttons[0].tap.groupId',
+        message: 'Missing action group definition: target/missing'
+      })
+    ])
+    expect(validateActionPadConfig(linked('home', 'actions'))).toEqual([
+      expect.objectContaining({
+        path: 'menus[0].groups[0].buttons[0].tap.menuId',
+        message: 'Group interactions must target a different menu.'
+      })
+    ])
+  })
+
+  it('rejects cycles made from a mixture of full-menu and group links', () => {
+    const value: ActionPadConfig = {
+      version: 1,
+      rootMenuId: 'home',
+      menus: [
+        {
+          id: 'home', label: 'Home', groups: [{ id: 'actions', buttons: [{
+            id: 'cluster', label: 'Cluster',
+            tap: { type: 'group', menuId: 'child', groupId: 'options', after: 'stay' }
+          }] }]
+        },
+        {
+          id: 'child', label: 'Child', groups: [{ id: 'options', buttons: [{
+            id: 'home', label: 'Home', tap: { type: 'menu', menuId: 'home', after: 'stay' }
+          }] }]
+        }
+      ]
+    }
+
+    expect(validateActionPadConfig(value)).toEqual([
+      expect.objectContaining({
+        path: 'menus[1].groups[0].buttons[0].tap.menuId',
+        message: 'Cyclic action menu/group reference: home -> child -> home'
+      })
+    ])
+  })
+
   it('permits empty groups, unlinked menus and whitespace input without inventing interactions', () => {
     expect(validateActionPadConfig({ ...config(), menus: [
       ...config().menus,
@@ -230,8 +319,12 @@ describe('action pad document validation', () => {
     ] }
     const brokenReference = config([{ ...inputButton, tap: { type: 'menu', menuId: 'missing', after: 'stay' } }])
     const cycle = config([{ ...inputButton, tap: { type: 'menu', menuId: 'home', after: 'stay' } }])
+    const incompleteGroup = config([{
+      ...inputButton,
+      tap: { type: 'group', menuId: '', groupId: '', after: 'stay' }
+    }])
 
-    for (const value of [draft, brokenReference, cycle]) {
+    for (const value of [draft, brokenReference, cycle, incompleteGroup]) {
       expect(isActionPadConfigShape(value)).toBe(true)
       expect(validateActionPadConfig(value).length).toBeGreaterThan(0)
     }

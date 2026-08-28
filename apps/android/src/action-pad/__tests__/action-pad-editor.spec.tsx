@@ -434,6 +434,53 @@ describe('ActionPadEditor', () => {
     expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.longPress?.type).toBe('keyboard')
   })
 
+  it('creates tap and hold group actions with destination pickers and resets the group when the menu changes', () => {
+    const base = config()
+    const draft: ActionPadConfig = {
+      ...base,
+      menus: [...base.menus, {
+        id: 'other', label: 'Other', groups: [{
+          id: 'choices', buttons: [{ id: 'choice', label: 'Choice', tap: { type: 'back', after: 'stay' } }]
+        }]
+      }]
+    }
+    const screen = renderEditor({ config: draft })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Tap action: Group' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.tap).toEqual({
+      type: 'group', menuId: '', groupId: '', after: 'stay'
+    })
+    expect(screen.getByRole('button', { name: 'Choose tap destination group' })).toBeDisabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Choose tap destination menu' }))
+    expect(screen.queryByRole('button', { name: 'Tap destination menu: Home (home)' })).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Tap destination menu: Child (child)' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.tap).toEqual({
+      type: 'group', menuId: 'child', groupId: '', after: 'stay'
+    })
+    expect(screen.getByRole('button', { name: 'Choose tap destination group' })).toBeEnabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Choose tap destination group' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Tap destination group: target' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.tap).toEqual({
+      type: 'group', menuId: 'child', groupId: 'target', after: 'stay'
+    })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Choose tap destination menu' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Tap destination menu: Other (other)' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.tap).toEqual({
+      type: 'group', menuId: 'other', groupId: '', after: 'stay'
+    })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Hold action: Group' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose hold destination menu' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold destination menu: Child (child)' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose hold destination group' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold destination group: target' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold after: Return to root' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.longPress).toEqual({
+      type: 'group', menuId: 'child', groupId: 'target', after: 'root'
+    })
+  })
+
   it('creates, orders and removes buttons with a destructive confirmation', () => {
     const alert = jest.spyOn(Alert, 'alert')
     const screen = renderEditor()
@@ -529,6 +576,42 @@ describe('ActionPadEditor', () => {
     expect(screen.draft().menus[2]?.groups.map((group) => group.id)).toEqual(['group', 'custom-group'])
     fireEvent.press(screen.getByRole('button', { name: 'Delete group' }))
     expect(screen.draft().menus[2]?.groups.map((group) => group.id)).toEqual(['custom-group'])
+  })
+
+  it('propagates destination IDs and protects a group linked from another menu', () => {
+    const base = config()
+    const home = base.menus[0]!
+    const linked: ActionPadConfig = {
+      ...base,
+      menus: [{
+        ...home,
+        groups: [{
+          ...home.groups[0]!,
+          buttons: home.groups[0]!.buttons.map((button, index) => index === 0 ? ({
+            ...button,
+            tap: { type: 'group', menuId: 'child', groupId: 'target', after: 'stay' }
+          }) : button)
+        }]
+      }, base.menus[1]!]
+    }
+    const screen = renderEditor({
+      config: linked,
+      initialButton: { menuId: 'child', groupId: 'target', buttonId: 'back' }
+    })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Group settings' }))
+    expect(screen.getByRole('button', { name: 'Delete group' })).toBeDisabled()
+    expect(screen.getByText('Remove group links from Home before deleting this group.')).toBeTruthy()
+    fireEvent.changeText(screen.getByLabelText('Group ID'), 'options')
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.tap).toMatchObject({
+      type: 'group', menuId: 'child', groupId: 'options'
+    })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Menu settings' }))
+    fireEvent.changeText(screen.getByLabelText('Menu ID'), 'tools')
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.tap).toMatchObject({
+      type: 'group', menuId: 'tools', groupId: 'options'
+    })
   })
 
   it('moves buttons to a group in another menu and keeps the moved button selected', () => {
@@ -669,6 +752,34 @@ describe('ActionPadEditor', () => {
     expect(screen.props.onSave).not.toHaveBeenCalled()
     expect(screen.props.onExport).not.toHaveBeenCalled()
     expect(screen.props.onCancel).not.toHaveBeenCalled()
+  })
+
+  it('allows group-action navigation in the safe preview without changing the draft', () => {
+    const base = config()
+    const home = base.menus[0]!
+    const linked: ActionPadConfig = {
+      ...base,
+      menus: [{
+        ...home,
+        groups: [{
+          ...home.groups[0]!,
+          buttons: home.groups[0]!.buttons.map((button, index) => index === 0 ? ({
+            ...button,
+            id: 'options',
+            label: 'Open options',
+            tap: { type: 'group', menuId: 'child', groupId: 'target', after: 'stay' }
+          }) : button)
+        }]
+      }, base.menus[1]!]
+    }
+    const screen = renderEditor({ config: linked })
+    const preview = within(screen.getByTestId('action-pad-editor-preview'))
+
+    fireEvent.press(preview.getByTestId('action-pad-options'))
+    expect(preview.getByTestId('action-pad-back')).toBeTruthy()
+    fireEvent.press(preview.getByTestId('action-pad-back'))
+    expect(preview.getByTestId('action-pad-options')).toBeTruthy()
+    expect(screen.props.onChange).not.toHaveBeenCalled()
   })
 
   it('passes host paths and file commands to the parent without activating or saving implicitly', async () => {

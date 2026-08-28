@@ -9,6 +9,7 @@ import {
   ACTION_PAD_LONG_PRESS_MS,
   ACTION_PAD_MENU,
   ActionPad,
+  type ActionGroup,
   type ActionInteraction,
   type ActionMenu,
   type ActionPadProps
@@ -46,6 +47,180 @@ function input(nvimInput: string, after: 'root' | 'stay' = 'stay') {
   return { type: 'input' as const, nvimInput, after }
 }
 
+function group(
+  menu: ActionMenu,
+  target: ActionGroup,
+  after: 'root' | 'stay' = 'stay'
+): ActionInteraction {
+  return { type: 'group', menu, group: target, after }
+}
+
+function runtimeFixture(): {
+  readonly rootMenu: ActionMenu
+  readonly alphaMenu: ActionMenu
+  readonly betaMenu: ActionMenu
+  readonly nestedMenu: ActionMenu
+  readonly pageMenu: ActionMenu
+} {
+  const nestedMenu: ActionMenu = {
+    id: 'nested-menu',
+    label: 'Nested',
+    groups: [{
+      id: 'options',
+      buttons: [{ id: 'same', label: 'Nested same', tap: input('nested') }]
+    }]
+  }
+  const pageMenu: ActionMenu = {
+    id: 'page',
+    label: 'Page',
+    groups: [
+      {
+        id: 'page-actions',
+        buttons: [
+          { id: 'page-input', label: 'Page input', tap: input('page', 'stay') },
+          {
+            id: 'open-page-cluster',
+            label: 'Open page cluster',
+            tap: group(nestedMenu, nestedMenu.groups[0]!)
+          }
+        ]
+      },
+      {
+        id: 'navigation',
+        buttons: [{ id: 'back', label: 'Back', tap: { type: 'back', after: 'stay' } }]
+      }
+    ]
+  }
+  const alphaMenu: ActionMenu = {
+    id: 'alpha-menu',
+    label: 'Alpha',
+    groups: [{
+      id: 'options',
+      buttons: [
+        { id: 'same', label: 'Alpha same', tap: input('alpha', 'stay') },
+        { id: 'alpha-root', label: 'Alpha root', tap: input('alpha-root', 'root') },
+        {
+          id: 'nested',
+          label: 'Nested',
+          tap: group(nestedMenu, nestedMenu.groups[0]!)
+        },
+        {
+          id: 'open-page-from-alpha',
+          label: 'Open page',
+          tap: { type: 'menu', menu: pageMenu, after: 'stay' }
+        },
+        { id: 'cluster-keyboard', label: 'Keyboard', tap: { type: 'keyboard', after: 'stay' } }
+      ]
+    }]
+  }
+  const betaMenu: ActionMenu = {
+    id: 'beta-menu',
+    label: 'Beta',
+    groups: [{
+      id: 'options',
+      buttons: [{ id: 'same', label: 'Beta same', tap: input('beta', 'stay') }]
+    }]
+  }
+  const rootMenu: ActionMenu = {
+    id: 'home',
+    label: 'Home',
+    groups: [
+      {
+        id: 'first-host',
+        buttons: [{
+          id: 'open-alpha',
+          label: 'Open Alpha',
+          tap: group(alphaMenu, alphaMenu.groups[0]!)
+        }]
+      },
+      {
+        id: 'second-host',
+        buttons: [
+          {
+            id: 'open-beta',
+            label: 'Open Beta',
+            tap: group(betaMenu, betaMenu.groups[0]!)
+          },
+          {
+            id: 'open-page',
+            label: 'Open Page',
+            tap: { type: 'menu', menu: pageMenu, after: 'stay' }
+          },
+          { id: 'home-back', label: 'Home Back', tap: { type: 'back', after: 'stay' } }
+        ]
+      }
+    ]
+  }
+  return { rootMenu, alphaMenu, betaMenu, nestedMenu, pageMenu }
+}
+
+function capacityFixture(): ActionMenu {
+  const nestedMenu: ActionMenu = {
+    id: 'capacity-nested',
+    label: 'Capacity nested',
+    groups: [{
+      id: 'options',
+      buttons: Array.from({ length: 5 }, (_, index) => ({
+        id: `nested-${index + 1}`,
+        label: `Nested ${index + 1}`,
+        tap: input(`n${index + 1}`)
+      }))
+    }]
+  }
+  const firstMenu: ActionMenu = {
+    id: 'capacity-first',
+    label: 'Capacity first',
+    groups: [{
+      id: 'options',
+      buttons: [
+        {
+          id: 'open-nested-capacity',
+          label: 'Nested capacity',
+          tap: group(nestedMenu, nestedMenu.groups[0]!)
+        },
+        { id: 'first-input', label: 'First input', tap: input('first') }
+      ]
+    }]
+  }
+  const rootOnlyMenu: ActionMenu = {
+    id: 'root-only-capacity',
+    label: 'Root only capacity',
+    groups: [{
+      id: 'options',
+      buttons: Array.from({ length: 12 }, (_, index) => ({
+        id: `root-only-${index + 1}`,
+        label: `Root only ${index + 1}`,
+        tap: input(`r${index + 1}`)
+      }))
+    }]
+  }
+  return {
+    id: 'capacity-home',
+    label: 'Capacity home',
+    groups: [
+      {
+        id: 'capacity-host',
+        buttons: [
+          {
+            id: 'open-capacity',
+            label: 'Open capacity',
+            tap: group(firstMenu, firstMenu.groups[0]!)
+          },
+          {
+            id: 'root-only-link',
+            label: 'Root only link',
+            tap: group(rootOnlyMenu, rootOnlyMenu.groups[0]!, 'root')
+          }
+        ]
+      },
+      {
+        id: 'capacity-sibling',
+        buttons: [{ id: 'capacity-static', label: 'Static', tap: input('static') }]
+      }
+    ]
+  }
+}
+
 function capturePress(screen: ReturnType<typeof render>, testId: string): () => void {
   let target = screen.getByTestId(testId)
   while (typeof target.props.onPress !== 'function' && target.parent !== null) {
@@ -53,6 +228,17 @@ function capturePress(screen: ReturnType<typeof render>, testId: string): () => 
   }
   expect(typeof target.props.onPress).toBe('function')
   return target.props.onPress
+}
+
+function expectHeaderContext(
+  screen: ReturnType<typeof render>,
+  page: string,
+  cluster: string
+): void {
+  const header = screen.getByLabelText(
+    `Current action page path: ${page}; active action cluster: ${cluster}`
+  )
+  expect(header.props.children).toEqual(['› ', `${page} · ${cluster}`])
 }
 
 describe('ActionPad', () => {
@@ -106,15 +292,19 @@ describe('ActionPad', () => {
     expect(panelStyle.borderTopWidth).toBe(2)
     expect(panelStyle.width).toBeUndefined()
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-groups').props.style)).toMatchObject({
-      height: 116,
-      flexDirection: 'row'
+      minWidth: '100%',
+      height: 110,
+      flexDirection: 'row',
+      gap: 6
     })
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-1').props.style)).toMatchObject({
+    expect(screen.getByTestId('action-pad-horizontal-scroll')).toBeTruthy()
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-row-1').props.style)).toMatchObject({
       height: 52,
-      flexDirection: 'row'
+      flexDirection: 'row',
+      gap: 6
     })
-    expect(screen.getByTestId('action-pad-leading-group')).toBeTruthy()
-    expect(screen.getByTestId('action-pad-trailing-group')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-core-group')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-navigation-group')).toBeTruthy()
   })
 
   it('keeps two 48dp touch rows in each group in its keyboard-compact layout', () => {
@@ -122,10 +312,10 @@ describe('ActionPad', () => {
 
     expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-groups').props.style).height).toBe(102)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-row-2').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-trailing-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-row-2').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-navigation-row-1').props.style).height).toBe(48)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-navigation-row-2').props.style).height).toBe(48)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       minWidth: 48,
       height: 48
@@ -135,25 +325,25 @@ describe('ActionPad', () => {
   it('keeps configured group membership while changing the group grid by placement', () => {
     const portrait = render(<ActionPad {...actionPadProps()} />)
 
-    expect(within(portrait.getByTestId('action-pad-leading-row-1')).getByTestId(
+    expect(within(portrait.getByTestId('action-pad-core-row-1')).getByTestId(
       'action-pad-escape'
     )).toBeTruthy()
-    expect(within(portrait.getByTestId('action-pad-leading-row-1')).getByTestId(
+    expect(within(portrait.getByTestId('action-pad-pages-row-1')).getByTestId(
       'action-pad-command'
     )).toBeTruthy()
-    expect(within(portrait.getByTestId('action-pad-trailing-row-1')).getByTestId(
+    expect(within(portrait.getByTestId('action-pad-navigation-row-1')).getByTestId(
       'action-pad-down'
     )).toBeTruthy()
-    expect(within(portrait.getByTestId('action-pad-trailing-row-2')).getByTestId(
+    expect(within(portrait.getByTestId('action-pad-navigation-row-1')).getByTestId(
       'action-pad-left'
     )).toBeTruthy()
     portrait.unmount()
 
     const landscape = render(<ActionPad {...actionPadProps({ placement: 'right' })} />)
-    expect(within(landscape.getByTestId('action-pad-leading-group')).getByTestId(
+    expect(within(landscape.getByTestId('action-pad-core-group')).getByTestId(
       'action-pad-escape'
     )).toBeTruthy()
-    expect(within(landscape.getByTestId('action-pad-trailing-group')).getByTestId(
+    expect(within(landscape.getByTestId('action-pad-operators-group')).getByTestId(
       'action-pad-motions'
     )).toBeTruthy()
   })
@@ -175,7 +365,7 @@ describe('ActionPad', () => {
       justifyContent: 'space-between'
     })
     expect(screen.queryByTestId('action-pad-leading-row-1')).toBeNull()
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-group').props.style)).toMatchObject({
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-group').props.style)).toMatchObject({
       width: '100%',
       flexDirection: 'row',
       flexWrap: 'wrap',
@@ -184,7 +374,7 @@ describe('ActionPad', () => {
       columnGap: '4%',
       rowGap: 12
     })
-    expect(screen.getByTestId('action-pad-trailing-group')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-navigation-group')).toBeTruthy()
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       minWidth: 48,
       width: '48%',
@@ -217,7 +407,7 @@ describe('ActionPad', () => {
 
     expect(screen.getByTestId('action-pad-flow-scroll')).toBeTruthy()
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-flow-scroll').props.contentContainerStyle).gap).toBe(6)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-leading-group').props.style).rowGap).toBe(6)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-group').props.style).rowGap).toBe(6)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-escape').props.style)).toMatchObject({
       minWidth: 48,
       width: '48%',
@@ -347,6 +537,79 @@ describe('ActionPad', () => {
     ])
   })
 
+  it.each([false, true])(
+    'reserves a transitive fixed bottom envelope in %s compact mode',
+    (compact) => {
+      const rootMenu = capacityFixture()
+      const screen = render(<ActionPad {...actionPadProps({ compact, rootMenu })} />)
+      const scroll = screen.getByTestId('action-pad-horizontal-scroll')
+      const host = screen.getByTestId('action-pad-capacity-host-group')
+      const sibling = screen.getByTestId('action-pad-capacity-sibling-group')
+      const envelope = StyleSheet.flatten(host.props.style)
+
+      // Five reachable buttons require three columns. The twelve-button target
+      // uses after: root, so it is not a visible variant of this slot.
+      expect(envelope).toMatchObject({
+        minWidth: 156,
+        flexBasis: 156,
+        flexGrow: 3,
+        flexShrink: 0,
+        gap: 6
+      })
+      expect(StyleSheet.flatten(screen.getByTestId('action-pad-groups').props.style)).toMatchObject({
+        minWidth: '100%', gap: 6
+      })
+
+      fireEvent.press(screen.getByTestId('action-pad-open-capacity'))
+      expect(screen.getByTestId('action-pad-horizontal-scroll')).toBe(scroll)
+      expect(screen.getByTestId('action-pad-capacity-host-group')).toBe(host)
+      expect(screen.getByTestId('action-pad-capacity-sibling-group')).toBe(sibling)
+      expect(StyleSheet.flatten(host.props.style)).toMatchObject(envelope)
+
+      fireEvent.press(screen.getByTestId('action-pad-open-nested-capacity'))
+      expect(screen.getByTestId('action-pad-horizontal-scroll')).toBe(scroll)
+      expect(screen.getByTestId('action-pad-capacity-host-group')).toBe(host)
+      expect(screen.getAllByTestId(/^action-pad-nested-\d$/)).toHaveLength(5)
+      expect(StyleSheet.flatten(host.props.style)).toMatchObject(envelope)
+    }
+  )
+
+  it.each([
+    { compact: false, expectedHeight: 180 },
+    { compact: true, expectedHeight: 156 }
+  ])(
+    'reserves the exact packed right-rail row height in compact=$compact',
+    ({ compact, expectedHeight }) => {
+      const rootMenu = capacityFixture()
+      const screen = render(
+        <ActionPad {...actionPadProps({ compact, placement: 'right', rootMenu })} />
+      )
+      const scroll = screen.getByTestId('action-pad-flow-scroll')
+      const host = screen.getByTestId('action-pad-capacity-host-group')
+      const sibling = screen.getByTestId('action-pad-capacity-sibling-group')
+
+      expect(StyleSheet.flatten(host.props.style).height).toBe(expectedHeight)
+      fireEvent.press(screen.getByTestId('action-pad-open-capacity'))
+      fireEvent.press(screen.getByTestId('action-pad-open-nested-capacity'))
+
+      expect(screen.getByTestId('action-pad-flow-scroll')).toBe(scroll)
+      expect(screen.getByTestId('action-pad-capacity-host-group')).toBe(host)
+      expect(screen.getByTestId('action-pad-capacity-sibling-group')).toBe(sibling)
+      expect(StyleSheet.flatten(host.props.style).height).toBe(expectedHeight)
+    }
+  )
+
+  it('uses zero exact rail height for an empty group', () => {
+    const rootMenu: ActionMenu = {
+      id: 'empty-home', label: 'Empty', groups: [{ id: 'empty', buttons: [] }]
+    }
+    const screen = render(
+      <ActionPad {...actionPadProps({ placement: 'right', rootMenu })} />
+    )
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-empty-group').props.style).height)
+      .toBe(0)
+  })
+
   it('renders any number of named groups in declaration order in both placements', () => {
     const rootMenu = {
       id: 'home',
@@ -444,6 +707,181 @@ describe('ActionPad', () => {
     fireEvent.press(screen.getByTestId('action-pad-back'))
     expect(screen.getByTestId('action-pad-open')).toBeTruthy()
     expect(screen.queryByTestId('action-pad-back')).toBeNull()
+  })
+
+  it.each(['below', 'right'] as const)(
+    'substitutes only the invoking slot and moves a second cluster to its own host in %s placement',
+    (placement) => {
+      const { rootMenu } = runtimeFixture()
+      const props = actionPadProps({ rootMenu, placement, onEditButton: jest.fn() })
+      const screen = render(<ActionPad {...props} />)
+      const scrollId = placement === 'right'
+        ? 'action-pad-flow-scroll'
+        : 'action-pad-horizontal-scroll'
+      const scroll = screen.getByTestId(scrollId)
+      const firstHost = screen.getByTestId('action-pad-first-host-group')
+      const secondHost = screen.getByTestId('action-pad-second-host-group')
+      const siblingButton = screen.getByTestId('action-pad-open-beta')
+
+      fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+
+      expect(screen.getByTestId(scrollId)).toBe(scroll)
+      expect(screen.getByTestId('action-pad-first-host-group')).toBe(firstHost)
+      expect(screen.getByTestId('action-pad-second-host-group')).toBe(secondHost)
+      expect(screen.getByTestId('action-pad-open-beta')).toBe(siblingButton)
+      expect(within(firstHost).getByTestId('action-pad-same')).toHaveTextContent('Alpha same')
+      expect(within(secondHost).getByTestId('action-pad-open-beta')).toBeTruthy()
+      expect(screen.queryByTestId('action-pad-open-alpha')).toBeNull()
+      expectHeaderContext(screen, 'Home', 'Alpha')
+
+      screen.rerender(<ActionPad {...props} interactionMode="selection" />)
+      fireEvent.press(within(firstHost).getByTestId('action-pad-same'))
+      expect(props.onEditButton).toHaveBeenCalledWith({
+        menuId: 'alpha-menu', groupId: 'options', buttonId: 'same'
+      })
+
+      screen.rerender(<ActionPad {...props} />)
+      fireEvent.press(screen.getByTestId('action-pad-open-beta'))
+
+      expect(screen.getByTestId(scrollId)).toBe(scroll)
+      expect(screen.getByTestId('action-pad-first-host-group')).toBe(firstHost)
+      expect(screen.getByTestId('action-pad-second-host-group')).toBe(secondHost)
+      expect(within(firstHost).getByTestId('action-pad-open-alpha')).toBeTruthy()
+      expect(within(secondHost).getByTestId('action-pad-same')).toHaveTextContent('Beta same')
+      expect(screen.queryByText('Alpha same')).toBeNull()
+      expectHeaderContext(screen, 'Home', 'Beta')
+    }
+  )
+
+  it('keeps nested group actions in the original host and lets Home Back clear only the cluster', () => {
+    const { rootMenu } = runtimeFixture()
+    const onInput = jest.fn()
+    const screen = render(<ActionPad {...actionPadProps({ rootMenu, onInput })} />)
+    const firstHost = screen.getByTestId('action-pad-first-host-group')
+    const secondHost = screen.getByTestId('action-pad-second-host-group')
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    fireEvent.press(screen.getByTestId('action-pad-nested'))
+
+    expect(screen.getByTestId('action-pad-first-host-group')).toBe(firstHost)
+    expect(screen.getByTestId('action-pad-second-host-group')).toBe(secondHost)
+    expect(within(firstHost).getByText('Nested same')).toBeTruthy()
+    expect(within(secondHost).getByTestId('action-pad-open-beta')).toBeTruthy()
+    expect(screen.queryByTestId('action-pad-options-group')).toBeNull()
+    expectHeaderContext(screen, 'Home', 'Nested')
+
+    fireEvent.press(within(firstHost).getByTestId('action-pad-same'))
+    expect(onInput).toHaveBeenCalledWith('nested')
+    expectHeaderContext(screen, 'Home', 'Nested')
+
+    fireEvent.press(screen.getByTestId('action-pad-home-back'))
+    expect(within(firstHost).getByTestId('action-pad-open-alpha')).toBeTruthy()
+    expect(screen.queryByText('Nested same')).toBeNull()
+    expect(screen.getByText('100 × 20 · 1280 × 800dp')).toBeTruthy()
+  })
+
+  it('does not rerender untouched sibling group contents during a cluster swap', () => {
+    const fixture = runtimeFixture()
+    const first = fixture.rootMenu.groups[0]!
+    const originalSibling = fixture.rootMenu.groups[1]!
+    let siblingButtonReads = 0
+    const sibling: ActionGroup = {
+      id: originalSibling.id,
+      get buttons() {
+        siblingButtonReads += 1
+        return originalSibling.buttons
+      }
+    }
+    const rootMenu: ActionMenu = {
+      ...fixture.rootMenu,
+      groups: [first, sibling]
+    }
+    const screen = render(<ActionPad {...actionPadProps({ rootMenu })} />)
+    const readsAfterMount = siblingButtonReads
+    const siblingView = screen.getByTestId('action-pad-second-host-group')
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+
+    expect(screen.getByTestId('action-pad-second-host-group')).toBe(siblingView)
+    expect(siblingButtonReads).toBe(readsAfterMount)
+  })
+
+  it('clears a cluster before page pushes and Back returns to a clean prior page', () => {
+    const { rootMenu } = runtimeFixture()
+    const screen = render(<ActionPad {...actionPadProps({ rootMenu })} />)
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    fireEvent.press(screen.getByTestId('action-pad-open-page-from-alpha'))
+    expect(screen.getByLabelText('Current action path: Page')).toBeTruthy()
+    expect(screen.queryByText('Alpha same')).toBeNull()
+
+    fireEvent.press(screen.getByTestId('action-pad-back'))
+    expect(screen.getByTestId('action-pad-open-alpha')).toBeTruthy()
+    expect(screen.queryByText('Alpha same')).toBeNull()
+
+    fireEvent.press(screen.getByTestId('action-pad-open-page'))
+    fireEvent.press(screen.getByTestId('action-pad-open-page-cluster'))
+    expectHeaderContext(screen, 'Page', 'Nested')
+
+    fireEvent.press(screen.getByTestId('action-pad-back'))
+    expect(screen.getByTestId('action-pad-open-alpha')).toBeTruthy()
+    expect(screen.queryByText('Nested same')).toBeNull()
+    expect(screen.queryByTestId('action-pad-back')).toBeNull()
+  })
+
+  it('preserves a cluster through layout and mode changes while using target selection identity', () => {
+    const { rootMenu } = runtimeFixture()
+    const props = actionPadProps({
+      rootMenu,
+      onEditButton: jest.fn(),
+      onKeyboardPress: jest.fn()
+    })
+    const screen = render(<ActionPad {...props} />)
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+
+    screen.rerender(
+      <ActionPad {...props} compact placement="right" interactionMode="suspended" />
+    )
+    expect(screen.getByText('Alpha same')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-same').props.accessibilityState).toEqual({
+      disabled: true
+    })
+
+    screen.rerender(
+      <ActionPad {...props} compact placement="right" interactionMode="selection" />
+    )
+    fireEvent.press(screen.getByTestId('action-pad-same'))
+    expect(props.onEditButton).toHaveBeenCalledWith({
+      menuId: 'alpha-menu', groupId: 'options', buttonId: 'same'
+    })
+
+    screen.rerender(<ActionPad {...props} />)
+    fireEvent.press(screen.getByTestId('action-pad-cluster-keyboard'))
+    expect(props.onKeyboardPress).toHaveBeenCalledTimes(1)
+    expectHeaderContext(screen, 'Home', 'Alpha')
+  })
+
+  it('rejects activations from restored and later reopened slot incarnations', () => {
+    const { rootMenu } = runtimeFixture()
+    const onInput = jest.fn()
+    const screen = render(<ActionPad {...actionPadProps({ rootMenu, onInput })} />)
+    const staleBasePress = capturePress(screen, 'action-pad-open-alpha')
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    const staleClusterPress = capturePress(screen, 'action-pad-same')
+    fireEvent.press(screen.getByTestId('action-pad-home-back'))
+
+    act(() => { staleBasePress() })
+    expect(screen.queryByText('Alpha same')).toBeNull()
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    act(() => { staleClusterPress() })
+    expect(onInput).not.toHaveBeenCalled()
+    expect(screen.getByText('Alpha same')).toBeTruthy()
+
+    fireEvent.press(screen.getByTestId('action-pad-same'))
+    expect(onInput).toHaveBeenCalledTimes(1)
+    expect(onInput).toHaveBeenCalledWith('alpha')
   })
 
   it('lets tap and long press independently select any interaction and suppresses release after hold', () => {
@@ -641,7 +1079,7 @@ describe('ActionPad', () => {
     const escape = screen.getByRole('button', { name: 'Edit Esc' })
     expect(escape.props.accessibilityState).toEqual({ disabled: false })
     fireEvent.press(escape)
-    expect(props.onEditButton).toHaveBeenCalledWith({ menuId: 'home', groupId: 'leading', buttonId: 'escape' })
+    expect(props.onEditButton).toHaveBeenCalledWith({ menuId: 'home', groupId: 'core', buttonId: 'escape' })
     expect(props.onInput).not.toHaveBeenCalled()
 
     screen.rerender(<ActionPad {...props} />)
@@ -706,7 +1144,7 @@ describe('ActionPad', () => {
     screen.rerender(<ActionPad {...props} interactionMode="selection" />)
     expect(screen.getByTestId('action-pad-flow-scroll')).toBe(scroll)
     fireEvent.press(screen.getByTestId('action-pad-back'))
-    expect(props.onEditButton).toHaveBeenCalledWith({ menuId: 'search', groupId: 'trailing', buttonId: 'back' })
+    expect(props.onEditButton).toHaveBeenCalledWith({ menuId: 'search', groupId: 'navigation', buttonId: 'back' })
     expect(screen.getByLabelText('Current action path: Leader / Search')).toBeTruthy()
 
     screen.rerender(<ActionPad {...props} />)
@@ -838,13 +1276,16 @@ describe('ActionPad', () => {
     fireEvent(up, 'pressIn')
     fireEvent(up, 'longPress')
     fireEvent.press(up)
-    expect(screen.getByLabelText('Current action path: Up Arrow – Navigation')).toBeTruthy()
+    expect(screen.getByLabelText(
+      'Current action page path: Home; active action cluster: Up Arrow – Navigation'
+    )).toBeTruthy()
 
     fireEvent.press(screen.getByTestId('action-pad-top'))
     expect(onInput).toHaveBeenLastCalledWith('gg')
-    expect(screen.getByLabelText('Current action path: Up Arrow – Navigation')).toBeTruthy()
+    expect(screen.getByLabelText(
+      'Current action page path: Home; active action cluster: Up Arrow – Navigation'
+    )).toBeTruthy()
 
-    fireEvent.press(screen.getByTestId('action-pad-back'))
     fireEvent.press(screen.getByTestId('action-pad-leader'))
     fireEvent.press(screen.getByTestId('action-pad-search'))
     fireEvent.press(screen.getByTestId('action-pad-grep'))
@@ -886,7 +1327,9 @@ describe('ActionPad', () => {
     fireEvent.press(up)
 
     expect(onInput).not.toHaveBeenCalled()
-    expect(screen.getByLabelText('Current action path: Up Arrow – Navigation')).toBeTruthy()
+    expect(screen.getByLabelText(
+      'Current action page path: Home; active action cluster: Up Arrow – Navigation'
+    )).toBeTruthy()
     expect(screen.getByTestId('action-pad-top')).toBeTruthy()
   })
 
@@ -904,6 +1347,41 @@ describe('ActionPad', () => {
     fireEvent.press(screen.getByTestId('action-pad-leader'))
     screen.rerender(<ActionPad {...initialProps} resetKey="reconnected" />)
     expect(screen.queryByTestId('action-pad-back')).toBeNull()
+  })
+
+  it('clears cluster state for root actions, disable, reset, and configuration replacement', () => {
+    const { rootMenu } = runtimeFixture()
+    const onInput = jest.fn()
+    const props = actionPadProps({ rootMenu, onInput, resetKey: 'initial' })
+    const screen = render(<ActionPad {...props} />)
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    fireEvent.press(screen.getByTestId('action-pad-alpha-root'))
+    expect(onInput).toHaveBeenCalledWith('alpha-root')
+    expect(screen.getByTestId('action-pad-open-alpha')).toBeTruthy()
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    screen.rerender(<ActionPad {...props} resetKey="reset" />)
+    expect(screen.getByTestId('action-pad-open-alpha')).toBeTruthy()
+    expect(screen.queryByText('Alpha same')).toBeNull()
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    screen.rerender(<ActionPad {...props} resetKey="reset" enabled={false} />)
+    expect(screen.queryByText('Alpha same')).toBeNull()
+
+    screen.rerender(<ActionPad {...props} resetKey="reset" />)
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    const replacement: ActionMenu = {
+      id: 'replacement',
+      label: 'Replacement',
+      groups: [{
+        id: 'replacement-actions',
+        buttons: [{ id: 'replacement-input', label: 'Replacement input', tap: input('new') }]
+      }]
+    }
+    screen.rerender(<ActionPad {...props} resetKey="reset" rootMenu={replacement} />)
+    expect(screen.getByTestId('action-pad-replacement-input')).toBeTruthy()
+    expect(screen.queryByText('Alpha same')).toBeNull()
   })
 
   it('returns to the new root and replaces old actions when configuration changes', () => {

@@ -84,6 +84,29 @@ describe('resolveActionPadConfig', () => {
     expect(nestedMenu(home, 0)).toBe(nestedMenu(home, 1))
   })
 
+  it('resolves group interactions to their destination menu and identical group object', () => {
+    const definitions = config([
+      definition('home', 'Home', [
+        { type: 'group', menuId: 'delete', groupId: 'actions', after: 'stay' },
+        { type: 'group', menuId: 'delete', groupId: 'actions', after: 'root' }
+      ]),
+      definition('delete', 'Delete', [
+        { type: 'input', nvimInput: 'd', after: 'root' }
+      ])
+    ])
+
+    const home = resolveActionPadConfig(definitions)
+    const first = home.groups[0]?.buttons[0]?.tap
+    const second = home.groups[0]?.buttons[1]?.tap
+    if (first?.type !== 'group' || second?.type !== 'group') throw new Error('Expected group interactions')
+
+    expect(first.menu).toBe(second.menu)
+    expect(first.group).toBe(first.menu.groups[0])
+    expect(second.group).toBe(first.group)
+    expect(first).toMatchObject({ type: 'group', after: 'stay', menu: { id: 'delete' }, group: { id: 'actions' } })
+    expect(second.after).toBe('root')
+  })
+
   it('rejects a reference without a registered definition', () => {
     const definitions = config([
       definition('home', 'Home', [

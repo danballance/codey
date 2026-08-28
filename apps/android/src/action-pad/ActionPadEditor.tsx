@@ -23,6 +23,7 @@ import {
 } from './document'
 import {
   editActionPad,
+  groupDeletionReason,
   menuDeletionReason,
   type ActionPadEdit,
   type ButtonLocation,
@@ -200,6 +201,7 @@ export function ActionPadEditor({
   useEffect(() => { if (preview) setLastValidPreview(preview) }, [preview])
   const previewMenu = preview ?? lastValidPreview
   const deletionReason = menu ? menuDeletionReason(config, menuIndex) : undefined
+  const groupDeleteReason = group ? groupDeletionReason(config, groupLocation) : undefined
   const destinations = config.menus.flatMap((candidate, candidateMenuIndex) =>
     candidate.groups.flatMap((candidateGroup, candidateGroupIndex) =>
       candidateMenuIndex === menuIndex && candidateGroupIndex === groupIndex ? [] : [{
@@ -525,14 +527,15 @@ export function ActionPadEditor({
             {kind === 'group' && group ? (
               <View style={styles.card} testID="action-pad-group-form">
                 <Text accessibilityRole="header" style={styles.sectionTitle}>Group settings</Text>
-                <FormField disabled={busy} fontLoaded={fontLoaded} hint="Group IDs identify the ordered sections of a menu." issues={displayedIssues} label="Group ID" onChange={(id) => applyId({ type: 'update-group', location: groupLocation, id }, `${groupPath}.id`, id)} onUndo={pendingIds[`${groupPath}.id`] ? () => undoPendingId(`${groupPath}.id`) : undefined} path={`${groupPath}.id`} value={pendingIds[`${groupPath}.id`]?.value ?? group.id} />
+                <FormField disabled={busy} fontLoaded={fontLoaded} hint="Group IDs identify the ordered sections of a menu. Renaming updates group links automatically." issues={displayedIssues} label="Group ID" onChange={(id) => applyId({ type: 'update-group', location: groupLocation, id }, `${groupPath}.id`, id)} onUndo={pendingIds[`${groupPath}.id`] ? () => undoPendingId(`${groupPath}.id`) : undefined} path={`${groupPath}.id`} value={pendingIds[`${groupPath}.id`]?.value ?? group.id} />
                 <ReorderControls busy={structuralBusy} count={menu?.groups.length ?? 0} index={groupIndex} item="group" onMove={(direction) => apply({ type: 'reorder-group', location: groupLocation, direction }, groupPath, () => setGroupSelection(groupIndex + direction))} />
                 <Text style={styles.muted}>{group.buttons.length} {group.buttons.length === 1 ? 'button' : 'buttons'} in this group. Add a button or select an existing one above.</Text>
-                <EditorButton danger disabled={structuralBusy} label="Delete group" onPress={() => {
+                <EditorButton danger disabled={structuralBusy || Boolean(groupDeleteReason)} label="Delete group" onPress={() => {
                   const remove = () => apply({ type: 'delete-group', location: groupLocation }, groupPath, () => { setGroupSelection(Math.max(0, groupIndex - 1)); setButtonSelection(0) })
                   if (group.buttons.length === 0) remove()
                   else confirmRemoval('Delete group?', `Delete “${group.id}” and its ${group.buttons.length} buttons?`, remove)
                 }} />
+                {groupDeleteReason ? <Text style={[styles.muted, fontLoaded && styles.nerdFont]}>{groupDeleteReason}</Text> : null}
               </View>
             ) : null}
 
@@ -659,13 +662,14 @@ function InteractionForm({ action, config, disabled, fontLoaded, gesture, issues
       case 'none': onChange(undefined); break
       case 'input': onChange({ type, nvimInput: '', after }); break
       case 'menu': onChange({ type, menuId: '', after }); break
+      case 'group': onChange({ type, menuId: '', groupId: '', after }); break
       case 'back':
       case 'keyboard': onChange({ type, after })
     }
   }
   return (
     <View style={styles.interaction}>
-      <Choices disabled={disabled} label={`${gesture} action`} onChange={selectType} options={[{ value: 'none', label: 'None' }, { value: 'input', label: 'Input' }, { value: 'menu', label: 'Menu' }, { value: 'back', label: 'Back' }, { value: 'keyboard', label: 'Keyboard' }]} value={action?.type ?? 'none'} />
+      <Choices disabled={disabled} label={`${gesture} action`} onChange={selectType} options={[{ value: 'none', label: 'None' }, { value: 'input', label: 'Input' }, { value: 'menu', label: 'Menu' }, { value: 'group', label: 'Group' }, { value: 'back', label: 'Back' }, { value: 'keyboard', label: 'Keyboard' }]} value={action?.type ?? 'none'} />
       <FieldIssues issues={issues} path={path} />
       <FieldIssues issues={issues} path={`${path}.type`} />
       {action?.type === 'input' ? <FormField disabled={disabled} fontLoaded={fontLoaded} hint="Use Neovim key notation, for example <C-w>h or <Space>sg. Spaces and line breaks are preserved exactly." issues={issues} label={`${gesture} Neovim input`} multiline onChange={(nvimInput) => onChange({ ...action, nvimInput })} path={`${path}.nvimInput`} value={action.nvimInput} /> : null}
@@ -675,12 +679,65 @@ function InteractionForm({ action, config, disabled, fontLoaded, gesture, issues
           <FieldIssues issues={issues} path={`${path}.menuId`} />
         </View>
       ) : null}
+      {action?.type === 'group' ? (
+        <GroupInteractionDestination
+          action={action}
+          config={config}
+          disabled={disabled}
+          fontLoaded={fontLoaded}
+          gesture={gesture}
+          issues={issues}
+          menuId={menuId}
+          onChange={onChange}
+          path={path}
+        />
+      ) : null}
       {action ? (
         <View style={styles.section}>
           <Choices disabled={disabled} label={`${gesture} after`} onChange={(after) => onChange({ ...action, after: after as 'root' | 'stay' })} options={[{ value: 'stay', label: 'Stay' }, { value: 'root', label: 'Return to root' }]} value={action.after} />
           <FieldIssues issues={issues} path={`${path}.after`} />
         </View>
       ) : null}
+    </View>
+  )
+}
+
+function GroupInteractionDestination({ action, config, disabled, fontLoaded, gesture, issues, menuId, onChange, path }: {
+  readonly action: Extract<EditableInteraction, { readonly type: 'group' }>
+  readonly config: ActionPadConfig
+  readonly disabled: boolean
+  readonly fontLoaded: boolean
+  readonly gesture: 'Tap' | 'Hold'
+  readonly issues: readonly ConfigIssue[]
+  readonly menuId: string
+  readonly onChange: (action: EditableInteraction | undefined) => void
+  readonly path: string
+}) {
+  const destinationMenu = config.menus.find((menu) => menu.id === action.menuId)
+  return (
+    <View style={styles.section}>
+      <Picker
+        disabled={disabled}
+        fontLoaded={fontLoaded}
+        label={`${gesture} destination menu`}
+        onChange={(nextMenuId) => onChange(nextMenuId === action.menuId
+          ? action
+          : { ...action, menuId: nextMenuId, groupId: '' })}
+        options={config.menus.filter((menu) => menu.id !== menuId).map((menu) => ({ value: menu.id, label: `${menu.label || 'Unnamed menu'} (${menu.id})` }))}
+        placeholder={action.menuId || 'Choose a destination menu'}
+        value={action.menuId}
+      />
+      <FieldIssues issues={issues} path={`${path}.menuId`} />
+      <Picker
+        disabled={disabled || destinationMenu === undefined}
+        fontLoaded={fontLoaded}
+        label={`${gesture} destination group`}
+        onChange={(groupId) => onChange({ ...action, groupId })}
+        options={destinationMenu?.groups.map((group) => ({ value: group.id, label: group.id || 'Unnamed group' })) ?? []}
+        placeholder={action.groupId || (destinationMenu ? 'Choose a destination group' : 'Choose a destination menu first')}
+        value={action.groupId}
+      />
+      <FieldIssues issues={issues} path={`${path}.groupId`} />
     </View>
   )
 }
