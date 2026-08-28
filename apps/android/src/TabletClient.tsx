@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   KeyboardAvoidingView,
   Modal,
   Pressable,
@@ -22,7 +23,7 @@ import {
   type PerformanceTags
 } from '@codey/perf'
 
-import { ActionPad } from './action-pad'
+import { ACTION_PAD_LONG_PRESS_MS, ActionPad, type ActionPadButtonTarget } from './action-pad'
 import { ActionPadEditor } from './action-pad/ActionPadEditor'
 import { resolveActionPadConfig, type ActionPadConfig } from './action-pad/document'
 import { ActionPadConfigStore } from './action-pad/store'
@@ -93,9 +94,15 @@ export function TabletClient({ capability }: TabletClientProps) {
   const [actionPadStore] = useState(() => new ActionPadConfigStore(controller))
   const actionPadState = useSyncExternalStore(actionPadStore.subscribe, actionPadStore.getState, actionPadStore.getState)
   const rootMenu = useMemo(() => resolveActionPadConfig(actionPadState.activeConfig), [actionPadState.activeConfig])
+  const [selectingActionPad, setSelectingActionPad] = useState(false)
+  const selectingActionPadRef = useRef(false)
+  const actionPadSelectionVersion = useRef(0)
   const [editingActionPad, setEditingActionPad] = useState(false)
+  const [initialActionPadButton, setInitialActionPadButton] = useState<ActionPadButtonTarget>()
   const editingActionPadRef = useRef(false)
   const openingActionPadEditor = useRef(false)
+  const editControlLongPressTriggered = useRef(false)
+  const clientMountedRef = useRef(true)
   const actionPadInitialization = useRef<Promise<void>>(Promise.resolve())
   const endpointSelectionStarted = useRef(false)
   const [host, setHost] = useState(DEFAULT_ENDPOINT.host)
@@ -114,6 +121,7 @@ export function TabletClient({ capability }: TabletClientProps) {
 
   useEffect(() => {
     let mounted = true
+    clientMountedRef.current = true
     actionPadInitialization.current = endpointStore.load().then(async (endpoint) => {
       // A connection chosen during startup owns its endpoint and recovery data;
       // a slower storage read must not replace it with the previous host.
@@ -124,9 +132,32 @@ export function TabletClient({ capability }: TabletClientProps) {
     })
     return () => {
       mounted = false
+      clientMountedRef.current = false
+      for (const pending of pendingOrderedInputs.current) {
+        if (pending.kind === 'editor-transition') pending.resolve()
+      }
       void controller.dispose()
     }
   }, [actionPadStore, controller])
+
+  const setActionPadSelection = useCallback((selecting: boolean) => {
+    selectingActionPadRef.current = selecting
+    actionPadSelectionVersion.current += 1
+    setSelectingActionPad(selecting)
+  }, [])
+
+  useEffect(() => {
+    setActionPadSelection(false)
+  }, [actionPadState.endpoint.host, actionPadState.endpoint.port, setActionPadSelection])
+
+  useEffect(() => {
+    if (!selectingActionPad || editingActionPad) return
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setActionPadSelection(false)
+      return true
+    })
+    return () => subscription.remove()
+  }, [editingActionPad, selectingActionPad, setActionPadSelection])
 
   const onEditorLayout = useCallback(
     (event: LayoutChangeEvent) => {
@@ -295,6 +326,7 @@ export function TabletClient({ capability }: TabletClientProps) {
   )
 
   const sendOrderedActionInput = useCallback((keys: string) => {
+    if (selectingActionPadRef.current || editingActionPadRef.current || openingActionPadEditor.current) return
     if (keys.length === 0) return
     const startedAtMs = performanceNow()
     const pending = {
@@ -323,6 +355,7 @@ export function TabletClient({ capability }: TabletClientProps) {
   }, [])
 
   const submitEditorCellPress = useCallback((position: GridCellPosition) => {
+    if (editingActionPadRef.current || openingActionPadEditor.current) return
     const pending: PendingMouseInput = { kind: 'mouse', position }
     pendingOrderedInputs.current.push(pending)
     void imeRef.current?.settleComposition().catch(() => {
@@ -332,6 +365,7 @@ export function TabletClient({ capability }: TabletClientProps) {
   }, [])
 
   const focusKeyboardIme = useCallback(() => {
+    if (selectingActionPadRef.current || editingActionPadRef.current || openingActionPadEditor.current) return
     firstKeyAfterFocus.current = true
     void imeRef.current?.focus().catch(() => undefined)
   }, [])
@@ -362,14 +396,33 @@ export function TabletClient({ capability }: TabletClientProps) {
     }
   }, [connected])
 
-  const openActionPadEditor = useCallback(async () => {
+  const openActionPadEditor = useCallback(async (
+    initialButton?: ActionPadButtonTarget,
+    source = actionPadStore.getState()
+  ) => {
     if (openingActionPadEditor.current || editingActionPadRef.current) return
+    const selectionVersion = actionPadSelectionVersion.current
+    const canOpen = () => {
+      if (!clientMountedRef.current) return false
+      if (initialButton === undefined) return true
+      const current = actionPadStore.getState()
+      if (
+        current.endpoint.host !== source.endpoint.host ||
+        current.endpoint.port !== source.endpoint.port ||
+        current.sourcePath !== source.sourcePath ||
+        current.activeConfig !== source.activeConfig
+      ) {
+        throw new Error('The Action Pad changed before the button editor opened. Select the button again.')
+      }
+      return selectingActionPadRef.current && selectionVersion === actionPadSelectionVersion.current
+    }
     openingActionPadEditor.current = true
     try {
       // ID text is initialized when the editor mounts. Await recovery first so
       // opening immediately after launch cannot replace recovered edits.
       await actionPadInitialization.current
       await actionPadStore.selectEndpoint(actionPadStore.getState().endpoint)
+      if (!canOpen()) return
       // Finish the editor's existing composition before giving ordinary form
       // inputs focus. The configuration screen never shares the Neovim IME.
       if (controller.getState().phase === 'connected' && imeRef.current !== null) {
@@ -386,22 +439,38 @@ export function TabletClient({ capability }: TabletClientProps) {
           throw new Error('Could not settle editor input before opening the Action Pad editor.')
         }
       }
+      if (!canOpen()) return
       editingActionPadRef.current = true
       await imeRef.current?.blur()
+      if (!canOpen()) {
+        editingActionPadRef.current = false
+        return
+      }
+      setFormError('')
+      setInitialActionPadButton(initialButton)
       setEditingActionPad(true)
     } catch (reason) {
       editingActionPadRef.current = false
-      setFormError(reason instanceof Error ? reason.message : 'Could not open the Action Pad editor')
+      if (clientMountedRef.current) {
+        setFormError(reason instanceof Error ? reason.message : 'Could not open the Action Pad editor')
+      }
     } finally {
       openingActionPadEditor.current = false
     }
   }, [actionPadStore, controller])
+
+  // Bind a button's identity to the document that rendered it, including native
+  // events delivered just after a different endpoint or document is published.
+  const editActionPadButton = useCallback((button: ActionPadButtonTarget) => {
+    void openActionPadEditor(button, actionPadState)
+  }, [actionPadState, openActionPadEditor])
 
   const closeActionPadEditor = useCallback(() => {
     const state = actionPadStore.getState()
     if (state.busy) return
     const close = () => {
       setEditingActionPad(false)
+      setInitialActionPadButton(undefined)
       editingActionPadRef.current = false
     }
     const discard = () => {
@@ -553,8 +622,10 @@ export function TabletClient({ capability }: TabletClientProps) {
           <ActionPad
             compact={compactActionPad}
             dimensions={`${client.gridSize.columns} × ${client.gridSize.rows} · ${Math.round(capability.width)} × ${Math.round(capability.height)}dp`}
-            enabled={connected && !editingActionPad}
+            enabled={connected}
+            interactionMode={editingActionPad ? 'suspended' : selectingActionPad ? 'selection' : 'normal'}
             mode={mode}
+            onEditButton={editActionPadButton}
             onInput={sendOrderedActionInput}
             onKeyboardPress={focusKeyboardIme}
             placement={landscape ? 'right' : 'below'}
@@ -562,12 +633,32 @@ export function TabletClient({ capability }: TabletClientProps) {
             rootMenu={rootMenu}
           />
           <Pressable
+            accessibilityActions={[{ name: 'openEditor', label: 'Open full Action Pad editor' }]}
+            accessibilityHint={selectingActionPad
+              ? 'Tap to finish selecting buttons. Hold to open the full editor.'
+              : 'Tap to select a button to edit. Hold to open the full editor.'}
             accessibilityRole="button"
-            accessibilityLabel="Edit Action Pad"
-            onPress={() => { void openActionPadEditor() }}
-            style={({ pressed }) => [styles.editActionPadButton, pressed && styles.pressed]}
+            accessibilityLabel={selectingActionPad ? 'Done editing' : 'Edit Action Pad'}
+            accessibilityState={{ selected: selectingActionPad }}
+            delayLongPress={ACTION_PAD_LONG_PRESS_MS}
+            onAccessibilityAction={(event) => {
+              if (event.nativeEvent.actionName === 'openEditor') void openActionPadEditor()
+            }}
+            onLongPress={() => {
+              editControlLongPressTriggered.current = true
+              void openActionPadEditor()
+            }}
+            onPress={() => {
+              if (editControlLongPressTriggered.current) {
+                editControlLongPressTriggered.current = false
+                return
+              }
+              setActionPadSelection(!selectingActionPadRef.current)
+            }}
+            onPressIn={() => { editControlLongPressTriggered.current = false }}
+            style={({ pressed }) => [styles.editActionPadButton, selectingActionPad && styles.editActionPadSelected, pressed && styles.pressed]}
           >
-            <Text style={styles.editActionPadText}>Edit Action Pad{actionPadState.dirty ? ' · unsaved' : ''}</Text>
+            <Text style={styles.editActionPadText}>{selectingActionPad ? 'Done editing' : 'Edit Action Pad'}{actionPadState.dirty ? ' · unsaved' : ''}</Text>
           </Pressable>
           {actionPadState.error || actionPadState.recoveryWarning ? (
             <Text accessibilityRole="alert" style={styles.actionPadNotice}>
@@ -604,6 +695,7 @@ export function TabletClient({ capability }: TabletClientProps) {
             config={actionPadState.draft}
             connected={connected}
             dirty={actionPadState.dirty}
+            initialButton={initialActionPadButton}
             initialIdDrafts={actionPadState.idDrafts}
             message={[actionPadState.message, actionPadState.recoveryWarning].filter(Boolean).join('\n')}
             onCancel={closeActionPadEditor}
@@ -740,6 +832,10 @@ const styles = StyleSheet.create({
     color: '#b4caff',
     fontSize: 14,
     fontWeight: '600'
+  },
+  editActionPadSelected: {
+    borderColor: '#73daca',
+    backgroundColor: '#20343d'
   },
   actionPadNotice: {
     color: '#f0bd76',

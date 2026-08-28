@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import {
   Alert,
   KeyboardAvoidingView,
@@ -12,7 +12,9 @@ import {
 } from 'react-native'
 
 import { CODEY_NERD_FONT_FAMILIES, useCodeyNerdFontFaces } from '../fonts'
+import { type NerdFontIcon } from '../fonts/nerd-font-icons'
 import { ActionPad, type ActionPadPlacement } from './ActionPad'
+import { NerdFontIconPicker } from './NerdFontIconPicker'
 import {
   resolveActionPadConfig,
   validateActionPadConfig,
@@ -23,9 +25,11 @@ import {
   editActionPad,
   menuDeletionReason,
   type ActionPadEdit,
+  type ButtonLocation,
   type EditableButton,
   type EditableInteraction
 } from './editing'
+import { type ActionPadButtonTarget } from './types'
 
 export interface ActionPadEditorProps {
   readonly config: ActionPadConfig
@@ -39,6 +43,7 @@ export interface ActionPadEditorProps {
   readonly onSave: (path: string) => Promise<void>
   readonly onExport: (path: string) => Promise<void>
   readonly onCancel: () => void
+  readonly initialButton?: ActionPadButtonTarget
   readonly onPendingEditsChange?: (pending: boolean) => void
   readonly initialIdDrafts?: Readonly<Record<string, string>>
   readonly onIdDraftsChange?: (drafts: Readonly<Record<string, string>>) => void
@@ -53,6 +58,11 @@ interface Choice {
 interface PendingIdEdit {
   readonly value: string
   readonly message: string
+}
+
+interface TextSelection {
+  readonly start: number
+  readonly end: number
 }
 
 // The preview cannot access a session or the native Neovim input bridge.
@@ -70,17 +80,30 @@ export function ActionPadEditor({
   onSave,
   onExport,
   onCancel,
+  initialButton,
   onPendingEditsChange,
   initialIdDrafts,
   onIdDraftsChange
 }: ActionPadEditorProps) {
   const { width } = useWindowDimensions()
   const wide = width >= 900
-  const [fontLoaded] = useCodeyNerdFontFaces()
-  const [menuSelection, setMenuSelection] = useState(() => Math.max(0, config.menus.findIndex((menu) => menu.id === config.rootMenuId)))
-  const [groupSelection, setGroupSelection] = useState(0)
-  const [buttonSelection, setButtonSelection] = useState(0)
+  const [fontLoaded, fontError] = useCodeyNerdFontFaces()
+  // Resolve only at entry. Subsequent edits use the existing selection, and a
+  // loaded or saved document still resets to its root below.
+  const [initialButtonLocation] = useState(() => findInitialButton(config, initialButton))
+  const [menuSelection, setMenuSelection] = useState(() => initialButtonLocation?.menuIndex ?? Math.max(0, config.menus.findIndex((menu) => menu.id === config.rootMenuId)))
+  const [groupSelection, setGroupSelection] = useState(initialButtonLocation?.groupIndex ?? 0)
+  const [buttonSelection, setButtonSelection] = useState(initialButtonLocation?.buttonIndex ?? 0)
   const [selectionKind, setSelectionKind] = useState<SelectionKind>('button')
+  const [targetNotice, setTargetNotice] = useState(() => initialButton && !initialButtonLocation
+    ? 'The selected button could not be found uniquely in this draft. It may have been moved, renamed, or removed. Your draft has been kept; choose a button below.'
+    : '')
+  const scrollView = useRef<ScrollView>(null)
+  const initialButtonScroll = useRef<{
+    pending: boolean
+    contentReady: boolean
+    positions: Partial<Record<'workspace' | 'details' | 'button', number>>
+  }>({ pending: !!initialButtonLocation, contentReady: false, positions: {} })
   const [hostPath, setHostPath] = useState(sourcePath)
   const [exportPath, setExportPath] = useState('')
   const [showExport, setShowExport] = useState(false)
@@ -89,6 +112,10 @@ export function ActionPadEditor({
   const [pendingIds, setPendingIds] = useState<Readonly<Record<string, PendingIdEdit>>>(() => restorePendingIds(config, initialIdDrafts))
   const [operationError, setOperationError] = useState('')
   const [operationPending, setOperationPending] = useState(false)
+  const [iconPickerOpen, setIconPickerOpen] = useState(false)
+  const [buttonLabelSelection, setButtonLabelSelection] = useState<TextSelection>()
+  const [labelFocusRequest, setLabelFocusRequest] = useState(0)
+  const buttonLabelInput = useRef<TextInput>(null)
   const operationInFlight = useRef(false)
   const observedConfig = useRef(config)
   const localChangeSignature = useRef<string | null>(null)
@@ -114,6 +141,8 @@ export function ActionPadEditor({
     if (local) return
     // A successful Load/Reload or Save may replace the controlled document.
     // Old field errors and index-based selections do not belong to that file.
+    initialButtonScroll.current.pending = false
+    setTargetNotice('')
     setPendingIds({})
     setEditError(null)
     setOperationError('')
@@ -122,6 +151,8 @@ export function ActionPadEditor({
     setButtonSelection(0)
     setSelectionKind('button')
     setMoveDestination('')
+    setIconPickerOpen(false)
+    setButtonLabelSelection(undefined)
     setHostPath(sourcePath)
   }, [config, sourcePath])
 
@@ -147,6 +178,7 @@ export function ActionPadEditor({
   const menuPath = `menus[${menuIndex}]`
   const groupPath = `${menuPath}.groups[${groupIndex}]`
   const buttonPath = `${groupPath}.buttons[${buttonIndex}]`
+  const buttonIdentity = button ? `${menuIndex}:${menu?.id}:${groupIndex}:${group?.id}:${buttonIndex}:${button.id}` : ''
   const groupLocation = { menuIndex, groupIndex }
   const buttonLocation = { ...groupLocation, buttonIndex }
   const issues = useMemo(() => validateActionPadConfig(config), [config])
@@ -177,6 +209,25 @@ export function ActionPadEditor({
     )
   )
   const destinationExists = destinations.some((candidate) => candidate.value === moveDestination)
+  const observedButtonIdentity = useRef(buttonIdentity)
+
+  useEffect(() => {
+    if (observedButtonIdentity.current === buttonIdentity) return
+    observedButtonIdentity.current = buttonIdentity
+    setIconPickerOpen(false)
+    setButtonLabelSelection(undefined)
+  }, [buttonIdentity])
+
+  useEffect(() => {
+    if (!busy && fontLoaded) return
+    setIconPickerOpen(false)
+  }, [busy, fontLoaded])
+
+  useEffect(() => {
+    if (labelFocusRequest === 0 || iconPickerOpen) return
+    const frame = requestAnimationFrame(() => buttonLabelInput.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [iconPickerOpen, labelFocusRequest])
 
   function canApply(edit: ActionPadEdit): boolean {
     const latest = latestEditor.current
@@ -267,6 +318,22 @@ export function ActionPadEditor({
     apply({ type: 'update-button', location: buttonLocation, patch }, path)
   }
 
+  function insertNerdFontIcon(icon: NerdFontIcon) {
+    if (!button || busy || !fontLoaded) {
+      setIconPickerOpen(false)
+      return
+    }
+    const fallback = button.label.length
+    const start = Math.max(0, Math.min(buttonLabelSelection?.start ?? fallback, button.label.length))
+    const end = Math.max(start, Math.min(buttonLabelSelection?.end ?? start, button.label.length))
+    const label = `${button.label.slice(0, start)}${icon.glyph}${button.label.slice(end)}`
+    const caret = start + icon.glyph.length
+    updateButton({ label }, `${buttonPath}.label`)
+    setButtonLabelSelection({ start: caret, end: caret })
+    setIconPickerOpen(false)
+    setLabelFocusRequest((request) => request + 1)
+  }
+
   function focusIssue(issue: ConfigIssue) {
     const indices = /^menus\[(\d+)\](?:\.groups\[(\d+)\](?:\.buttons\[(\d+)\])?)?/.exec(issue.path)
     if (!indices) { setSelectionKind('menu'); return }
@@ -274,6 +341,23 @@ export function ActionPadEditor({
     setGroupSelection(Number(indices[2] ?? 0))
     setButtonSelection(Number(indices[3] ?? 0))
     setSelectionKind(indices[3] !== undefined ? 'button' : indices[2] !== undefined ? 'group' : 'menu')
+  }
+
+  function scrollToInitialButton() {
+    const scroll = initialButtonScroll.current
+    const { workspace, details, button: buttonY } = scroll.positions
+    if (!scroll.pending || !scroll.contentReady || !scrollView.current ||
+      workspace === undefined || details === undefined || buttonY === undefined) return
+    scroll.pending = false
+    // These layouts are relative to successive ancestors. Summing them keeps
+    // the card aligned in both the stacked and side-by-side editor layouts.
+    scrollView.current.scrollTo({ y: workspace + details + buttonY, animated: false })
+  }
+
+  function recordInitialButtonLayout(part: 'workspace' | 'details' | 'button', y: number) {
+    if (!initialButtonScroll.current.pending) return
+    initialButtonScroll.current.positions[part] = y
+    scrollToInitialButton()
   }
 
   return (
@@ -293,7 +377,17 @@ export function ActionPadEditor({
         />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" style={styles.scroll}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        onContentSizeChange={(_width, height) => {
+          initialButtonScroll.current.contentReady = height > 0
+          scrollToInitialButton()
+        }}
+        ref={scrollView}
+        style={styles.scroll}
+        testID="action-pad-editor-scroll"
+      >
         <View style={styles.card}>
           <FormField
             disabled={busy}
@@ -328,6 +422,7 @@ export function ActionPadEditor({
           <Text style={styles.muted}>Paths are on the Neovim host. Use an absolute path or ~/. Save activates the draft only after the file is written.</Text>
           {!connected ? <Text style={styles.notice}>You can edit offline. Reconnect to load, save, or export; drafts are never uploaded automatically.</Text> : null}
           {message ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{message}</Text> : null}
+          {targetNotice ? <Text accessibilityLiveRegion="polite" style={styles.notice} testID="action-pad-editor-target-notice">{targetNotice}</Text> : null}
           {operationError ? <Text accessibilityLiveRegion="polite" style={styles.error}>{operationError}</Text> : null}
         </View>
 
@@ -350,12 +445,13 @@ export function ActionPadEditor({
           </View>
         ) : null}
 
-        <View style={[styles.workspace, wide && styles.wideWorkspace]} testID="action-pad-editor-workspace">
+        <View onLayout={(event) => recordInitialButtonLayout('workspace', event.nativeEvent.layout.y)} style={[styles.workspace, wide && styles.wideWorkspace]} testID="action-pad-editor-workspace">
           <View style={[styles.navigation, wide && styles.wideNavigation]}>
             <View style={[styles.selectors, wide && styles.verticalSelectors]}>
               <View style={styles.selector}>
                 <Picker
                   disabled={busy || config.menus.length === 0}
+                  fontLoaded={fontLoaded}
                   label="Menu"
                   onChange={(value) => chooseMenu(Number(value))}
                   options={config.menus.map((candidate, index) => ({ value: String(index), label: `${candidate.label || 'Unnamed menu'}${candidate.id === config.rootMenuId ? ' · Root' : ''}` }))}
@@ -370,6 +466,7 @@ export function ActionPadEditor({
               <View style={styles.selector}>
                 <Picker
                   disabled={busy || !group}
+                  fontLoaded={fontLoaded}
                   label="Group"
                   onChange={(value) => chooseGroup(Number(value))}
                   options={menu?.groups.map((candidate, index) => ({ value: String(index), label: candidate.id || 'Unnamed group' })) ?? []}
@@ -385,6 +482,7 @@ export function ActionPadEditor({
               <View style={styles.selector}>
                 <Picker
                   disabled={busy || !button}
+                  fontLoaded={fontLoaded}
                   label="Button"
                   onChange={(value) => { setButtonSelection(Number(value)); setSelectionKind('button'); setEditError(null); setMoveDestination('') }}
                   options={group?.buttons.map((candidate, index) => ({ value: String(index), label: candidate.label || 'Unnamed button' })) ?? []}
@@ -395,6 +493,11 @@ export function ActionPadEditor({
                   setButtonSelection((next.menus[menuIndex]?.groups[groupIndex]?.buttons.length ?? 1) - 1)
                   setSelectionKind('button')
                 })} />
+                <EditorButton disabled={structuralBusy || !button} label="Duplicate button" onPress={() => apply({ type: 'duplicate-button', location: buttonLocation }, buttonPath, () => {
+                  setButtonSelection(buttonIndex + 1)
+                  setSelectionKind('button')
+                  setMoveDestination('')
+                })} />
               </View>
             </View>
             <View style={[styles.actions, wide && styles.verticalSelectors]}>
@@ -404,7 +507,7 @@ export function ActionPadEditor({
             </View>
           </View>
 
-          <View style={styles.details}>
+          <View onLayout={(event) => recordInitialButtonLayout('details', event.nativeEvent.layout.y)} style={styles.details} testID="action-pad-editor-details">
             {kind === 'menu' && menu ? (
               <View style={styles.card} testID="action-pad-menu-form">
                 <Text accessibilityRole="header" style={styles.sectionTitle}>Menu settings</Text>
@@ -415,7 +518,7 @@ export function ActionPadEditor({
                 <ReorderControls busy={structuralBusy} count={config.menus.length} index={menuIndex} item="menu" onMove={(direction) => apply({ type: 'reorder-menu', menuIndex, direction }, menuPath, () => setMenuSelection(menuIndex + direction))} />
                 <Text style={styles.muted}>{menu.groups.length} {menu.groups.length === 1 ? 'group' : 'groups'} in this menu.</Text>
                 <EditorButton danger disabled={structuralBusy || Boolean(deletionReason)} label="Delete menu" onPress={() => confirmRemoval('Delete menu?', `Delete “${menu.label}” and all its groups and buttons?`, () => apply({ type: 'delete-menu', menuIndex }, menuPath, (next) => chooseMenu(Math.min(menuIndex, next.menus.length - 1))))} />
-                {deletionReason ? <Text style={styles.muted}>{deletionReason}</Text> : null}
+                {deletionReason ? <Text style={[styles.muted, fontLoaded && styles.nerdFont]}>{deletionReason}</Text> : null}
               </View>
             ) : null}
 
@@ -434,9 +537,28 @@ export function ActionPadEditor({
             ) : null}
 
             {kind === 'button' && button ? (
-              <View style={styles.card} testID="action-pad-button-form">
+              <View onLayout={(event) => recordInitialButtonLayout('button', event.nativeEvent.layout.y)} style={styles.card} testID="action-pad-button-form">
                 <Text accessibilityRole="header" style={styles.sectionTitle}>Button settings</Text>
-                <FormField disabled={busy} fontLoaded={fontLoaded} issues={displayedIssues} label="Button label" multiline onChange={(label) => updateButton({ label }, `${buttonPath}.label`)} path={`${buttonPath}.label`} value={button.label} />
+                <FormField
+                  disabled={busy}
+                  fontLoaded={fontLoaded}
+                  hint="Choose an icon to insert it at the cursor. For icon-only buttons, set an Accessibility label below."
+                  inputRef={buttonLabelInput}
+                  issues={displayedIssues}
+                  label="Button label"
+                  multiline
+                  onChange={(label) => updateButton({ label }, `${buttonPath}.label`)}
+                  onSelectionChange={setButtonLabelSelection}
+                  path={`${buttonPath}.label`}
+                  selection={buttonLabelSelection}
+                  value={button.label}
+                />
+                <EditorButton
+                  disabled={busy || !fontLoaded}
+                  label={fontLoaded ? 'Choose Nerd Font icon…' : fontError ? 'Nerd Font icons unavailable' : 'Loading Nerd Font icons…'}
+                  onPress={() => setIconPickerOpen(true)}
+                />
+                {fontError ? <Text accessibilityLiveRegion="polite" style={styles.notice}>The bundled Nerd Font could not be loaded, so icon previews are unavailable.</Text> : null}
                 <FormField disabled={busy} fontLoaded={fontLoaded} issues={displayedIssues} label="Button ID" onChange={(id) => applyId({ type: 'update-button', location: buttonLocation, patch: { id } }, `${buttonPath}.id`, id)} onUndo={pendingIds[`${buttonPath}.id`] ? () => undoPendingId(`${buttonPath}.id`) : undefined} path={`${buttonPath}.id`} value={pendingIds[`${buttonPath}.id`]?.value ?? button.id} />
                 <Choices disabled={busy} label="Button size" onChange={(size) => updateButton({ styles: size === 'default' ? undefined : { size: size as '1/2' | '1/4' } }, `${buttonPath}.styles.size`)} options={[{ value: 'default', label: 'Default' }, { value: '1/2', label: 'Half' }, { value: '1/4', label: 'Quarter' }]} value={button.styles?.size ?? 'default'} />
                 <Text style={styles.muted}>Sizes affect the side rail. The bottom pad uses equal widths.</Text>
@@ -448,7 +570,7 @@ export function ActionPadEditor({
                 <ReorderControls busy={structuralBusy} count={group?.buttons.length ?? 0} index={buttonIndex} item="button" onMove={(direction) => apply({ type: 'reorder-button', location: buttonLocation, direction }, buttonPath, () => setButtonSelection(buttonIndex + direction))} />
                 {destinations.length > 0 ? (
                   <View style={styles.section}>
-                    <Picker disabled={structuralBusy} label="Destination group" onChange={setMoveDestination} options={destinations} placeholder="Choose a group to move this button" value={destinationExists ? moveDestination : ''} />
+                    <Picker disabled={structuralBusy} fontLoaded={fontLoaded} label="Destination group" onChange={setMoveDestination} options={destinations} placeholder="Choose a group to move this button" value={destinationExists ? moveDestination : ''} />
                     <EditorButton disabled={structuralBusy || !destinationExists} label="Move to group" onPress={() => {
                       const [destinationMenu = 0, destinationGroup = 0] = moveDestination.split(':').map(Number)
                       const destinationButton = config.menus[destinationMenu]?.groups[destinationGroup]?.buttons.length ?? 0
@@ -491,8 +613,32 @@ export function ActionPadEditor({
           </View>
         </View>
       </ScrollView>
+      <NerdFontIconPicker
+        onDismiss={() => setIconPickerOpen(false)}
+        onSelect={insertNerdFontIcon}
+        visible={iconPickerOpen && fontLoaded && !busy}
+      />
     </KeyboardAvoidingView>
   )
+}
+
+function findInitialButton(config: ActionPadConfig, target: ActionPadButtonTarget | undefined): ButtonLocation | undefined {
+  if (!target) return undefined
+  let match: ButtonLocation | undefined
+  // ID scopes matter: imported groups/buttons can legitimately share an ID.
+  // Incomplete recovery drafts may also contain ambiguous tuples; never guess.
+  for (const [menuIndex, menu] of config.menus.entries()) {
+    if (menu.id !== target.menuId) continue
+    for (const [groupIndex, group] of menu.groups.entries()) {
+      if (group.id !== target.groupId) continue
+      for (const [buttonIndex, button] of group.buttons.entries()) {
+        if (button.id !== target.buttonId) continue
+        if (match) return undefined
+        match = { menuIndex, groupIndex, buttonIndex }
+      }
+    }
+  }
+  return match
 }
 
 function InteractionForm({ action, config, disabled, fontLoaded, gesture, issues, menuId, onChange, path }: {
@@ -525,7 +671,7 @@ function InteractionForm({ action, config, disabled, fontLoaded, gesture, issues
       {action?.type === 'input' ? <FormField disabled={disabled} fontLoaded={fontLoaded} hint="Use Neovim key notation, for example <C-w>h or <Space>sg. Spaces and line breaks are preserved exactly." issues={issues} label={`${gesture} Neovim input`} multiline onChange={(nvimInput) => onChange({ ...action, nvimInput })} path={`${path}.nvimInput`} value={action.nvimInput} /> : null}
       {action?.type === 'menu' ? (
         <View style={styles.section}>
-          <Picker disabled={disabled} label={`${gesture} menu`} onChange={(nextMenuId) => onChange({ ...action, menuId: nextMenuId })} options={config.menus.filter((menu) => menu.id !== menuId).map((menu) => ({ value: menu.id, label: `${menu.label || 'Unnamed menu'} (${menu.id})` }))} placeholder={action.menuId || 'Choose a menu'} value={action.menuId} />
+          <Picker disabled={disabled} fontLoaded={fontLoaded} label={`${gesture} menu`} onChange={(nextMenuId) => onChange({ ...action, menuId: nextMenuId })} options={config.menus.filter((menu) => menu.id !== menuId).map((menu) => ({ value: menu.id, label: `${menu.label || 'Unnamed menu'} (${menu.id})` }))} placeholder={action.menuId || 'Choose a menu'} value={action.menuId} />
           <FieldIssues issues={issues} path={`${path}.menuId`} />
         </View>
       ) : null}
@@ -563,17 +709,20 @@ function EditorButton({ label, onPress, disabled = false, selected = false, prim
   )
 }
 
-function FormField({ disabled = false, fontLoaded, hint, issues = [], label, multiline = false, onChange, onUndo, path = '', placeholder, value }: {
+function FormField({ disabled = false, fontLoaded, hint, inputRef, issues = [], label, multiline = false, onChange, onSelectionChange, onUndo, path = '', placeholder, selection, value }: {
   readonly disabled?: boolean
   readonly fontLoaded: boolean
   readonly hint?: string
+  readonly inputRef?: RefObject<TextInput | null>
   readonly issues?: readonly ConfigIssue[]
   readonly label: string
   readonly multiline?: boolean
   readonly onChange: (value: string) => void
+  readonly onSelectionChange?: (selection: TextSelection) => void
   readonly onUndo?: () => void
   readonly path?: string
   readonly placeholder?: string
+  readonly selection?: TextSelection
   readonly value: string
 }) {
   return (
@@ -587,8 +736,11 @@ function FormField({ disabled = false, fontLoaded, hint, issues = [], label, mul
         editable={!disabled}
         multiline={multiline}
         onChangeText={onChange}
+        onSelectionChange={onSelectionChange ? (event) => onSelectionChange(event.nativeEvent.selection) : undefined}
         placeholder={placeholder}
         placeholderTextColor="#65717e"
+        ref={inputRef}
+        selection={selection}
         style={[styles.input, fontLoaded && styles.nerdFont, multiline && styles.multilineInput, issues.some((issue) => issue.path === path) && styles.invalidInput]}
         textAlignVertical={multiline ? 'top' : 'center'}
         value={value}
@@ -638,8 +790,9 @@ function Choices({ disabled = false, label, onChange, options, value }: {
   )
 }
 
-function Picker({ disabled = false, label, onChange, options, placeholder = 'Choose…', value }: {
+function Picker({ disabled = false, fontLoaded, label, onChange, options, placeholder = 'Choose…', value }: {
   readonly disabled?: boolean
+  readonly fontLoaded: boolean
   readonly label: string
   readonly onChange: (value: string) => void
   readonly options: readonly Choice[]
@@ -660,7 +813,7 @@ function Picker({ disabled = false, label, onChange, options, placeholder = 'Cho
         onPress={() => setOpen(!open)}
         style={[styles.picker, disabled && styles.disabled]}
       >
-        <Text numberOfLines={2} style={styles.pickerText}>{current?.label ?? placeholder}</Text>
+        <Text numberOfLines={2} style={[styles.pickerText, fontLoaded && styles.nerdFont]}>{current?.label ?? placeholder}</Text>
         <Text style={styles.muted}>{open ? '▴' : '▾'}</Text>
       </Pressable>
       {open && !disabled ? (
@@ -675,7 +828,7 @@ function Picker({ disabled = false, label, onChange, options, placeholder = 'Cho
               onPress={() => { onChange(option.value); setOpen(false) }}
               style={[styles.pickerOption, option.value === value && styles.selectedButton]}
             >
-              <Text style={styles.buttonText}>{option.label}</Text>
+              <Text style={[styles.buttonText, fontLoaded && styles.nerdFontSemiBold]}>{option.label}</Text>
             </Pressable>
           ))}
         </ScrollView>
@@ -777,6 +930,7 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.72 },
   input: { minHeight: 48, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: '#303946', backgroundColor: '#151b22', color: '#e7edf3', fontFamily: 'monospace', fontSize: 15 },
   nerdFont: { fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontWeight: 'normal' },
+  nerdFontSemiBold: { fontFamily: CODEY_NERD_FONT_FAMILIES.semiBold, fontWeight: 'normal' },
   multilineInput: { minHeight: 84 },
   invalidInput: { borderColor: '#ff7b72' },
   picker: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#303946', backgroundColor: '#151b22' },

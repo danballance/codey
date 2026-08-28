@@ -53,6 +53,13 @@ export interface ActionGroup {
 }
 
 export interface ActionMenu {
+  readonly id: string
   readonly label: string
   readonly groups: readonly ActionGroup[]
+}
+
+export interface ActionPadButtonTarget {
+  readonly menuId: string
+  readonly groupId: string
+  readonly buttonId: string
 }

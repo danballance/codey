@@ -394,6 +394,7 @@ export function resolveActionPadConfig(config: ActionPadConfig): ActionMenu {
     const definition = definitions.get(menuId)
     if (definition === undefined) throw new ActionPadConfigError([{ path: 'menus', message: `Missing action menu definition: ${menuId}` }])
     const menu: ActionMenu = {
+      id: definition.id,
       label: definition.label,
       groups: definition.groups.map((group) => ({ id: group.id, buttons: group.buttons.map(resolveButton) }))
     }

@@ -41,7 +41,7 @@ function config(menus: readonly ActionMenuDefinition[]): ActionPadConfig {
 }
 
 describe('resolveActionPadConfig', () => {
-  it('resolves nested menu identifiers into the existing menu object shape', () => {
+  it('retains stable identifiers while resolving nested menu objects', () => {
     const definitions = config([
       definition('home', 'Home', [
         { type: 'menu', menuId: 'leader', after: 'stay' }
@@ -58,6 +58,7 @@ describe('resolveActionPadConfig', () => {
     const leader = nestedMenu(home)
     const search = nestedMenu(leader)
 
+    expect([home.id, leader.id, search.id]).toEqual(['home', 'leader', 'search'])
     expect(leader.label).toBe('Leader')
     expect(search.label).toBe('Search')
     expect(search.groups[0]?.buttons[0]?.tap).toEqual({
@@ -138,7 +139,7 @@ describe('resolveActionPadConfig', () => {
       accessibilityLabel: 'Up',
       accessibilityHint: 'Hold for choices',
       styles: { size: '1/4' },
-      longPress: { type: 'menu', after: 'stay', menu: { label: 'Custom' } }
+      longPress: { type: 'menu', after: 'stay', menu: { id: 'custom-menu', label: 'Custom' } }
     })
     expect(button?.tap).toBeUndefined()
     if (button?.longPress?.type !== 'menu') throw new Error('Expected a menu')

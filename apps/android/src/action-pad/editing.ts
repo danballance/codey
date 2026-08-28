@@ -25,6 +25,7 @@ export type ActionPadEdit =
   | { readonly type: 'delete-group'; readonly location: GroupLocation }
   | { readonly type: 'reorder-group'; readonly location: GroupLocation; readonly direction: -1 | 1 }
   | { readonly type: 'add-button'; readonly location: GroupLocation }
+  | { readonly type: 'duplicate-button'; readonly location: ButtonLocation }
   | { readonly type: 'update-button'; readonly location: ButtonLocation; readonly patch: Partial<EditableButton> }
   | { readonly type: 'delete-button'; readonly location: ButtonLocation }
   | { readonly type: 'reorder-button'; readonly location: ButtonLocation; readonly direction: -1 | 1 }
@@ -152,6 +153,27 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
           label: 'New button',
           tap: { type: 'input', nvimInput: '', after: 'stay' }
         }]
+      })
+    }
+    case 'duplicate-button': {
+      const menu = requireMenu(config, edit.location.menuIndex)
+      const group = requireGroup(config, edit.location)
+      const button = requireButton(config, edit.location)
+      const duplicate: EditableButton = {
+        ...button,
+        id: createActionPadId(button.id, menu.groups.flatMap((candidate) => candidate.buttons.map(({ id }) => id))),
+        label: `${button.label} copy`,
+        ...(button.styles === undefined ? {} : { styles: { ...button.styles } }),
+        ...(button.tap === undefined ? {} : { tap: { ...button.tap } }),
+        ...(button.longPress === undefined ? {} : { longPress: { ...button.longPress } })
+      }
+      return replaceGroup(config, edit.location, {
+        ...group,
+        buttons: [
+          ...group.buttons.slice(0, edit.location.buttonIndex + 1),
+          duplicate,
+          ...group.buttons.slice(edit.location.buttonIndex + 1)
+        ]
       })
     }
     case 'update-button': {

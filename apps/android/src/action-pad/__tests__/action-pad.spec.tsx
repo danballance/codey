@@ -1,5 +1,5 @@
 import { StyleSheet } from 'react-native'
-import { cleanup, fireEvent, render, within } from '@testing-library/react-native'
+import { act, cleanup, fireEvent, render, within } from '@testing-library/react-native'
 
 import {
   CODEY_NERD_FONT_FAMILIES,
@@ -9,6 +9,7 @@ import {
   ACTION_PAD_LONG_PRESS_MS,
   ACTION_PAD_MENU,
   ActionPad,
+  type ActionInteraction,
   type ActionMenu,
   type ActionPadProps
 } from '..'
@@ -43,6 +44,15 @@ function actionPadProps(overrides: Partial<ActionPadProps> = {}): ActionPadProps
 
 function input(nvimInput: string, after: 'root' | 'stay' = 'stay') {
   return { type: 'input' as const, nvimInput, after }
+}
+
+function capturePress(screen: ReturnType<typeof render>, testId: string): () => void {
+  let target = screen.getByTestId(testId)
+  while (typeof target.props.onPress !== 'function' && target.parent !== null) {
+    target = target.parent
+  }
+  expect(typeof target.props.onPress).toBe('function')
+  return target.props.onPress
 }
 
 describe('ActionPad', () => {
@@ -219,6 +229,7 @@ describe('ActionPad', () => {
 
   it('applies configured quarter and half sizes only in the right rail', () => {
     const rootMenu = {
+      id: 'home',
       label: 'Home',
       groups: [
         {
@@ -297,6 +308,7 @@ describe('ActionPad', () => {
       tap: input(id)
     })
     const rootMenu = {
+      id: 'home',
       label: 'Home',
       groups: [
         {
@@ -337,6 +349,7 @@ describe('ActionPad', () => {
 
   it('renders any number of named groups in declaration order in both placements', () => {
     const rootMenu = {
+      id: 'home',
       label: 'Home',
       groups: [
         {
@@ -384,6 +397,7 @@ describe('ActionPad', () => {
 
   it('renders Back only where configured, in its declared position, and pops one menu', () => {
     const childMenu = {
+      id: 'child',
       label: 'Child',
       groups: [
         {
@@ -401,6 +415,7 @@ describe('ActionPad', () => {
       ]
     } satisfies ActionMenu
     const rootMenu = {
+      id: 'home',
       label: 'Home',
       groups: [
         {
@@ -434,6 +449,7 @@ describe('ActionPad', () => {
   it('lets tap and long press independently select any interaction and suppresses release after hold', () => {
     const onInput = jest.fn()
     const childMenu = {
+      id: 'child',
       label: 'Tap Destination',
       groups: [
         {
@@ -449,6 +465,7 @@ describe('ActionPad', () => {
       ]
     } satisfies ActionMenu
     const rootMenu = {
+      id: 'home',
       label: 'Home',
       groups: [
         {
@@ -486,6 +503,7 @@ describe('ActionPad', () => {
   it('supports a long-press-only button with a configuration-provided hint', () => {
     const onInput = jest.fn()
     const rootMenu = {
+      id: 'home',
       label: 'Home',
       groups: [
         {
@@ -515,6 +533,7 @@ describe('ActionPad', () => {
   it('applies root or stay after each button interaction instead of inheriting it from a menu', () => {
     const onInput = jest.fn()
     const childMenu = {
+      id: 'child',
       label: 'Child',
       groups: [
         {
@@ -527,6 +546,7 @@ describe('ActionPad', () => {
       ]
     } satisfies ActionMenu
     const rootMenu = {
+      id: 'home',
       label: 'Home',
       groups: [
         {
@@ -563,6 +583,229 @@ describe('ActionPad', () => {
     fireEvent.press(escape)
 
     expect(props.onInput).not.toHaveBeenCalled()
+  })
+
+  it('selects every action type and hold-only buttons without executing their configured gestures', () => {
+    const destination: ActionMenu = { id: 'destination', label: 'Destination', groups: [] }
+    const actions: readonly ActionInteraction[] = [
+      input('forbidden', 'root'),
+      { type: 'menu', menu: destination, after: 'stay' },
+      { type: 'back', after: 'stay' },
+      { type: 'keyboard', after: 'root' }
+    ]
+    const childMenu: ActionMenu = {
+      id: 'child', label: 'Child', groups: [{
+        id: 'actions',
+        buttons: [
+          ...actions.map((action) => ({ id: action.type, label: action.type, tap: action, longPress: action })),
+          { id: 'hold-only', label: 'Hold only', longPress: input('also forbidden', 'root') }
+        ]
+      }]
+    }
+    const rootMenu: ActionMenu = {
+      id: 'home', label: 'Home', groups: [{
+        id: 'actions', buttons: [{
+          id: 'open', label: 'Open', tap: { type: 'menu', menu: childMenu, after: 'stay' }
+        }]
+      }]
+    }
+    const props = actionPadProps({ rootMenu, onEditButton: jest.fn() })
+    const screen = render(<ActionPad {...props} />)
+    fireEvent.press(screen.getByTestId('action-pad-open'))
+    screen.rerender(<ActionPad {...props} interactionMode="selection" />)
+
+    const ids = ['input', 'menu', 'back', 'keyboard', 'hold-only']
+    for (const id of ids) {
+      const button = screen.getByTestId(`action-pad-${id}`)
+      fireEvent(button, 'pressIn')
+      fireEvent.press(button)
+      fireEvent(button, 'pressIn')
+      fireEvent(button, 'longPress')
+      fireEvent(button, 'longPress')
+      fireEvent.press(button)
+      expect(screen.getByLabelText('Current action path: Child')).toBeTruthy()
+    }
+
+    expect(jest.mocked(props.onEditButton!).mock.calls).toEqual(ids.flatMap((buttonId) => [
+      [{ menuId: 'child', groupId: 'actions', buttonId }],
+      [{ menuId: 'child', groupId: 'actions', buttonId }]
+    ]))
+    expect(props.onInput).not.toHaveBeenCalled()
+    expect(props.onKeyboardPress).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Current action path: Child / Destination')).toBeNull()
+  })
+
+  it('allows offline selection without enabling normal actions', () => {
+    const props = actionPadProps({ enabled: false, onEditButton: jest.fn() })
+    const screen = render(<ActionPad {...props} interactionMode="selection" />)
+    const escape = screen.getByRole('button', { name: 'Edit Esc' })
+    expect(escape.props.accessibilityState).toEqual({ disabled: false })
+    fireEvent.press(escape)
+    expect(props.onEditButton).toHaveBeenCalledWith({ menuId: 'home', groupId: 'leading', buttonId: 'escape' })
+    expect(props.onInput).not.toHaveBeenCalled()
+
+    screen.rerender(<ActionPad {...props} />)
+    expect(screen.getByRole('button', { name: 'Esc' }).props.accessibilityState).toEqual({ disabled: true })
+    fireEvent.press(screen.getByTestId('action-pad-escape'))
+    expect(props.onInput).not.toHaveBeenCalled()
+    expect(props.onEditButton).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['below', 'right'] as const)('identifies repeated button and group IDs within their menu in %s placement', (placement) => {
+    const sharedButton = { id: 'shared', label: 'Shared', tap: input('shared') }
+    const childMenu: ActionMenu = {
+      id: 'child', label: 'Same label', groups: [{ id: 'first', buttons: [sharedButton] }]
+    }
+    const rootMenu: ActionMenu = {
+      id: 'home', label: 'Same label', groups: [
+        { id: 'first', buttons: [sharedButton] },
+        { id: 'second', buttons: [sharedButton] },
+        { id: 'navigation', buttons: [{ id: 'open', label: 'Open', tap: { type: 'menu', menu: childMenu, after: 'stay' } }] }
+      ]
+    }
+    const props = actionPadProps({ rootMenu, placement, onEditButton: jest.fn() })
+    const screen = render(<ActionPad {...props} interactionMode="selection" />)
+    for (const group of ['first', 'second']) {
+      fireEvent.press(within(screen.getByTestId(`action-pad-${group}-group`)).getByTestId('action-pad-shared'))
+    }
+    screen.rerender(<ActionPad {...props} />)
+    fireEvent.press(screen.getByTestId('action-pad-open'))
+    screen.rerender(<ActionPad {...props} interactionMode="selection" />)
+    fireEvent.press(screen.getByTestId('action-pad-shared'))
+
+    expect(jest.mocked(props.onEditButton!).mock.calls).toEqual([
+      [{ menuId: 'home', groupId: 'first', buttonId: 'shared' }],
+      [{ menuId: 'home', groupId: 'second', buttonId: 'shared' }],
+      [{ menuId: 'child', groupId: 'first', buttonId: 'shared' }]
+    ])
+    expect(props.onInput).not.toHaveBeenCalled()
+  })
+
+  it('keeps the menu and scroll view mounted while suspended and restores normal navigation afterward', () => {
+    const props = actionPadProps({ placement: 'right', onEditButton: jest.fn() })
+    const screen = render(<ActionPad {...props} />)
+    fireEvent.press(screen.getByTestId('action-pad-leader'))
+    fireEvent.press(screen.getByTestId('action-pad-search'))
+    const scroll = screen.getByTestId('action-pad-flow-scroll')
+    const latePress = capturePress(screen, 'action-pad-grep')
+
+    screen.rerender(<ActionPad {...props} interactionMode="suspended" />)
+    expect(screen.getByLabelText('Current action path: Leader / Search')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-flow-scroll')).toBe(scroll)
+    for (const button of screen.getAllByRole('button')) {
+      expect(button.props.accessibilityState).toEqual({ disabled: true })
+      fireEvent(button, 'pressIn')
+      fireEvent(button, 'longPress')
+      fireEvent.press(button)
+    }
+    act(() => { latePress() })
+    expect(props.onInput).not.toHaveBeenCalled()
+    expect(props.onKeyboardPress).not.toHaveBeenCalled()
+    expect(props.onEditButton).not.toHaveBeenCalled()
+
+    screen.rerender(<ActionPad {...props} interactionMode="selection" />)
+    expect(screen.getByTestId('action-pad-flow-scroll')).toBe(scroll)
+    fireEvent.press(screen.getByTestId('action-pad-back'))
+    expect(props.onEditButton).toHaveBeenCalledWith({ menuId: 'search', groupId: 'trailing', buttonId: 'back' })
+    expect(screen.getByLabelText('Current action path: Leader / Search')).toBeTruthy()
+
+    screen.rerender(<ActionPad {...props} />)
+    expect(screen.getByTestId('action-pad-flow-scroll')).toBe(scroll)
+    fireEvent.press(screen.getByTestId('action-pad-grep'))
+    expect(props.onInput).toHaveBeenCalledWith('<Space>sg')
+    expect(screen.queryByLabelText('Current action path: Leader / Search')).toBeNull()
+  })
+
+  it('does not reinterpret an in-progress gesture when switching between selection and normal mode', () => {
+    const props = actionPadProps({ onEditButton: jest.fn() })
+    const screen = render(<ActionPad {...props} />)
+    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn')
+    screen.rerender(<ActionPad {...props} interactionMode="selection" />)
+    fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
+    fireEvent.press(screen.getByTestId('action-pad-up'))
+    expect(props.onEditButton).not.toHaveBeenCalled()
+    expect(props.onInput).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Current action path: Up Arrow – Navigation')).toBeNull()
+
+    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn')
+    fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
+    screen.rerender(<ActionPad {...props} interactionMode="suspended" />)
+    screen.rerender(<ActionPad {...props} />)
+    fireEvent.press(screen.getByTestId('action-pad-up'))
+    expect(props.onEditButton).toHaveBeenCalledTimes(1)
+    expect(props.onInput).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Current action path: Up Arrow – Navigation')).toBeNull()
+
+    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn')
+    fireEvent.press(screen.getByTestId('action-pad-up'))
+    expect(props.onInput).toHaveBeenCalledWith('<Up>')
+  })
+
+  it('does not retarget a late native activation to a replacement document with reused IDs', () => {
+    const rootMenu: ActionMenu = {
+      id: 'home', label: 'Home', groups: [{
+        id: 'actions', buttons: [{ id: 'same', label: 'Original button', tap: input('old') }]
+      }]
+    }
+    const props = actionPadProps({ rootMenu, onEditButton: jest.fn() })
+    const screen = render(<ActionPad {...props} interactionMode="selection" />)
+    const latePress = capturePress(screen, 'action-pad-same')
+    const replacement: ActionMenu = {
+      ...rootMenu, groups: [{
+        id: 'actions', buttons: [{ id: 'same', label: 'Replacement button', tap: input('new') }]
+      }]
+    }
+    const onReplacementEdit = jest.fn()
+    screen.rerender(<ActionPad {...props} rootMenu={replacement} onEditButton={onReplacementEdit} interactionMode="selection" />)
+
+    act(() => { latePress() })
+    expect(props.onEditButton).not.toHaveBeenCalled()
+    expect(onReplacementEdit).not.toHaveBeenCalled()
+    expect(props.onInput).not.toHaveBeenCalled()
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Replacement button' }))
+    expect(onReplacementEdit).toHaveBeenCalledWith({ menuId: 'home', groupId: 'actions', buttonId: 'same' })
+  })
+
+  it.each(['below', 'right'] as const)('keeps readable labels and unchanged button dimensions for selection in %s placement', (placement) => {
+    const rootMenu: ActionMenu = {
+      id: 'home', label: 'Home', groups: [{
+        id: 'actions', buttons: [
+          {
+            id: 'quarter', label: '↑', accessibilityLabel: 'Move up', accessibilityHint: 'Hold to navigate.',
+            styles: { size: '1/4' }, longPress: input('<Up>')
+          },
+          { id: 'half', label: 'A longer label', styles: { size: '1/2' }, tap: input('x') }
+        ]
+      }]
+    }
+    for (const compact of [false, true]) {
+      const props = actionPadProps({ rootMenu, placement, compact })
+      const screen = render(<ActionPad {...props} />)
+      const dimensions = ['quarter', 'half'].map((id) => StyleSheet.flatten(screen.getByTestId(`action-pad-${id}`).props.style))
+      screen.rerender(<ActionPad {...props} interactionMode="selection" />)
+
+      expect(screen.getAllByRole('button')).toHaveLength(2)
+      const quarter = screen.getByRole('button', { name: 'Edit Move up' })
+      expect(quarter.props.accessibilityHint).toBe('Open button settings.')
+      expect(screen.getByRole('button', { name: 'Edit A longer label' })).toBeTruthy()
+      for (const [index, id] of ['quarter', 'half'].entries()) {
+        const style = StyleSheet.flatten(screen.getByTestId(`action-pad-${id}`).props.style)
+        expect(style).toEqual(dimensions[index])
+        expect(style).toMatchObject({ minWidth: 48, height: compact ? 48 : 52 })
+        const pencil = screen.getByTestId(`action-pad-${id}-edit-indicator`, { includeHiddenElements: true })
+        expect(pencil.props).toMatchObject({
+          accessible: false, accessibilityElementsHidden: true,
+          importantForAccessibility: 'no-hide-descendants', pointerEvents: 'none'
+        })
+        expect(pencil.props.onPress).toBeUndefined()
+      }
+      const label = screen.getByText('A longer label')
+      expect(label.props.numberOfLines).toBe(2)
+      expect(StyleSheet.flatten(label.props.style)).toMatchObject({
+        fontSize: compact ? 13 : 15, lineHeight: compact ? 16 : 18
+      })
+      screen.unmount()
+    }
   })
 
   it('shows breadcrumbs and follows explicitly configured Back interactions', () => {
@@ -669,6 +912,7 @@ describe('ActionPad', () => {
     fireEvent.press(screen.getByTestId('action-pad-leader'))
 
     const rootMenu: ActionMenu = {
+      id: 'replacement',
       label: 'Replacement',
       groups: [{
         id: 'new-group',
@@ -686,6 +930,7 @@ describe('ActionPad', () => {
   it('does not rebuild its button tree when redraw-facing props are unchanged', () => {
     let groupReads = 0
     const rootMenu = {
+      id: ACTION_PAD_MENU.id,
       label: ACTION_PAD_MENU.label,
       get groups() {
         groupReads += 1

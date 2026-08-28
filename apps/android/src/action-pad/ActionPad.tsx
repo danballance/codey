@@ -10,7 +10,8 @@ import {
   ACTION_PAD_LONG_PRESS_MS,
   type ActionButton,
   type ActionInteraction,
-  type ActionMenu
+  type ActionMenu,
+  type ActionPadButtonTarget
 } from './types'
 
 export type ActionPadPlacement = 'below' | 'right'
@@ -18,6 +19,8 @@ export type ActionPadPlacement = 'below' | 'right'
 export interface ActionPadProps {
   readonly rootMenu?: ActionMenu
   readonly enabled: boolean
+  readonly interactionMode?: 'normal' | 'selection' | 'suspended'
+  readonly onEditButton?: (target: ActionPadButtonTarget) => void
   readonly compact?: boolean
   readonly placement?: ActionPadPlacement
   readonly resetKey?: string | number
@@ -30,6 +33,8 @@ export interface ActionPadProps {
 export const ActionPad = memo(function ActionPad({
   rootMenu = ACTION_PAD_MENU,
   enabled,
+  interactionMode = 'normal',
+  onEditButton,
   compact = false,
   placement = 'below',
   resetKey,
@@ -58,7 +63,7 @@ export const ActionPad = memo(function ActionPad({
 
   const runInteraction = useCallback(
     (interaction: ActionInteraction) => {
-      if (!enabled) return
+      if (!enabled || interactionMode !== 'normal') return
 
       switch (interaction.type) {
         case 'input':
@@ -78,7 +83,7 @@ export const ActionPad = memo(function ActionPad({
 
       if (interaction.after === 'root') setMenuStack([rootMenu])
     },
-    [enabled, onInput, onKeyboardPress, rootMenu]
+    [enabled, interactionMode, onInput, onKeyboardPress, rootMenu]
   )
 
   return (
@@ -146,7 +151,10 @@ export const ActionPad = memo(function ActionPad({
               compact={compact}
               enabled={enabled}
               fontFacesLoaded={nerdFontFacesLoaded}
+              interactionMode={interactionMode}
+              menuId={currentMenu.id}
               name={group.id}
+              onEditButton={onEditButton}
               onInteraction={runInteraction}
               placedRight
             />
@@ -164,7 +172,10 @@ export const ActionPad = memo(function ActionPad({
               compact={compact}
               enabled={enabled}
               fontFacesLoaded={nerdFontFacesLoaded}
+              interactionMode={interactionMode}
+              menuId={currentMenu.id}
               name={group.id}
+              onEditButton={onEditButton}
               onInteraction={runInteraction}
               placedRight={false}
             />
@@ -180,7 +191,10 @@ function ActionGroupView({
   compact,
   enabled,
   fontFacesLoaded,
+  interactionMode,
+  menuId,
   name,
+  onEditButton,
   onInteraction,
   placedRight
 }: {
@@ -188,7 +202,10 @@ function ActionGroupView({
   readonly compact: boolean
   readonly enabled: boolean
   readonly fontFacesLoaded: boolean
+  readonly interactionMode: NonNullable<ActionPadProps['interactionMode']>
+  readonly menuId: string
   readonly name: string
+  readonly onEditButton: ActionPadProps['onEditButton']
   readonly onInteraction: (interaction: ActionInteraction) => void
   readonly placedRight: boolean
 }) {
@@ -200,6 +217,9 @@ function ActionGroupView({
       compact={compact}
       enabled={enabled}
       fontFacesLoaded={fontFacesLoaded}
+      interactionMode={interactionMode}
+      editTarget={{ menuId, groupId: name, buttonId: button.id }}
+      onEditButton={onEditButton}
       onInteraction={onInteraction}
     />
   )
@@ -248,6 +268,9 @@ function ActionButtonView({
   compact,
   enabled,
   fontFacesLoaded,
+  interactionMode,
+  editTarget,
+  onEditButton,
   onInteraction
 }: {
   readonly button: ActionButton
@@ -255,49 +278,68 @@ function ActionButtonView({
   readonly compact: boolean
   readonly enabled: boolean
   readonly fontFacesLoaded: boolean
+  readonly interactionMode: NonNullable<ActionPadProps['interactionMode']>
+  readonly editTarget: ActionPadButtonTarget
+  readonly onEditButton: ActionPadProps['onEditButton']
   readonly onInteraction: (interaction: ActionInteraction) => void
 }) {
-  const longPressTriggered = useRef(false)
-  const longPress = button.longPress
-  const tap = button.tap
+  const selecting = interactionMode === 'selection'
+  const available = selecting || (interactionMode === 'normal' && enabled)
+  const latest = useRef({ button, interactionMode, editTarget, available, onEditButton, onInteraction })
+  latest.current = { button, interactionMode, editTarget, available, onEditButton, onInteraction }
+  const gesture = useRef<{
+    readonly button: ActionButton
+    readonly interactionMode: NonNullable<ActionPadProps['interactionMode']>
+    readonly editTarget: ActionPadButtonTarget
+    readonly held: boolean
+  } | null>(null)
+
+  function activate(held: boolean) {
+    const current = latest.current
+    // Accessibility activation can arrive without pressIn. Keep even those
+    // callbacks bound to the document and mode that rendered the target.
+    if (
+      current.button !== button ||
+      current.interactionMode !== interactionMode || !sameButtonTarget(current.editTarget, editTarget)
+    ) return
+    const started = gesture.current
+    if (!held) gesture.current = null
+    if (!current.available || started?.held) return
+    // A mode or document change during a native gesture must not turn its
+    // release into an action in the newly visible pad.
+    if (started !== null && (
+      started.button !== current.button || started.interactionMode !== current.interactionMode ||
+      !sameButtonTarget(started.editTarget, current.editTarget)
+    )) return
+    if (held) gesture.current = { ...current, held: true }
+    if (current.interactionMode === 'selection') {
+      current.onEditButton?.(current.editTarget)
+      return
+    }
+    const interaction = held ? current.button.longPress : current.button.tap
+    if (interaction !== undefined) current.onInteraction(interaction)
+  }
 
   return (
     <Pressable
-      accessibilityHint={button.accessibilityHint}
-      accessibilityLabel={button.accessibilityLabel ?? button.label}
+      accessibilityHint={selecting ? 'Open button settings.' : button.accessibilityHint}
+      accessibilityLabel={`${selecting ? 'Edit ' : ''}${button.accessibilityLabel ?? button.label}`}
       accessibilityRole="button"
-      accessibilityState={{ disabled: !enabled }}
-      delayLongPress={longPress === undefined ? undefined : ACTION_PAD_LONG_PRESS_MS}
-      disabled={!enabled}
-      onLongPress={
-        longPress === undefined
-          ? undefined
-          : () => {
-              longPressTriggered.current = true
-              onInteraction(longPress)
-            }
-      }
-      onPress={
-        tap === undefined
-          ? undefined
-          : () => {
-              if (longPressTriggered.current) {
-                longPressTriggered.current = false
-                return
-              }
-              onInteraction(tap)
-            }
-      }
+      accessibilityState={{ disabled: !available }}
+      delayLongPress={selecting || button.longPress !== undefined ? ACTION_PAD_LONG_PRESS_MS : undefined}
+      disabled={!available}
+      onLongPress={selecting || button.longPress !== undefined ? () => activate(true) : undefined}
+      onPress={selecting || button.tap !== undefined ? () => activate(false) : undefined}
       onPressIn={() => {
-        longPressTriggered.current = false
+        gesture.current = { ...latest.current, held: false }
       }}
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
         column && styles.columnButton,
         column && button.styles?.size === '1/4' && styles.quarterColumnButton,
-        !enabled && styles.disabled,
-        pressed && enabled && styles.pressed
+        !available && styles.disabled,
+        pressed && available && styles.pressed
       ]}
       testID={`action-pad-${button.id}`}
     >
@@ -306,13 +348,31 @@ function ActionButtonView({
         style={[
           styles.buttonText,
           fontFacesLoaded && styles.nerdFontSemiBold,
-          compact && styles.compactButtonText
+          compact && styles.compactButtonText,
+          selecting && styles.selectionButtonText,
+          selecting && compact && styles.compactSelectionButtonText
         ]}
       >
         {button.label}
       </Text>
+      {selecting ? (
+        <View
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          pointerEvents="none"
+          style={styles.editIndicator}
+          testID={`action-pad-${button.id}-edit-indicator`}
+        >
+          <Text style={styles.editIndicatorText}>✎</Text>
+        </View>
+      ) : null}
     </Pressable>
   )
+}
+
+function sameButtonTarget(first: ActionPadButtonTarget, second: ActionPadButtonTarget): boolean {
+  return first.menuId === second.menuId && first.groupId === second.groupId && first.buttonId === second.buttonId
 }
 
 const styles = StyleSheet.create({
@@ -485,6 +545,25 @@ const styles = StyleSheet.create({
   },
   compactButtonText: {
     fontSize: 13
+  },
+  selectionButtonText: {
+    marginTop: 10,
+    lineHeight: 18,
+    includeFontPadding: false
+  },
+  compactSelectionButtonText: {
+    lineHeight: 16
+  },
+  editIndicator: {
+    position: 'absolute',
+    top: 2,
+    right: 4
+  },
+  editIndicatorText: {
+    color: '#73daca',
+    fontSize: 11,
+    lineHeight: 11,
+    includeFontPadding: false
   },
   disabled: {
     opacity: 0.45

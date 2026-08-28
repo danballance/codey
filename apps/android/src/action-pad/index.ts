@@ -27,5 +27,6 @@ export {
   type ActionButtonStyles,
   type ActionGroup,
   type ActionInteraction,
-  type ActionMenu
+  type ActionMenu,
+  type ActionPadButtonTarget
 } from './types'

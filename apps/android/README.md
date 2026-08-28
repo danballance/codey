@@ -84,13 +84,27 @@ Special keys and modified keys use Neovim notation, such as `<Esc>`, `<Up>`, and
 
 ### Editing and saving Action Pad configuration
 
-Use **Edit Action Pad**, below the pad, to open the configuration editor. This
-control is not part of the YAML and remains available even if every configured
-button is removed or the host is disconnected. The editor includes menus,
-groups, buttons, ordering/move controls, all button properties, and a preview.
-The preview can navigate menus but never sends commands or opens the Neovim
-keyboard. The existing Neovim session remains mounted while ordinary form
-inputs own keyboard focus.
+Navigate to the menu you want to refine, then tap **Edit Action Pad**, below
+the pad. The visible buttons gain pencil markers; tap anywhere on a button to
+open its editor with that menu, group, and button selected. Both taps and holds
+select a button in this mode. Configured input, menu, Back, and keyboard actions
+are suppressed, so navigate to the desired menu before entering selection mode.
+
+Closing the editor keeps selection mode enabled and preserves the current menu.
+Use **Done editing** or Android Back while the pad is visible to exit selection
+mode and restore normal button actions. A successful **Save** or **Load / Reload**
+still resets the active pad to its root menu.
+
+Hold **Edit Action Pad** for `450ms` to open the general configuration editor
+directly, without entering selection mode. Holding **Done editing** opens the
+same editor while keeping selection mode enabled. The control also exposes an
+**Open full Action Pad editor** accessibility action. It is not part of the YAML
+and remains available even if every configured button is removed or the host is
+disconnected. The general editor includes menus, groups, buttons, duplication,
+ordering/move controls, all button properties, and a preview. The preview can
+navigate menus but never sends commands or opens the Neovim keyboard. The
+existing Neovim session remains mounted while ordinary form inputs own keyboard
+focus.
 
 The primary YAML file lives on the connected Neovim host, not on Android.
 Choose an absolute host path or a path beginning with `~/`. The suggested path
@@ -171,6 +185,11 @@ action-pad text, including Nerd Font private-use characters. The editor and pad
 load it independently. The pad retains system typography while its faces are
 pending or unavailable; the editor waits for its four faces and uses system
 monospace if that load fails.
+
+Button settings include a searchable Nerd Font icon picker. Choosing an icon
+inserts its glyph at the current label cursor or replaces the selected label
+text; the YAML format remains unchanged because the glyph is stored directly
+in `label`. Set an explicit accessibility label when a button is icon-only.
 
 ## Touch cursor and software keyboard
 
@@ -301,15 +320,21 @@ CODEY_NVIM_BIN=/path/to/nvim pnpm exec vitest run packages/nvim-session/test/hos
 
 For physical-tablet acceptance, use a temporary host YAML file and verify:
 
-1. Load the starter, change a label/input/size, create and move a button, then
+1. Navigate to a nested menu, tap **Edit Action Pad**, and confirm pencil markers
+   appear. Tap or hold a button and confirm its whole-button editor opens
+   without running its configured actions. Close the editor and confirm
+   selection mode and the current menu remain. Check that **Done editing** and
+   Android Back each exit selection mode, and a `450ms` hold on **Edit Action Pad**
+   opens the general editor directly.
+2. Load the starter, change a label/input/size, create and move a button, then
    Save. Confirm the host file changed and the active pad returns to its root.
-2. Reload, then Export to a different path. Confirm the source stays linked;
+3. Reload, then Export to a different path. Confirm the source stays linked;
    exporting a later unsaved edit must not activate it or clear its dirty state.
-3. Change the source outside Codey and try Save. Confirm the app offers Reload
+4. Change the source outside Codey and try Save. Confirm the app offers Reload
    or Export without overwriting the external change.
-4. Disconnect, edit, and choose **Keep draft & close**. Reopen/restart and
+5. Disconnect, edit, and choose **Keep draft & close**. Reopen/restart and
    reconnect; the draft must remain local until an explicit Save.
-5. Repeat in portrait and landscape, including the smallest supported tablet
+6. Repeat in portrait and landscape, including the smallest supported tablet
    window with the keyboard visible. Confirm forms remain reachable and
    typing or previewing never changes the Neovim buffer. After leaving the
    editor, check the pad's tap/hold behavior and the normal Neovim IME.

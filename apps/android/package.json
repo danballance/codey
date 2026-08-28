@@ -14,6 +14,7 @@
     "prebuild:clean": "expo prebuild --clean --platform android",
     "export:android": "expo export --platform android --output-dir dist",
     "doctor": "expo-doctor",
+    "generate:nerd-font-catalog": "node ./scripts/generate-nerd-font-catalog.mjs",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit",

@@ -1,5 +1,5 @@
 import { act } from 'react'
-import { Alert, StyleSheet } from 'react-native'
+import { Alert, BackHandler, StyleSheet } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react-native'
 import type { HostDocument, HostDocumentWrite, RedrawBatch } from '@codey/nvim-session'
@@ -177,6 +177,18 @@ function connectionDouble(connectError?: Error): ConnectionDouble {
   }
 }
 
+function recoveryRecord(config: ActionPadConfig): string {
+  return JSON.stringify({
+    version: 1,
+    sourcePath: '/home/test/action-pad.yaml',
+    activeConfig: config,
+    draft: null,
+    idDrafts: {},
+    baseline: null,
+    pendingSave: null
+  })
+}
+
 afterEach(async () => {
   await act(async () => { await Promise.resolve() })
   cleanup()
@@ -213,7 +225,7 @@ describe('tablet client shell', () => {
     expect(mockedConnectionFactory).toHaveBeenCalledWith(DEFAULT_ENDPOINT)
     await act(async () => { restoreEndpoint(JSON.stringify({ host: 'previous.test', port: 7777 })) })
     expect(screen.getByLabelText('Neovim host').props.value).toBe(DEFAULT_ENDPOINT.host)
-    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' })) })
+    await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
     const editor = within(screen.getByTestId('action-pad-editor'))
     expect(editor.getByLabelText('Host YAML path').props.value).toBe('/home/test/.config/nvim/codey/action-pad.yaml')
     expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(false)
@@ -227,7 +239,7 @@ describe('tablet client shell', () => {
     const configRead = new Promise<string>((resolve) => { restoreConfig = resolve })
     getItem.mockImplementation((key) => key === actionPadStorageKey(endpoint) ? configRead : endpointRead)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
-    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
     expect(screen.queryByTestId('action-pad-editor')).toBeNull()
     await act(async () => { restoreEndpoint(JSON.stringify(endpoint)) })
     expect(getItem).toHaveBeenCalledWith(actionPadStorageKey(endpoint))
@@ -249,10 +261,211 @@ describe('tablet client shell', () => {
     expect(screen.getByText('Edit Action Pad · unsaved')).toBeTruthy()
   })
 
-  it('opens the configuration editor offline and isolates every preview action from Neovim', async () => {
+  it('selects an offline button without running its action or opening the Neovim keyboard', async () => {
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     await act(async () => { await Promise.resolve() })
     fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Done editing' }).props.accessibilityState.selected).toBe(true)
+    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Enter' })) })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    expect(editor.getByLabelText('Button ID').props.value).toBe('enter')
+    expect(editor.getByLabelText('Tap Neovim input').props.value).toBe('<CR>')
+    expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(true)
+    const nativeIme = jest.requireMock('../native/CodeyIme') as { __sendOrderedInput: jest.Mock; __focus: jest.Mock }
+    expect(nativeIme.__sendOrderedInput).not.toHaveBeenCalled()
+    expect(nativeIme.__focus).not.toHaveBeenCalled()
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+    fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeTruthy()
+    fireEvent.press(screen.getByRole('button', { name: 'Done editing' }))
+    expect(screen.getByRole('button', { name: 'Edit Action Pad' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Enter' }).props.accessibilityState.disabled).toBe(true)
+  })
+
+  it('returns to the selected submenu through editor entry, closing and rotation', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    fireEvent.press(screen.getByTestId('action-pad-leader'))
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    const pad = within(screen.getByTestId('action-pad-container'))
+    expect(pad.getByLabelText('Current action path: Leader')).toBeTruthy()
+    await act(async () => { fireEvent.press(pad.getByRole('button', { name: 'Edit Terminal' })) })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    expect(editor.getByLabelText('Button ID').props.value).toBe('terminal')
+    expect(editor.getByLabelText('Tap Neovim input').props.value).toBe(':terminal<CR>')
+    expect(pad.getByTestId('action-pad-terminal').props.accessibilityState.disabled).toBe(true)
+    fireEvent.press(pad.getByTestId('action-pad-terminal'))
+    screen.rerender(<TabletClient capability={tabletCapability(800, 1_280)} />)
+    expect(editor.getByLabelText('Button ID').props.value).toBe('terminal')
+    fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
+    expect(pad.getByLabelText('Current action path: Leader')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeTruthy()
+    expect(double.session.input).not.toHaveBeenCalled()
+    fireEvent.press(screen.getByRole('button', { name: 'Done editing' }))
+    fireEvent.press(pad.getByTestId('action-pad-terminal'))
+    await waitFor(() => expect(double.session.input).toHaveBeenCalledWith(':terminal<CR>'))
+    expect(pad.queryByLabelText('Current action path: Leader')).toBeNull()
+    expect(double.session.attach).toHaveBeenCalledTimes(1)
+    expect(double.session.close).not.toHaveBeenCalled()
+  })
+
+  it('keeps selection active but retains the existing root reset after Save', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    fireEvent.press(screen.getByTestId('action-pad-leader'))
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Terminal' })) })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    fireEvent.changeText(editor.getByLabelText('Button label'), 'Terminal session')
+    await act(async () => { fireEvent.press(editor.getByTestId('action-pad-editor-save')) })
+    expect(double.session.writeHostDocument).toHaveBeenCalledTimes(1)
+    expect(editor.getByLabelText('Button ID').props.value).toBe('escape')
+    fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Edit Esc' })).toBeTruthy()
+    expect(screen.queryByLabelText('Current action path: Leader')).toBeNull()
+    expect(double.session.input).not.toHaveBeenCalled()
+  })
+
+  it('keeps the saved pad visible and recovers unfinished draft fields on targeted reopening', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+    try {
+      const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+      await act(async () => { await Promise.resolve() })
+      fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+      await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Esc' })) })
+      const editor = within(screen.getByTestId('action-pad-editor'))
+      fireEvent.changeText(editor.getByLabelText('Button label'), 'Draft escape')
+      fireEvent.changeText(editor.getByLabelText('Button ID'), 'directory')
+      fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
+      expect(alert.mock.calls.at(-1)?.[0]).toBe('Unsaved Action Pad edits')
+      act(() => { alert.mock.calls.at(-1)?.[2]?.find((button) => button.text === 'Keep draft & close')?.onPress?.() })
+      expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+      expect(screen.getByText('Done editing · unsaved')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Edit Esc' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Edit Draft escape' })).toBeNull()
+      await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Esc' })) })
+      const reopened = within(screen.getByTestId('action-pad-editor'))
+      expect(reopened.getByLabelText('Button label').props.value).toBe('Draft escape')
+      expect(reopened.getByLabelText('Button ID').props.value).toBe('directory')
+      expect(reopened.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(true)
+      expect(mockedConnectionFactory).not.toHaveBeenCalled()
+    } finally {
+      alert.mockRestore()
+    }
+  })
+
+  it('opens the general editor on hold without also toggling selection on release', async () => {
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { await Promise.resolve() })
+    const control = screen.getByRole('button', { name: 'Edit Action Pad' })
+    await act(async () => {
+      fireEvent(control, 'pressIn')
+      fireEvent(control, 'longPress')
+      fireEvent.press(control)
+    })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    expect(editor.getByLabelText('Button ID').props.value).toBe('escape')
+    fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('button', { name: 'Done editing' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Edit Action Pad' })).toBeTruthy()
+  })
+
+  it('keeps the general editor accessible without a hold and from an empty pad', async () => {
+    const empty: ActionPadConfig = { version: 1, rootMenuId: 'empty', menus: [{ id: 'empty', label: 'Empty', groups: [] }] }
+    getItem.mockImplementation(async (key) => key === actionPadStorageKey(DEFAULT_ENDPOINT) ? recoveryRecord(empty) : null)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { await Promise.resolve() })
+    expect(within(screen.getByTestId('action-pad')).queryAllByRole('button')).toHaveLength(0)
+    const control = screen.getByRole('button', { name: 'Edit Action Pad' })
+    expect(control.props.accessibilityActions).toContainEqual({ name: 'openEditor', label: 'Open full Action Pad editor' })
+    await act(async () => { fireEvent(control, 'accessibilityAction', { nativeEvent: { actionName: 'openEditor' } }) })
+    fireEvent.press(within(screen.getByTestId('action-pad-editor')).getByRole('button', { name: 'Cancel' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    const done = screen.getByRole('button', { name: 'Done editing' })
+    await act(async () => {
+      fireEvent(done, 'pressIn')
+      fireEvent(done, 'longPress')
+      fireEvent.press(done)
+    })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    expect(editor.getByTestId('action-pad-menu-form')).toBeTruthy()
+    fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeTruthy()
+  })
+
+  it('exits selection on Android Back without discarding a recovered draft', async () => {
+    let back: Parameters<typeof BackHandler.addEventListener>[1] | undefined
+    const remove = jest.fn()
+    const listener = jest.spyOn(BackHandler, 'addEventListener').mockImplementation((_event, handler) => {
+      back = handler
+      return { remove }
+    })
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+    getItem.mockImplementation(async (key) => key === actionPadStorageKey(DEFAULT_ENDPOINT)
+      ? JSON.stringify({ ...JSON.parse(recoveryRecord(DEFAULT_ACTION_PAD_CONFIG)), draft: DEFAULT_ACTION_PAD_CONFIG, idDrafts: { 'menus[0].groups[0].buttons[0].id': '' } })
+      : null)
+    try {
+      const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+      await act(async () => { await Promise.resolve() })
+      fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+      expect(back).toBeDefined()
+      act(() => { expect(back?.({ type: 'hardwareBackPress', timeStamp: 0 })).toBe(true) })
+      expect(remove).toHaveBeenCalledTimes(1)
+      expect(screen.getByText('Edit Action Pad · unsaved')).toBeTruthy()
+      expect(alert).not.toHaveBeenCalled()
+      await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
+      expect(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button ID').props.value).toBe('')
+    } finally {
+      listener.mockRestore()
+      alert.mockRestore()
+    }
+  })
+
+  it.each([
+    { endpoint: DEFAULT_ENDPOINT, control: 'Done editing', changed: 'configuration' },
+    { endpoint: { host: 'another.test', port: 7777 }, control: 'Edit Action Pad', changed: 'endpoint' }
+  ])('rejects a targeted opening when recovery changes the $changed', async ({ endpoint, control }) => {
+    let finishEndpoint!: (value: string) => void
+    const endpointRead = new Promise<string>((resolve) => { finishEndpoint = resolve })
+    const replacement: ActionPadConfig = {
+      version: 1, rootMenuId: 'home', menus: [{ id: 'home', label: 'Home', groups: [{
+        id: 'leading', buttons: [{ id: 'escape', label: 'Recovered escape', tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' } }]
+      }] }]
+    }
+    getItem.mockImplementation((key) => key === 'codey.android.endpoint.v1' ? endpointRead : Promise.resolve(recoveryRecord(replacement)))
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Esc' }))
+    await act(async () => { finishEndpoint(JSON.stringify(endpoint)) })
+    expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+    expect(screen.getByText('The Action Pad changed before the button editor opened. Select the button again.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: control })).toBeTruthy()
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending targeted opening when selection mode is switched off', async () => {
+    let finishEndpoint!: (value: string) => void
+    const endpointRead = new Promise<string>((resolve) => { finishEndpoint = resolve })
+    getItem.mockImplementation((key) => key === 'codey.android.endpoint.v1' ? endpointRead : Promise.resolve(null))
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Esc' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Done editing' }))
+    await act(async () => { finishEndpoint(JSON.stringify(DEFAULT_ENDPOINT)) })
+    expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Edit Action Pad' })).toBeTruthy()
+  })
+
+  it('opens the configuration editor offline and isolates every preview action from Neovim', async () => {
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
     await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
     const editor = within(screen.getByTestId('action-pad-editor'))
     const preview = within(screen.getByTestId('action-pad-editor-preview'))
@@ -274,7 +487,7 @@ describe('tablet client shell', () => {
     try {
       const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
       await act(async () => { await Promise.resolve() })
-      fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+      fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
       await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
       fireEvent.changeText(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label'), 'Offline edit')
       fireEvent.press(within(screen.getByTestId('action-pad-editor')).getByRole('button', { name: 'Cancel' }))
@@ -282,7 +495,7 @@ describe('tablet client shell', () => {
       expect(keep).toBeDefined()
       act(() => { keep?.onPress?.() })
       expect(screen.queryByTestId('action-pad-editor')).toBeNull()
-      fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+      fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
       await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
       expect(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label').props.value).toBe('Offline edit')
       await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Connect configuration host' })) })
@@ -309,7 +522,7 @@ describe('tablet client shell', () => {
       __setOrderedPrefix: (segments: unknown[]) => void
     }
     nativeIme.__setOrderedPrefix([{ type: 'text', text: 'before editor' }])
-    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
     await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
     expect(nativeIme.__settleComposition).toHaveBeenCalledTimes(1)
     expect(double.session.input).toHaveBeenCalledWith('before editor')
@@ -352,7 +565,7 @@ describe('tablet client shell', () => {
     const screen = render(<TabletClient capability={tabletCapability(800, 1_280)} />)
     await act(async () => { await Promise.resolve() })
     await act(async () => { fireEvent.press(screen.getByText('Connect')) })
-    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' })) })
+    await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
     const editor = within(screen.getByTestId('action-pad-editor'))
     fireEvent.changeText(editor.getByLabelText('Host YAML path'), path)
     await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Load' })) })

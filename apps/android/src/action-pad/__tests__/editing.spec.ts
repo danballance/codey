@@ -142,6 +142,44 @@ describe('Action Pad edits', () => {
     expect(validateActionPadConfig(next)).toContainEqual({ path: 'menus[0].groups[0].buttons[0].tap', message: 'A button must define tap or longPress.' })
   })
 
+  it('duplicates every button field independently immediately after the source', () => {
+    const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
+    const original = editActionPad(config(), {
+      type: 'update-button', location,
+      patch: {
+        accessibilityLabel: 'Run input', accessibilityHint: 'Hold to open the child menu',
+        styles: { size: '1/4' }, longPress: { type: 'menu', menuId: 'child', after: 'root' }
+      }
+    })
+    const source = original.menus[0]!.groups[0]!.buttons[0]!
+    const before = JSON.stringify(original)
+
+    const next = editActionPad(original, { type: 'duplicate-button', location })
+    const buttons = next.menus[0]!.groups[0]!.buttons
+    const duplicate = buttons[1]!
+
+    expect(buttons.map((button) => button.id)).toEqual(['input', 'input-2', 'open'])
+    expect(duplicate).toEqual({ ...source, id: 'input-2', label: 'Input copy' })
+    expect(buttons[0]).toBe(source)
+    expect(duplicate).not.toBe(source)
+    expect(duplicate.tap).not.toBe(source.tap)
+    expect(duplicate.longPress).not.toBe(source.longPress)
+    expect(duplicate.styles).not.toBe(source.styles)
+    expect(JSON.stringify(original)).toBe(before)
+  })
+
+  it('generates duplicate IDs across the selected menu and through repeated duplication', () => {
+    const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
+    let next = editActionPad(config(), {
+      type: 'update-button', location: { menuIndex: 0, groupIndex: 1, buttonIndex: 0 }, patch: { id: 'input-2' }
+    })
+
+    next = editActionPad(next, { type: 'duplicate-button', location })
+    expect(next.menus[0]?.groups[0]?.buttons.map((button) => button.id)).toEqual(['input', 'input-3', 'open'])
+    next = editActionPad(next, { type: 'duplicate-button', location })
+    expect(next.menus[0]?.groups[0]?.buttons.map((button) => button.id)).toEqual(['input', 'input-4', 'input-3', 'open'])
+  })
+
   it('moves within a menu and across menus without cloning or changing the moved button', () => {
     const original = editActionPad(config(), { type: 'add-group', menuIndex: 2 })
     const moved = original.menus[0]!.groups[0]!.buttons[0]
@@ -179,5 +217,14 @@ describe('Action Pad edits', () => {
     expect(original.menus[0]?.groups[0]?.buttons).toHaveLength(2)
     expect(() => editActionPad(next, { type: 'delete-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 8 } })).toThrow(/no longer exists/)
     expect(() => editActionPad(next, { type: 'delete-menu', menuIndex: 9 })).toThrow(/no longer exists/)
+  })
+
+  it('rejects a stale duplicate location without changing the config', () => {
+    const original = config()
+    const before = JSON.stringify(original)
+    expect(() => editActionPad(original, {
+      type: 'duplicate-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 8 }
+    })).toThrow(/This button no longer exists/)
+    expect(JSON.stringify(original)).toBe(before)
   })
 })

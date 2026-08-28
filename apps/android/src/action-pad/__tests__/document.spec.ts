@@ -58,6 +58,7 @@ describe('action pad YAML document', () => {
     const groups = DEFAULT_ACTION_PAD_CONFIG.menus.flatMap((menu) => menu.groups)
     expect(groups).toHaveLength(24)
     expect(groups.flatMap((group) => group.buttons)).toHaveLength(90)
+    expect(ACTION_PAD_MENU.id).toBe(DEFAULT_ACTION_PAD_CONFIG.rootMenuId)
     expect(resolveActionPadConfig(parseActionPadConfig(defaultYaml))).toEqual(ACTION_PAD_MENU)
     expect(parseActionPadConfig(serializeActionPadConfig(DEFAULT_ACTION_PAD_CONFIG))).toEqual(DEFAULT_ACTION_PAD_CONFIG)
   })
@@ -96,7 +97,7 @@ describe('action pad YAML document', () => {
         tap: { type: 'input', nvimInput: '  <Esc>:echo "it\'s # λ"<CR>\n\t  ', after: 'stay' },
         longPress: { type: 'keyboard', after: 'root' }
       },
-      { id: 'hold', label: '⬆ 😀', styles: {}, longPress: { type: 'input', nvimInput: '{}: # \\ 2', after: 'root' } },
+      { id: 'hold', label: '⬆ 😀 \uf07c \u{f01c9}', styles: {}, longPress: { type: 'input', nvimInput: '{}: # \\ 2', after: 'root' } },
       { id: 'back', label: 'Back', tap: { type: 'back', after: 'stay' } }
     ])
     const text = serializeActionPadConfig(value)
