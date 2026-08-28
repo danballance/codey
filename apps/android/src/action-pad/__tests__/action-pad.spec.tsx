@@ -128,7 +128,7 @@ describe('ActionPad', () => {
     expect(within(portrait.getByTestId('action-pad-leading-row-1')).getByTestId(
       'action-pad-escape'
     )).toBeTruthy()
-    expect(within(portrait.getByTestId('action-pad-leading-row-2')).getByTestId(
+    expect(within(portrait.getByTestId('action-pad-leading-row-1')).getByTestId(
       'action-pad-command'
     )).toBeTruthy()
     expect(within(portrait.getByTestId('action-pad-trailing-row-1')).getByTestId(
@@ -187,6 +187,8 @@ describe('ActionPad', () => {
       'action-pad-directory',
       'action-pad-command',
       'action-pad-leader',
+      'action-pad-yank',
+      'action-pad-delete',
       'action-pad-motions',
       'action-pad-text-objects',
       'action-pad-down',
@@ -659,6 +661,26 @@ describe('ActionPad', () => {
     fireEvent.press(screen.getByTestId('action-pad-leader'))
     screen.rerender(<ActionPad {...initialProps} resetKey="reconnected" />)
     expect(screen.queryByTestId('action-pad-back')).toBeNull()
+  })
+
+  it('returns to the new root and replaces old actions when configuration changes', () => {
+    const props = actionPadProps()
+    const screen = render(<ActionPad {...props} />)
+    fireEvent.press(screen.getByTestId('action-pad-leader'))
+
+    const rootMenu: ActionMenu = {
+      label: 'Replacement',
+      groups: [{
+        id: 'new-group',
+        buttons: [{ id: 'new-action', label: 'New action', tap: input('fresh') }]
+      }]
+    }
+    screen.rerender(<ActionPad {...props} rootMenu={rootMenu} />)
+
+    expect(screen.queryByTestId('action-pad-back')).toBeNull()
+    expect(screen.queryByTestId('action-pad-search')).toBeNull()
+    fireEvent.press(screen.getByTestId('action-pad-new-action'))
+    expect(props.onInput).toHaveBeenCalledWith('fresh')
   })
 
   it('does not rebuild its button tree when redraw-facing props are unchanged', () => {

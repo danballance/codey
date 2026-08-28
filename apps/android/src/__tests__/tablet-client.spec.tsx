@@ -1,8 +1,8 @@
 import { act } from 'react'
-import { StyleSheet } from 'react-native'
+import { Alert, StyleSheet } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react-native'
-import type { RedrawBatch } from '@codey/nvim-session'
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react-native'
+import type { HostDocument, HostDocumentWrite, RedrawBatch } from '@codey/nvim-session'
 import {
   clearPerformanceRecords,
   configurePerformanceDiagnostics,
@@ -11,8 +11,12 @@ import {
 import type { DuplexTransport } from '@codey/transport'
 
 import { TabletClient } from '../TabletClient'
+import { DEFAULT_ACTION_PAD_CONFIG } from '../action-pad/config'
+import { parseActionPadConfig, serializeActionPadConfig, type ActionPadConfig } from '../action-pad/document'
+import { actionPadStorageKey } from '../action-pad/store'
 import type { MobileSession } from '../controller'
 import { createRuntimeConnection } from '../runtime-connection'
+import { DEFAULT_ENDPOINT } from '../endpoint'
 import { tabletCapability } from '../tablet'
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -146,6 +150,11 @@ function connectionDouble(connectError?: Error): ConnectionDouble {
     input: jest.fn(async (_keys: string): Promise<void> => undefined),
     inputMouse: jest.fn(async (): Promise<void> => undefined),
     resize: jest.fn(async (_width: number, _height: number): Promise<void> => undefined),
+    defaultActionPadPath: jest.fn(async () => '/home/test/.config/nvim/codey/action-pad.yaml'),
+    readHostDocument: jest.fn(async (path: string): Promise<HostDocument> => ({ path, resolvedPath: path, text: null, revision: null })),
+    writeHostDocument: jest.fn(async (request: HostDocumentWrite): Promise<HostDocument> => ({
+      path: request.path, resolvedPath: request.path, text: request.text, revision: 'saved'
+    })),
     onRedraw: jest.fn((listener: (batch: RedrawBatch) => void) => {
       redrawListener = listener
       return jest.fn()
@@ -168,7 +177,8 @@ function connectionDouble(connectError?: Error): ConnectionDouble {
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await act(async () => { await Promise.resolve() })
   cleanup()
   configurePerformanceDiagnostics({ enabled: false })
   clearPerformanceRecords()
@@ -192,10 +202,187 @@ beforeEach(() => {
 })
 
 describe('tablet client shell', () => {
-  it('keeps portrait and square workspaces stacked while grouping the landscape rail', () => {
+  it('does not replace a newly connected host when stored endpoint loading finishes late', async () => {
+    let restoreEndpoint!: (value: string) => void
+    const pending = new Promise<string>((resolve) => { restoreEndpoint = resolve })
+    getItem.mockImplementation((key) => key === 'codey.android.endpoint.v1' ? pending : Promise.resolve(null))
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    expect(mockedConnectionFactory).toHaveBeenCalledWith(DEFAULT_ENDPOINT)
+    await act(async () => { restoreEndpoint(JSON.stringify({ host: 'previous.test', port: 7777 })) })
+    expect(screen.getByLabelText('Neovim host').props.value).toBe(DEFAULT_ENDPOINT.host)
+    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' })) })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    expect(editor.getByLabelText('Host YAML path').props.value).toBe('/home/test/.config/nvim/codey/action-pad.yaml')
+    expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(false)
+  })
+
+  it('waits for cold-start recovery before mounting the editor with unfinished ID text', async () => {
+    const endpoint = { host: 'recovery.test', port: 6666 }
+    let restoreEndpoint!: (value: string) => void
+    let restoreConfig!: (value: string) => void
+    const endpointRead = new Promise<string>((resolve) => { restoreEndpoint = resolve })
+    const configRead = new Promise<string>((resolve) => { restoreConfig = resolve })
+    getItem.mockImplementation((key) => key === actionPadStorageKey(endpoint) ? configRead : endpointRead)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+    await act(async () => { restoreEndpoint(JSON.stringify(endpoint)) })
+    expect(getItem).toHaveBeenCalledWith(actionPadStorageKey(endpoint))
+    expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+    await act(async () => {
+      restoreConfig(JSON.stringify({
+        version: 1,
+        sourcePath: '/home/test/action-pad.yaml',
+        activeConfig: DEFAULT_ACTION_PAD_CONFIG,
+        draft: DEFAULT_ACTION_PAD_CONFIG,
+        idDrafts: { 'menus[0].groups[0].buttons[0].id': '' },
+        baseline: null,
+        pendingSave: null
+      }))
+    })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    expect(editor.getByLabelText('Button ID').props.value).toBe('')
+    expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(true)
+    expect(screen.getByText('Edit Action Pad · unsaved')).toBeTruthy()
+  })
+
+  it('opens the configuration editor offline and isolates every preview action from Neovim', async () => {
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    const preview = within(screen.getByTestId('action-pad-editor-preview'))
+    fireEvent.changeText(editor.getByLabelText('Button label'), 'Escape now')
+    expect(preview.getByText('Escape now')).toBeTruthy()
+    fireEvent.press(preview.getByTestId('action-pad-escape'))
+    fireEvent.press(preview.getByTestId('action-pad-keyboard'))
+    const nativeIme = jest.requireMock('../native/CodeyIme') as { __sendOrderedInput: jest.Mock; __focus: jest.Mock }
+    expect(nativeIme.__sendOrderedInput).not.toHaveBeenCalled()
+    expect(nativeIme.__focus).not.toHaveBeenCalled()
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+    expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(true)
+  })
+
+  it('keeps an offline draft when closing and can connect from inside the editor', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
+    try {
+      const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+      await act(async () => { await Promise.resolve() })
+      fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+      await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
+      fireEvent.changeText(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label'), 'Offline edit')
+      fireEvent.press(within(screen.getByTestId('action-pad-editor')).getByRole('button', { name: 'Cancel' }))
+      const keep = alert.mock.calls.at(-1)?.[2]?.find((button) => button.text === 'Keep draft & close')
+      expect(keep).toBeDefined()
+      act(() => { keep?.onPress?.() })
+      expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+      fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+      await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
+      expect(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label').props.value).toBe('Offline edit')
+      await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Connect configuration host' })) })
+      expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
+      expect(double.session.connect).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Connect configuration host' })).toBeNull())
+      expect(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label').props.value).toBe('Offline edit')
+      expect(double.session.writeHostDocument).not.toHaveBeenCalled()
+      expect(double.session.close).not.toHaveBeenCalled()
+    } finally {
+      alert.mockRestore()
+    }
+  })
+
+  it('settles composition on entry, keeps the session mounted, and never routes form input to it', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { await Promise.resolve() })
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+    const nativeIme = jest.requireMock('../native/CodeyIme') as {
+      __settleComposition: jest.Mock
+      __setOrderedPrefix: (segments: unknown[]) => void
+    }
+    nativeIme.__setOrderedPrefix([{ type: 'text', text: 'before editor' }])
+    fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
+    await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
+    expect(nativeIme.__settleComposition).toHaveBeenCalledTimes(1)
+    expect(double.session.input).toHaveBeenCalledWith('before editor')
+    const inputCount = jest.mocked(double.session.input).mock.calls.length
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    fireEvent.changeText(editor.getByLabelText('Tap Neovim input'), ':write<CR>')
+    fireEvent.press(within(screen.getByTestId('action-pad-editor-preview')).getByTestId('action-pad-escape'))
+    // Even a delayed native callback is ignored while ordinary form fields own focus.
+    fireEvent(screen.getByTestId('mock-codey-ime'), 'committedText', 'form text')
+    expect(double.session.input).toHaveBeenCalledTimes(inputCount)
+    expect(double.session.close).not.toHaveBeenCalled()
+    expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads, edits, saves, reloads and exports through the mounted host session', async () => {
+    const double = connectionDouble()
+    const path = '/home/test/pad.yaml'
+    const exportPath = '/home/test/pad-export.yaml'
+    const config: ActionPadConfig = {
+      version: 1, rootMenuId: 'home', menus: [{
+        id: 'home', label: 'Home', groups: [{
+          id: 'main', buttons: [{ id: 'escape', label: 'Esc', tap: { type: 'input', nvimInput: '<Esc>', after: 'root' } }]
+        }]
+      }]
+    }
+    let revision = 1
+    const files = new Map<string, HostDocument>([[path, {
+      path, resolvedPath: path, text: serializeActionPadConfig(config), revision: String(revision)
+    }]])
+    jest.mocked(double.session.readHostDocument).mockImplementation(async (filename) => files.get(filename) ?? {
+      path: filename, resolvedPath: filename, text: null, revision: null
+    })
+    jest.mocked(double.session.writeHostDocument).mockImplementation(async (request) => {
+      expect(request.expectedRevision).toBe(files.get(request.path)?.revision ?? null)
+      const document = { path: request.path, resolvedPath: request.path, text: request.text, revision: String(++revision) }
+      files.set(request.path, document)
+      return document
+    })
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(800, 1_280)} />)
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' })) })
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    fireEvent.changeText(editor.getByLabelText('Host YAML path'), path)
+    await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Load' })) })
+    expect(editor.getByLabelText('Button label').props.value).toBe('Esc')
+    const input = "  <Esc>:echo 'λ'<CR>\n\t "
+    fireEvent.changeText(editor.getByLabelText('Button label'), '001 λ')
+    fireEvent.changeText(editor.getByLabelText('Tap Neovim input'), input)
+    await act(async () => { fireEvent.press(editor.getByTestId('action-pad-editor-save')) })
+    expect(parseActionPadConfig(files.get(path)!.text!).menus[0]?.groups[0]?.buttons[0]).toMatchObject({
+      label: '001 λ', tap: { nvimInput: input }
+    })
+    await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Load / Reload' })) })
+    expect(editor.getByLabelText('Tap Neovim input').props.value).toBe(input)
+    fireEvent.press(editor.getByRole('button', { name: 'Export copy…' }))
+    fireEvent.changeText(editor.getByLabelText('Export YAML path'), exportPath)
+    await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Write exported copy' })) })
+    expect(files.get(exportPath)?.text).toBe(files.get(path)?.text)
+    expect(editor.getByLabelText('Host YAML path').props.value).toBe(path)
+    fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('action-pad-editor')).toBeNull()
+    expect(within(screen.getByTestId('action-pad')).getByText('001 λ')).toBeTruthy()
+    expect(double.session.input).not.toHaveBeenCalled()
+    expect(double.session.close).not.toHaveBeenCalled()
+  })
+
+  it('keeps portrait and square workspaces stacked while grouping the landscape rail', async () => {
     const portrait = render(
       <TabletClient capability={tabletCapability(800, 1_280)} />
     )
+    await act(async () => { await Promise.resolve() })
     expect(StyleSheet.flatten(portrait.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(8)
     expect(StyleSheet.flatten(portrait.getByTestId('tablet-client-workspace').props.style)).toMatchObject({
       flexDirection: 'column'
@@ -207,6 +394,7 @@ describe('tablet client shell', () => {
     const square = render(
       <TabletClient capability={tabletCapability(840, 840)} />
     )
+    await act(async () => { await Promise.resolve() })
     expect(StyleSheet.flatten(square.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(16)
     expect(StyleSheet.flatten(square.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('column')
     square.unmount()
@@ -214,6 +402,7 @@ describe('tablet client shell', () => {
     const landscape = render(
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
+    await act(async () => { await Promise.resolve() })
     expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-workspace').props.style)).toMatchObject({
       flexDirection: 'row'
     })

@@ -1,0 +1,243 @@
+import type { ActionPadConfig } from './document'
+
+export type EditableMenu = ActionPadConfig['menus'][number]
+export type EditableGroup = EditableMenu['groups'][number]
+export type EditableButton = EditableGroup['buttons'][number]
+export type EditableInteraction = NonNullable<EditableButton['tap']>
+
+export interface GroupLocation {
+  readonly menuIndex: number
+  readonly groupIndex: number
+}
+
+export interface ButtonLocation extends GroupLocation {
+  readonly buttonIndex: number
+}
+
+export type ActionPadEdit =
+  | { readonly type: 'add-menu' }
+  | { readonly type: 'update-menu'; readonly menuIndex: number; readonly patch: Partial<Pick<EditableMenu, 'id' | 'label'>> }
+  | { readonly type: 'delete-menu'; readonly menuIndex: number }
+  | { readonly type: 'reorder-menu'; readonly menuIndex: number; readonly direction: -1 | 1 }
+  | { readonly type: 'set-root-menu'; readonly menuIndex: number }
+  | { readonly type: 'add-group'; readonly menuIndex: number }
+  | { readonly type: 'update-group'; readonly location: GroupLocation; readonly id: string }
+  | { readonly type: 'delete-group'; readonly location: GroupLocation }
+  | { readonly type: 'reorder-group'; readonly location: GroupLocation; readonly direction: -1 | 1 }
+  | { readonly type: 'add-button'; readonly location: GroupLocation }
+  | { readonly type: 'update-button'; readonly location: ButtonLocation; readonly patch: Partial<EditableButton> }
+  | { readonly type: 'delete-button'; readonly location: ButtonLocation }
+  | { readonly type: 'reorder-button'; readonly location: ButtonLocation; readonly direction: -1 | 1 }
+  | { readonly type: 'move-button'; readonly location: ButtonLocation; readonly destination: GroupLocation }
+
+export class ActionPadEditError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ActionPadEditError'
+  }
+}
+
+/** IDs are generated once when an item is created, never derived from its label. */
+export function createActionPadId(prefix: string, existingIds: readonly string[]): string {
+  const ids = new Set(existingIds)
+  if (!ids.has(prefix)) return prefix
+  let suffix = 2
+  while (ids.has(`${prefix}-${suffix}`)) suffix += 1
+  return `${prefix}-${suffix}`
+}
+
+export function menuDeletionReason(config: ActionPadConfig, menuIndex: number): string | undefined {
+  const menu = requireMenu(config, menuIndex)
+  if (config.rootMenuId === menu.id) return 'Choose another root menu before deleting this menu.'
+  const references = config.menus.filter((candidate, index) => index !== menuIndex &&
+    candidate.groups.some((group) => group.buttons.some((button) =>
+      [button.tap, button.longPress].some((action) => action?.type === 'menu' && action.menuId === menu.id)
+    ))
+  )
+  if (references.length > 0) {
+    return `Remove menu links from ${references.map((reference) => reference.label || reference.id).join(', ')} before deleting this menu.`
+  }
+  return undefined
+}
+
+/** Incomplete drafts are allowed; referentially ambiguous edits are not. */
+export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): ActionPadConfig {
+  switch (edit.type) {
+    case 'add-menu':
+      return {
+        ...config,
+        menus: [...config.menus, {
+          id: createActionPadId('menu', config.menus.map((menu) => menu.id)),
+          label: 'New menu',
+          groups: []
+        }]
+      }
+    case 'update-menu': {
+      const menu = requireMenu(config, edit.menuIndex)
+      const newId = edit.patch.id ?? menu.id
+      if (newId !== menu.id && config.menus.some((candidate, index) => index !== edit.menuIndex && candidate.id === newId)) {
+        throw new ActionPadEditError(`A menu with ID “${newId}” already exists. Choose a unique ID.`)
+      }
+      const renamed = replaceMenu(config, edit.menuIndex, { ...menu, ...edit.patch })
+      if (newId === menu.id) return renamed
+      return {
+        ...renamed,
+        rootMenuId: renamed.rootMenuId === menu.id ? newId : renamed.rootMenuId,
+        menus: renamed.menus.map((candidate) => ({
+          ...candidate,
+          groups: candidate.groups.map((group) => ({
+            ...group,
+            buttons: group.buttons.map((button) => {
+              const updated = { ...button }
+              if (button.tap?.type === 'menu' && button.tap.menuId === menu.id) {
+                updated.tap = { ...button.tap, menuId: newId }
+              }
+              if (button.longPress?.type === 'menu' && button.longPress.menuId === menu.id) {
+                updated.longPress = { ...button.longPress, menuId: newId }
+              }
+              return updated
+            })
+          }))
+        }))
+      }
+    }
+    case 'delete-menu': {
+      const reason = menuDeletionReason(config, edit.menuIndex)
+      if (reason) throw new ActionPadEditError(reason)
+      return { ...config, menus: config.menus.filter((_, index) => index !== edit.menuIndex) }
+    }
+    case 'reorder-menu':
+      requireMenu(config, edit.menuIndex)
+      return { ...config, menus: reorder(config.menus, edit.menuIndex, edit.direction) }
+    case 'set-root-menu':
+      return { ...config, rootMenuId: requireMenu(config, edit.menuIndex).id }
+    case 'add-group': {
+      const menu = requireMenu(config, edit.menuIndex)
+      return replaceMenu(config, edit.menuIndex, {
+        ...menu,
+        groups: [...menu.groups, { id: createActionPadId('group', menu.groups.map((group) => group.id)), buttons: [] }]
+      })
+    }
+    case 'update-group': {
+      const menu = requireMenu(config, edit.location.menuIndex)
+      const group = requireGroup(config, edit.location)
+      if (menu.groups.some((candidate, index) => index !== edit.location.groupIndex && candidate.id === edit.id)) {
+        throw new ActionPadEditError(`A group with ID “${edit.id}” already exists in this menu.`)
+      }
+      return replaceGroup(config, edit.location, { ...group, id: edit.id })
+    }
+    case 'delete-group': {
+      const menu = requireMenu(config, edit.location.menuIndex)
+      requireGroup(config, edit.location)
+      return replaceMenu(config, edit.location.menuIndex, {
+        ...menu,
+        groups: menu.groups.filter((_, index) => index !== edit.location.groupIndex)
+      })
+    }
+    case 'reorder-group': {
+      const menu = requireMenu(config, edit.location.menuIndex)
+      requireGroup(config, edit.location)
+      return replaceMenu(config, edit.location.menuIndex, {
+        ...menu,
+        groups: reorder(menu.groups, edit.location.groupIndex, edit.direction)
+      })
+    }
+    case 'add-button': {
+      const menu = requireMenu(config, edit.location.menuIndex)
+      const group = requireGroup(config, edit.location)
+      return replaceGroup(config, edit.location, {
+        ...group,
+        buttons: [...group.buttons, {
+          id: createActionPadId('button', menu.groups.flatMap((candidate) => candidate.buttons.map((button) => button.id))),
+          label: 'New button',
+          tap: { type: 'input', nvimInput: '', after: 'stay' }
+        }]
+      })
+    }
+    case 'update-button': {
+      const group = requireGroup(config, edit.location)
+      const button = requireButton(config, edit.location)
+      if (edit.patch.id !== undefined && group.buttons.some((candidate, index) => index !== edit.location.buttonIndex && candidate.id === edit.patch.id)) {
+        throw new ActionPadEditError(`A button with ID “${edit.patch.id}” already exists in this group.`)
+      }
+      const updated = { ...button, ...edit.patch }
+      for (const optional of ['tap', 'longPress', 'accessibilityLabel', 'accessibilityHint', 'styles'] as const) {
+        if (updated[optional] === undefined) delete updated[optional]
+      }
+      return replaceGroup(config, edit.location, {
+        ...group,
+        buttons: group.buttons.map((candidate, index) => index === edit.location.buttonIndex ? updated : candidate)
+      })
+    }
+    case 'delete-button': {
+      const group = requireGroup(config, edit.location)
+      requireButton(config, edit.location)
+      return replaceGroup(config, edit.location, {
+        ...group,
+        buttons: group.buttons.filter((_, index) => index !== edit.location.buttonIndex)
+      })
+    }
+    case 'reorder-button': {
+      const group = requireGroup(config, edit.location)
+      requireButton(config, edit.location)
+      return replaceGroup(config, edit.location, {
+        ...group,
+        buttons: reorder(group.buttons, edit.location.buttonIndex, edit.direction)
+      })
+    }
+    case 'move-button': {
+      const source = requireGroup(config, edit.location)
+      const destination = requireGroup(config, edit.destination)
+      const button = requireButton(config, edit.location)
+      if (edit.location.menuIndex === edit.destination.menuIndex && edit.location.groupIndex === edit.destination.groupIndex) return config
+      if (destination.buttons.some((candidate) => candidate.id === button.id)) {
+        throw new ActionPadEditError(`The destination already has a button with ID “${button.id}”. Rename this button before moving it.`)
+      }
+      const removed = replaceGroup(config, edit.location, {
+        ...source,
+        buttons: source.buttons.filter((_, index) => index !== edit.location.buttonIndex)
+      })
+      return replaceGroup(removed, edit.destination, { ...destination, buttons: [...destination.buttons, button] })
+    }
+  }
+}
+
+function requireMenu(config: ActionPadConfig, index: number): EditableMenu {
+  const menu = config.menus[index]
+  if (!menu) throw new ActionPadEditError('This menu no longer exists. Select another menu.')
+  return menu
+}
+
+function requireGroup(config: ActionPadConfig, location: GroupLocation): EditableGroup {
+  const group = requireMenu(config, location.menuIndex).groups[location.groupIndex]
+  if (!group) throw new ActionPadEditError('This group no longer exists. Select another group.')
+  return group
+}
+
+function requireButton(config: ActionPadConfig, location: ButtonLocation): EditableButton {
+  const button = requireGroup(config, location).buttons[location.buttonIndex]
+  if (!button) throw new ActionPadEditError('This button no longer exists. Select another button.')
+  return button
+}
+
+function replaceMenu(config: ActionPadConfig, index: number, menu: EditableMenu): ActionPadConfig {
+  return { ...config, menus: config.menus.map((candidate, candidateIndex) => candidateIndex === index ? menu : candidate) }
+}
+
+function replaceGroup(config: ActionPadConfig, location: GroupLocation, group: EditableGroup): ActionPadConfig {
+  const menu = requireMenu(config, location.menuIndex)
+  return replaceMenu(config, location.menuIndex, {
+    ...menu,
+    groups: menu.groups.map((candidate, index) => index === location.groupIndex ? group : candidate)
+  })
+}
+
+function reorder<T>(items: readonly T[], index: number, direction: -1 | 1): readonly T[] {
+  const targetIndex = index + direction
+  if (targetIndex < 0 || targetIndex >= items.length) return items
+  const reordered = [...items]
+  const [item] = reordered.splice(index, 1)
+  if (item === undefined) return items
+  reordered.splice(targetIndex, 0, item)
+  return reordered
+}

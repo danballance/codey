@@ -1,4 +1,4 @@
-import type { RedrawBatch } from '@codey/nvim-session'
+import type { HostDocument, HostDocumentWrite, RedrawBatch } from '@codey/nvim-session'
 import {
   clearPerformanceRecords,
   configurePerformanceDiagnostics,
@@ -26,6 +26,11 @@ function connectionDouble() {
     input: jest.fn(async (_keys: string) => undefined),
     inputMouse: jest.fn(async () => undefined),
     resize: jest.fn(async (_width: number, _height: number): Promise<void> => undefined),
+    defaultActionPadPath: jest.fn(async () => '/home/test/.config/nvim/codey/action-pad.yaml'),
+    readHostDocument: jest.fn(async (path: string): Promise<HostDocument> => ({ path, resolvedPath: path, text: null, revision: null })),
+    writeHostDocument: jest.fn(async (request: HostDocumentWrite): Promise<HostDocument> => ({
+      path: request.path, resolvedPath: request.path, text: request.text, revision: 'saved'
+    })),
     onRedraw: jest.fn((listener: (batch: RedrawBatch) => void) => {
       redrawListener = listener
       return removeRedraw
@@ -105,6 +110,64 @@ describe('TabletClientController', () => {
   afterEach(() => {
     configurePerformanceDiagnostics({ enabled: false })
     clearPerformanceRecords()
+  })
+
+  it('limits host file access to the current endpoint and keeps document errors nonfatal', async () => {
+    const double = connectionDouble()
+    const controller = new TabletClientController(() => double)
+    await expect(controller.readHostDocument(endpoint, '/config.yaml')).rejects.toThrow('Connect')
+    await controller.connect(endpoint)
+    await expect(controller.defaultActionPadPath({ host: 'another.host', port: 6666 })).rejects.toThrow('Connect')
+    await expect(controller.defaultActionPadPath(endpoint)).resolves.toContain('/codey/action-pad.yaml')
+    double.session.readHostDocument.mockRejectedValueOnce(new Error('Permission denied'))
+    await expect(controller.readHostDocument(endpoint, '/private.yaml')).rejects.toThrow('Permission denied')
+    expect(controller.getState().phase).toBe('connected')
+    expect(double.session.close).not.toHaveBeenCalled()
+    await controller.writeHostDocument(endpoint, {
+      path: '/config.yaml', text: 'version: 1\n', expectedRevision: null
+    })
+    expect(double.session.writeHostDocument).toHaveBeenCalledWith({
+      path: '/config.yaml', text: 'version: 1\n', expectedRevision: null
+    })
+    expect(double.session.input).not.toHaveBeenCalled()
+    await controller.dispose()
+  })
+
+  it('rejects host file responses from an old connection generation', async () => {
+    const first = connectionDouble()
+    const second = connectionDouble()
+    const factory = jest.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+    const controller = new TabletClientController(factory)
+    let finish!: (document: HostDocument) => void
+    first.session.readHostDocument.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    await controller.connect(endpoint)
+    const reading = controller.readHostDocument(endpoint, '/old.yaml')
+    await controller.connect(endpoint)
+    finish({ path: '/old.yaml', resolvedPath: '/old.yaml', text: 'old', revision: '1' })
+    await expect(reading).rejects.toThrow('connection changed')
+    expect(controller.getState().phase).toBe('connected')
+    await controller.dispose()
+  })
+
+  it('times out a document wait without closing the session or replaying a write', async () => {
+    jest.useFakeTimers()
+    const double = connectionDouble()
+    const controller = new TabletClientController(() => double)
+    try {
+      await controller.connect(endpoint)
+      double.session.writeHostDocument.mockReturnValueOnce(new Promise(() => undefined))
+      const saving = controller.writeHostDocument(endpoint, {
+        path: '/config.yaml', text: 'version: 1\n', expectedRevision: null
+      })
+      const rejected = expect(saving).rejects.toThrow('timed out')
+      await jest.advanceTimersByTimeAsync(15_000)
+      await rejected
+      expect(double.session.writeHostDocument).toHaveBeenCalledTimes(1)
+      expect(controller.getState().phase).toBe('connected')
+    } finally {
+      await controller.dispose()
+      jest.useRealTimers()
+    }
   })
 
   it('connects one session, attaches the current grid, sends input, and resizes', async () => {

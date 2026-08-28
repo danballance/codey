@@ -3,7 +3,22 @@ export {
   type ActionPadPlacement,
   type ActionPadProps
 } from './ActionPad'
-export { ACTION_PAD_MENU } from './config'
+export { ACTION_PAD_MENU, DEFAULT_ACTION_PAD_CONFIG } from './config'
+export {
+  ACTION_PAD_CONFIG_MAX_BYTES,
+  ActionPadConfigError,
+  isActionPadConfigShape,
+  parseActionPadConfig,
+  resolveActionPadConfig,
+  serializeActionPadConfig,
+  validateActionPadConfig,
+  type ActionMenuDefinition,
+  type ActionMenuDefinitionButton,
+  type ActionMenuDefinitionGroup,
+  type ActionMenuDefinitionInteraction,
+  type ActionPadConfig,
+  type ConfigIssue
+} from './document'
 export {
   ACTION_PAD_LONG_PRESS_MS,
   type ActionAfter,

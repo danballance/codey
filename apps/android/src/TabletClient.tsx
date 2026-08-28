@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
@@ -9,6 +11,7 @@ import {
   View,
   type LayoutChangeEvent
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import {
   createPerformanceInputSample,
   performanceDiagnosticsEnabled,
@@ -19,7 +22,10 @@ import {
   type PerformanceTags
 } from '@codey/perf'
 
-import { ActionPad, ACTION_PAD_MENU } from './action-pad'
+import { ActionPad } from './action-pad'
+import { ActionPadEditor } from './action-pad/ActionPadEditor'
+import { resolveActionPadConfig, type ActionPadConfig } from './action-pad/document'
+import { ActionPadConfigStore } from './action-pad/store'
 import { TabletClientController } from './controller'
 import { EditorCanvas } from './editor/EditorCanvas'
 import { endpointStore } from './endpoint-store'
@@ -66,7 +72,12 @@ interface PendingMouseInput {
   readonly position: GridCellPosition
 }
 
-type PendingOrderedInput = PendingActionInput | PendingMouseInput
+interface PendingEditorTransition {
+  readonly kind: 'editor-transition'
+  readonly resolve: () => void
+}
+
+type PendingOrderedInput = PendingActionInput | PendingMouseInput | PendingEditorTransition
 
 interface NativeInputTiming {
   readonly deliveredAtMs?: number
@@ -79,6 +90,14 @@ const LANDSCAPE_ACTION_PAD_WIDTH = 336
 export function TabletClient({ capability }: TabletClientProps) {
   const [controller] = useState(() => new TabletClientController(createRuntimeConnection))
   const client = useSyncExternalStore(controller.subscribe, controller.getState, controller.getState)
+  const [actionPadStore] = useState(() => new ActionPadConfigStore(controller))
+  const actionPadState = useSyncExternalStore(actionPadStore.subscribe, actionPadStore.getState, actionPadStore.getState)
+  const rootMenu = useMemo(() => resolveActionPadConfig(actionPadState.activeConfig), [actionPadState.activeConfig])
+  const [editingActionPad, setEditingActionPad] = useState(false)
+  const editingActionPadRef = useRef(false)
+  const openingActionPadEditor = useRef(false)
+  const actionPadInitialization = useRef<Promise<void>>(Promise.resolve())
+  const endpointSelectionStarted = useRef(false)
   const [host, setHost] = useState(DEFAULT_ENDPOINT.host)
   const [port, setPort] = useState(String(DEFAULT_ENDPOINT.port))
   const [formError, setFormError] = useState('')
@@ -95,16 +114,19 @@ export function TabletClient({ capability }: TabletClientProps) {
 
   useEffect(() => {
     let mounted = true
-    void endpointStore.load().then((endpoint) => {
-      if (!mounted) return
+    actionPadInitialization.current = endpointStore.load().then(async (endpoint) => {
+      // A connection chosen during startup owns its endpoint and recovery data;
+      // a slower storage read must not replace it with the previous host.
+      if (!mounted || endpointSelectionStarted.current) return
       setHost(endpoint.host)
       setPort(String(endpoint.port))
+      await actionPadStore.selectEndpoint(endpoint)
     })
     return () => {
       mounted = false
       void controller.dispose()
     }
-  }, [controller])
+  }, [actionPadStore, controller])
 
   const onEditorLayout = useCallback(
     (event: LayoutChangeEvent) => {
@@ -138,12 +160,14 @@ export function TabletClient({ capability }: TabletClientProps) {
 
     try {
       const endpoint = validateEndpoint(host, port)
+      endpointSelectionStarted.current = true
       void endpointStore.save(endpoint).catch(() => undefined)
+      void actionPadStore.selectEndpoint(endpoint)
       void controller.connect(endpoint)
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : 'Invalid connection details')
     }
-  }, [client.phase, controller, host, port])
+  }, [actionPadStore, client.phase, controller, host, port])
 
   const submitControllerInput = useCallback(
     (keys: string, tags: PerformanceTags): Promise<void> => {
@@ -156,6 +180,7 @@ export function TabletClient({ capability }: TabletClientProps) {
 
   const submitCommittedText = useCallback(
     (text: string, metadata?: CodeyImeEventMetadata) => {
+      if (editingActionPadRef.current) return
       if (text.length === 0) return
       const isFirstKeyAfterFocus = consumeFirstKeyAfterFocus(firstKeyAfterFocus)
       const timing = nativeInputTiming(metadata?.receivedAtUptimeMs)
@@ -181,6 +206,7 @@ export function TabletClient({ capability }: TabletClientProps) {
 
   const submitHardwareKey = useCallback(
     (event: CodeyImeKeyEvent) => {
+      if (editingActionPadRef.current) return
       const isFirstKeyAfterFocus = consumeFirstKeyAfterFocus(firstKeyAfterFocus)
       const timing = nativeInputTiming(event.receivedAtUptimeMs)
       const tags: PerformanceTags = {
@@ -215,6 +241,10 @@ export function TabletClient({ capability }: TabletClientProps) {
   const submitOrderedInput = useCallback(
     (event: CodeyImeOrderedInputEvent) => {
       const pending = pendingOrderedInputs.current.shift()
+      if (editingActionPadRef.current) {
+        if (pending?.kind === 'editor-transition') pending.resolve()
+        return
+      }
       const actionPending = pending?.kind === 'action' ? pending : undefined
       const keys = orderedBatchToNvimInput(event)
       const tags: PerformanceTags = {
@@ -257,6 +287,9 @@ export function TabletClient({ capability }: TabletClientProps) {
         }
       })
       orderedDispatchTail.current = dispatch.catch(() => undefined)
+      if (pending?.kind === 'editor-transition') {
+        void orderedDispatchTail.current.then(pending.resolve)
+      }
     },
     [controller, submitControllerInput]
   )
@@ -313,14 +346,102 @@ export function TabletClient({ capability }: TabletClientProps) {
   const mode = client.snapshot?.mode.name.toUpperCase() || '—'
 
   useEffect(() => {
+    void actionPadStore.setConnected(connected)
+  }, [actionPadStore, connected])
+
+  useEffect(() => {
     orderedDispatchEpoch.current += 1
     orderedDispatchTail.current = Promise.resolve()
     if (!connected) {
+      for (const pending of pendingOrderedInputs.current) {
+        if (pending.kind === 'editor-transition') pending.resolve()
+      }
       pendingOrderedInputs.current = []
       firstKeyAfterFocus.current = false
       void imeRef.current?.blur().catch(() => undefined)
     }
   }, [connected])
+
+  const openActionPadEditor = useCallback(async () => {
+    if (openingActionPadEditor.current || editingActionPadRef.current) return
+    openingActionPadEditor.current = true
+    try {
+      // ID text is initialized when the editor mounts. Await recovery first so
+      // opening immediately after launch cannot replace recovered edits.
+      await actionPadInitialization.current
+      await actionPadStore.selectEndpoint(actionPadStore.getState().endpoint)
+      // Finish the editor's existing composition before giving ordinary form
+      // inputs focus. The configuration screen never shares the Neovim IME.
+      if (controller.getState().phase === 'connected' && imeRef.current !== null) {
+        let finish!: () => void
+        const settled = new Promise<void>((resolve) => { finish = resolve })
+        const pending: PendingEditorTransition = { kind: 'editor-transition', resolve: finish }
+        pendingOrderedInputs.current.push(pending)
+        try {
+          await imeRef.current.settleComposition()
+          await settled
+        } catch {
+          const index = pendingOrderedInputs.current.indexOf(pending)
+          if (index >= 0) pendingOrderedInputs.current.splice(index, 1)
+          throw new Error('Could not settle editor input before opening the Action Pad editor.')
+        }
+      }
+      editingActionPadRef.current = true
+      await imeRef.current?.blur()
+      setEditingActionPad(true)
+    } catch (reason) {
+      editingActionPadRef.current = false
+      setFormError(reason instanceof Error ? reason.message : 'Could not open the Action Pad editor')
+    } finally {
+      openingActionPadEditor.current = false
+    }
+  }, [actionPadStore, controller])
+
+  const closeActionPadEditor = useCallback(() => {
+    const state = actionPadStore.getState()
+    if (state.busy) return
+    const close = () => {
+      setEditingActionPad(false)
+      editingActionPadRef.current = false
+    }
+    const discard = () => {
+      actionPadStore.discardDraft()
+      close()
+    }
+    if (state.dirty) {
+      Alert.alert('Unsaved Action Pad edits', 'Keep the draft for later, or discard it. Neither option changes the active pad or host file.', [
+        { text: 'Keep editing', style: 'cancel' },
+        { text: 'Keep draft & close', onPress: close },
+        { text: 'Discard', style: 'destructive', onPress: discard }
+      ])
+    } else close()
+  }, [actionPadStore])
+
+  const connectActionPadHost = useCallback(() => {
+    const endpoint = actionPadStore.getState().endpoint
+    setHost(endpoint.host)
+    setPort(String(endpoint.port))
+    void endpointStore.save(endpoint).catch(() => undefined)
+    void controller.connect(endpoint)
+  }, [actionPadStore, controller])
+
+  const loadActionPad = useCallback(async (path: string) => {
+    if (actionPadStore.getState().dirty && !await confirmAction(
+      'Replace unsaved edits?',
+      'Loading a valid host file will replace this draft. Buttons can execute Neovim commands; load only files you trust.',
+      'Load file'
+    )) return
+    await actionPadStore.load(path)
+  }, [actionPadStore])
+
+  const saveActionPad = useCallback((path: string) => actionPadStore.save(path), [actionPadStore])
+  const changeActionPad = useCallback((config: ActionPadConfig) => actionPadStore.setDraft(config), [actionPadStore])
+  const changeActionPadIds = useCallback((ids: Readonly<Record<string, string>>) => actionPadStore.setIdDrafts(ids), [actionPadStore])
+  const exportActionPad = useCallback((path: string) => actionPadStore.export(path, (destination) => confirmAction(
+    'Replace exported file?',
+    `Export will replace ${destination}. Your active file and unsaved status will stay unchanged.`,
+    'Replace'
+  )), [actionPadStore])
 
   return (
     <KeyboardAvoidingView
@@ -432,18 +553,80 @@ export function TabletClient({ capability }: TabletClientProps) {
           <ActionPad
             compact={compactActionPad}
             dimensions={`${client.gridSize.columns} × ${client.gridSize.rows} · ${Math.round(capability.width)} × ${Math.round(capability.height)}dp`}
-            enabled={connected}
+            enabled={connected && !editingActionPad}
             mode={mode}
             onInput={sendOrderedActionInput}
             onKeyboardPress={focusKeyboardIme}
             placement={landscape ? 'right' : 'below'}
             resetKey={client.phase}
-            rootMenu={ACTION_PAD_MENU}
+            rootMenu={rootMenu}
           />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Edit Action Pad"
+            onPress={() => { void openActionPadEditor() }}
+            style={({ pressed }) => [styles.editActionPadButton, pressed && styles.pressed]}
+          >
+            <Text style={styles.editActionPadText}>Edit Action Pad{actionPadState.dirty ? ' · unsaved' : ''}</Text>
+          </Pressable>
+          {actionPadState.error || actionPadState.recoveryWarning ? (
+            <Text accessibilityRole="alert" style={styles.actionPadNotice}>
+              {actionPadState.recoveryWarning || actionPadState.message}
+            </Text>
+          ) : null}
         </View>
       </View>
+      <Modal
+        animationType="slide"
+        onRequestClose={closeActionPadEditor}
+        supportedOrientations={['portrait', 'landscape']}
+        visible={editingActionPad}
+      >
+        <SafeAreaView style={styles.configScreen}>
+          <View style={styles.configHostBar}>
+            <Text style={styles.configHost}>
+              {actionPadState.endpoint.host}:{actionPadState.endpoint.port} · {connected ? 'Connected' : 'Offline editing'}
+            </Text>
+            {!connected ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Connect configuration host"
+                disabled={connecting}
+                onPress={connectActionPadHost}
+                style={[styles.editActionPadButton, connecting && styles.disabled]}
+              >
+                <Text style={styles.editActionPadText}>{connecting ? 'Connecting…' : 'Connect host'}</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {editingActionPad ? <ActionPadEditor
+            busy={actionPadState.busy}
+            config={actionPadState.draft}
+            connected={connected}
+            dirty={actionPadState.dirty}
+            initialIdDrafts={actionPadState.idDrafts}
+            message={[actionPadState.message, actionPadState.recoveryWarning].filter(Boolean).join('\n')}
+            onCancel={closeActionPadEditor}
+            onChange={changeActionPad}
+            onIdDraftsChange={changeActionPadIds}
+            onExport={exportActionPad}
+            onLoad={loadActionPad}
+            onSave={saveActionPad}
+            sourcePath={actionPadState.pendingSavePath ?? actionPadState.sourcePath}
+          /> : null}
+        </SafeAreaView>
+      </Modal>
     </KeyboardAvoidingView>
   )
+}
+
+function confirmAction(title: string, message: string, action: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(title, message, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: action, style: 'destructive', onPress: () => resolve(true) }
+    ], { cancelable: true, onDismiss: () => resolve(false) })
+  })
 }
 
 function orderedBatchToNvimInput(event: CodeyImeOrderedInputEvent): string {
@@ -526,6 +709,43 @@ function statusDotStyle(phase: string) {
 }
 
 const styles = StyleSheet.create({
+  configScreen: {
+    flex: 1,
+    backgroundColor: '#0b0e12'
+  },
+  configHost: {
+    flex: 1,
+    color: '#a6b1c2',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    fontSize: 12
+  },
+  configHostBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: 12
+  },
+  editActionPadButton: {
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#353b52',
+    borderRadius: 8,
+    backgroundColor: '#1b2030'
+  },
+  editActionPadText: {
+    color: '#b4caff',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  actionPadNotice: {
+    color: '#f0bd76',
+    fontSize: 12,
+    paddingVertical: 4
+  },
   screen: {
     flex: 1,
     backgroundColor: '#0b0e12'

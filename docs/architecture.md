@@ -124,7 +124,7 @@ Keyboard interaction for opening it.
 
 ### Contextual action pad
 
-The Android command area is a small interpreter for an app-local tree of menus,
+The Android command area is a small interpreter for a validated tree of menus,
 ordered groups, buttons, and interactions. Group IDs are arbitrary configuration
 labels with no built-in placement semantics. A button configures `tap`,
 `longPress`, or both from the same interaction union: direct Neovim input,
@@ -162,8 +162,37 @@ a general React Native style passthrough.
 
 The current Neovim mode and menu breadcrumb are projections in the action pad,
 not a second Neovim state machine. Hardware-key input remains independent of the
-touch-menu path. The action tree is trusted application code and is never loaded
-from the connected host or another unauthenticated remote source.
+touch-menu path.
+
+The action document is YAML data, with `version`, `rootMenuId`, and ordered
+menus, groups, and buttons. The bundled starter and user-selected host files
+share strict parsing, semantic validation, and a resolver that converts menu-ID
+references into the existing runtime tree. The renderer sees only a validated
+tree, whose identity changes after a successful Load/Save rather than on each
+form edit or editor redraw. Its navigation then resets to the configured root.
+
+The configuration store owns the active document, editable draft, host-file
+identity/revision, and endpoint-specific recovery cache. The separate editor
+uses the same layout renderer with no-op input/keyboard callbacks. Entering the
+editor settles the prior IME composition and blurs the Neovim input target;
+ordinary form text cannot enter the session. Editor access sits outside user
+configuration so an empty or unusable pad can always be repaired.
+
+Host document operations are typed `nvim-session` methods implemented by fixed
+`nvim_exec_lua` chunks with paths/content passed as RPC arguments. Reads do not
+create files. Saves compare content revisions and resolved targets, protect
+modified buffers, and publish a sibling temporary file without replacing a
+dotfile symlink. Controller checks bind results to the endpoint and connection
+generation. File failures and local wait timeouts do not tear down the editor
+session. A timed-out write is not automatically replayed: its outcome must be
+reconciled by reading the file.
+
+User-selected configurations are executable input configuration, not a safe
+command sandbox. Loading/editing/previewing does not dispatch their inputs, but
+active input buttons may execute arbitrary Neovim commands. The existing
+trusted-private-network requirement applies to both input and host file access.
+There is no Android file backend, cloud/Git synchronization, or remote file
+browser; Load/Save/Export use explicit host paths.
 
 Expo Continuous Native Generation owns the ignored `apps/android/android/`
 directory. Native module source remains tracked under `apps/android/modules/`.

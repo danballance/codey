@@ -74,19 +74,96 @@ The landscape groups remain vertically scrollable when the keyboard leaves too
 little height for every action. The editor and toolbar also relax their minimum
 heights so the 800 × 600dp condensed tablet layout does not overflow.
 
-The bundled action tree is a typed TypeScript configuration in
-`src/action-pad/config.ts`. `src/action-pad/index.ts` exports the `ActionPad`,
-the configured root menu, and the public menu, group, button, and interaction
-types. The small model covers ordered named groups and reusable input, menu,
-Back, and Keyboard interactions for tap or long press. Special keys and modified
-keys are written directly in Neovim notation, such as `<Esc>`, `<Up>`, and
+The starter configuration is `src/action-pad/default.yaml`: one versioned YAML
+document containing all 12 menus. The app validates it using the same parser as
+external configurations. No menu definitions are maintained in TypeScript.
+`src/action-pad/index.ts` exports the renderer, default configuration, document
+parser/validator/serializer, and menu, group, button, and interaction types.
+Special keys and modified keys use Neovim notation, such as `<Esc>`, `<Up>`, and
 `<C-r>`.
 
-Keep configured sequences in the application bundle: they are trusted code and
-are passed directly to Neovim's input API, so the app does not load action trees
-from the network or accept untrusted user-authored sequences. Configuration
-authors own group density, fit, identifiers, and navigation placement. Ordinary
-configuration changes need only a TypeScript reload or rebuild. The root menu's
+### Editing and saving Action Pad configuration
+
+Use **Edit Action Pad**, below the pad, to open the configuration editor. This
+control is not part of the YAML and remains available even if every configured
+button is removed or the host is disconnected. The editor includes menus,
+groups, buttons, ordering/move controls, all button properties, and a preview.
+The preview can navigate menus but never sends commands or opens the Neovim
+keyboard. The existing Neovim session remains mounted while ordinary form
+inputs own keyboard focus.
+
+The primary YAML file lives on the connected Neovim host, not on Android.
+Choose an absolute host path or a path beginning with `~/`. The suggested path
+is `stdpath("config")/codey/action-pad.yaml`; use a file in your dotfiles or Git
+repository if preferred. The app remembers the active path with its endpoint.
+No additional host service, plugin, SSH connection, or Android storage
+permission is needed.
+
+- **Load / Reload** validates a file before replacing the active pad and draft.
+  Invalid files leave both unchanged. Loading over unsaved edits requires
+  confirmation.
+- **Save** validates the draft, updates the active host file, and only then
+  activates the configuration. The first Save creates a missing file and its
+  parent directories; startup and reads never create files. Once a file is
+  active, Load another file to switch or Export to create a separate copy.
+- **Export copy** writes the current valid draft to another host path. Existing
+  destinations require confirmation. Export does not change the active file,
+  activate the draft, or mark the draft saved.
+- **Cancel** offers to discard edits, keep editing, or **Keep draft & close**.
+  Keeping a draft lets you return later without changing the active pad.
+  Neither closing nor discarding writes a host file.
+
+The app keeps the last valid configuration and incomplete drafts in local
+recovery storage. Editing works offline; host operations require a connection.
+Use **Connect host** inside the editor to reconnect without discarding edits.
+Reconnecting refreshes a clean configuration but never silently replaces an
+unsaved draft or uploads it. If a Save response is lost, the next explicit Save
+reads the host file to reconcile the attempt before writing again.
+
+External changes cause a conflict instead of an overwrite: Reload the host
+version or Export your draft elsewhere. Saves preserve ordinary file
+permission mode bits and symlinks and refuse to overwrite a matching Neovim buffer with
+unsaved changes. Files in read-only locations such as the Nix store need an
+editable destination. Operations run with the Neovim process user's permissions.
+Atomic replacement creates a new inode; owner/group, ACLs, extended attributes,
+and other hard links are not preserved. Use an ordinary user-owned YAML file.
+
+Save and Export normalize YAML formatting and remove handwritten comments.
+Keep a Git history if comments or earlier versions matter. The format is:
+
+```yaml
+version: 1
+rootMenuId: home
+menus:
+  - id: home
+    label: Home
+    groups:
+      - id: main
+        buttons:
+          - id: escape
+            label: Esc
+            tap:
+              type: input
+              nvimInput: '<Esc>'
+              after: root
+```
+
+Menus, groups, and buttons are ordered lists. Menu IDs are unique throughout
+the document, group IDs within each menu, and button IDs within each group.
+Menu interactions use `menuId`; their targets must exist and references must
+not form cycles. A button needs `tap`, `longPress`, or both. Optional button
+fields are `accessibilityLabel`, `accessibilityHint`, and
+`styles: { size: '1/4' }` or `styles: { size: '1/2' }`. Each interaction has an
+explicit `after: root` or `after: stay`. Quote numeric labels and
+whitespace-sensitive inputs: inputs are preserved exactly, not trimmed.
+Only a single YAML 1.2 document is supported, up to 1 MiB; custom tags,
+anchors/aliases, unknown fields, and unsupported versions are rejected.
+
+**Load only configurations you trust.** Input strings are passed directly to
+Neovim and can contain commands, including commands that affect host files or
+run programs. Loading, editing, and previewing a configuration never executes
+those strings; pressing an active input button does. Configuration authors own
+group density, fit, identifiers, and navigation placement. The root menu's
 Keyboard interaction focuses the Android IME without sending editor input.
 
 Android bundles JetBrainsMono Nerd Font Mono for editor glyphs and all
@@ -210,3 +287,29 @@ pnpm android:assemble:release
 The native tests and debug assembly require a generated `android/` tree, so run
 the clean prebuild first when invoking those commands independently. No Android
 Studio, emulator, or system image is required or included in the Nix shell.
+
+The Android suite includes frozen migration baselines for all 12 starter menus,
+YAML validation/round trips, editing operations, recovery and conflict cases,
+input isolation, and the complete Load → Edit → Save → Reload → Export UI flow.
+The shared host-document suite launches isolated `nvim --embed --headless`
+processes and uses temporary files. It runs when `nvim` is on `PATH`, or when
+`CODEY_NVIM_BIN` names a Neovim binary:
+
+```sh
+CODEY_NVIM_BIN=/path/to/nvim pnpm exec vitest run packages/nvim-session/test/host-documents.live.test.ts
+```
+
+For physical-tablet acceptance, use a temporary host YAML file and verify:
+
+1. Load the starter, change a label/input/size, create and move a button, then
+   Save. Confirm the host file changed and the active pad returns to its root.
+2. Reload, then Export to a different path. Confirm the source stays linked;
+   exporting a later unsaved edit must not activate it or clear its dirty state.
+3. Change the source outside Codey and try Save. Confirm the app offers Reload
+   or Export without overwriting the external change.
+4. Disconnect, edit, and choose **Keep draft & close**. Reopen/restart and
+   reconnect; the draft must remain local until an explicit Save.
+5. Repeat in portrait and landscape, including the smallest supported tablet
+   window with the keyboard visible. Confirm forms remain reachable and
+   typing or previewing never changes the Neovim buffer. After leaving the
+   editor, check the pad's tap/hold behavior and the normal Neovim IME.

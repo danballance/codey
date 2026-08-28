@@ -1,6 +1,9 @@
 const { getDefaultConfig } = require("expo/metro-config");
 
-// Expo SDK 57 discovers the pnpm workspace and follows package exports by
-// default. Keeping this configuration standard is important: the shared
-// @codey packages intentionally export their TypeScript sources to Metro.
-module.exports = getDefaultConfig(__dirname);
+// Keep Expo's workspace/package resolution, adding raw YAML source imports.
+const config = getDefaultConfig(__dirname);
+config.transformer.babelTransformerPath = require.resolve('./metro-yaml-transformer');
+config.resolver.assetExts = config.resolver.assetExts.filter((extension) => !['yaml', 'yml'].includes(extension));
+config.resolver.sourceExts = [...config.resolver.sourceExts, 'yaml', 'yml'];
+
+module.exports = config;

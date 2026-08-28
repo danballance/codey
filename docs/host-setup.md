@@ -65,3 +65,24 @@ listener as a trusted-LAN-only development endpoint:
 
 Introduce the normal Neovim configuration and plugins incrementally only after
 the `--clean` path behaves correctly.
+
+## Action Pad YAML
+
+The Android **Edit Action Pad** screen reads and writes YAML through this same
+Neovim connection. No host plugin is required. The suggested file is
+`stdpath("config")/codey/action-pad.yaml`; the path field also accepts an absolute
+path into a Git checkout or a path beginning with `~/`.
+
+Load/Save/Export require a connection. The tablet retains cached configuration
+and recovery drafts for offline editing. Only explicit Save or Export writes a
+file; startup never creates one. External modifications and matching unsaved
+Neovim buffers prevent an overwrite; reload or export the draft to another file
+to resolve the conflict.
+The app preserves symlinks and permission mode bits, so symlinked dotfiles work,
+but immutable files such as Nix-store targets need an editable destination.
+Atomic replacement does not retain owner/group, ACLs, extended attributes, or
+other hard links. Use an ordinary user-owned YAML file. Saves normalize
+formatting and discard YAML comments.
+
+Configuration inputs can execute Neovim commands. Only load files you trust;
+previewing the pad never sends its inputs to the host.

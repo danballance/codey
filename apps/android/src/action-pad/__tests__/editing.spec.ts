@@ -1,0 +1,183 @@
+import { validateActionPadConfig, type ActionPadConfig } from '../document'
+import { ActionPadEditError, createActionPadId, editActionPad, menuDeletionReason } from '../editing'
+
+function config(): ActionPadConfig {
+  return {
+    version: 1,
+    rootMenuId: 'home',
+    menus: [
+      {
+        id: 'home', label: 'Home', groups: [
+          {
+            id: 'actions', buttons: [
+              { id: 'input', label: 'Input', tap: { type: 'input', nvimInput: 'x', after: 'stay' } },
+              {
+                id: 'open', label: 'Open',
+                tap: { type: 'menu', menuId: 'child', after: 'stay' },
+                longPress: { type: 'menu', menuId: 'child', after: 'root' }
+              }
+            ]
+          },
+          { id: 'other', buttons: [{ id: 'input', label: 'Other', tap: { type: 'keyboard', after: 'stay' } }] }
+        ]
+      },
+      {
+        id: 'child', label: 'Child', groups: [
+          { id: 'actions', buttons: [{ id: 'back', label: 'Back', tap: { type: 'back', after: 'stay' } }] }
+        ]
+      },
+      { id: 'unused', label: 'Unused', groups: [] }
+    ]
+  }
+}
+
+describe('Action Pad edits', () => {
+  it('generates unused IDs once and leaves IDs unchanged when labels change', () => {
+    expect(createActionPadId('menu', ['menu', 'menu-2', 'menu-4'])).toBe('menu-3')
+    let next = editActionPad(config(), { type: 'add-menu' })
+    next = editActionPad(next, { type: 'update-menu', menuIndex: 3, patch: { label: 'Custom label' } })
+    expect(next.menus[3]).toEqual({ id: 'menu', label: 'Custom label', groups: [] })
+    next = editActionPad(next, { type: 'add-menu' })
+    expect(next.menus[4]?.id).toBe('menu-2')
+  })
+
+  it('creates ordered groups and an incomplete button that must be configured before saving', () => {
+    let next = editActionPad(config(), { type: 'add-group', menuIndex: 2 })
+    next = editActionPad(next, { type: 'add-group', menuIndex: 2 })
+    expect(next.menus[2]?.groups.map((group) => group.id)).toEqual(['group', 'group-2'])
+    next = editActionPad(next, { type: 'add-button', location: { menuIndex: 2, groupIndex: 0 } })
+    expect(validateActionPadConfig(next)).toContainEqual({
+      path: 'menus[2].groups[0].buttons[0].tap.nvimInput', message: 'Must not be empty.'
+    })
+    next = editActionPad(next, {
+      type: 'update-button', location: { menuIndex: 2, groupIndex: 0, buttonIndex: 0 },
+      patch: { tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' } }
+    })
+    expect(validateActionPadConfig(next)).toEqual([])
+  })
+
+  it('renames root IDs and both tap and hold references without changing the original config', () => {
+    const original = config()
+    const before = JSON.stringify(original)
+    let renamed = editActionPad(original, { type: 'update-menu', menuIndex: 1, patch: { id: 'tools' } })
+    const button = renamed.menus[0]?.groups[0]?.buttons[1]
+    expect(button?.tap).toEqual({ type: 'menu', menuId: 'tools', after: 'stay' })
+    expect(button?.longPress).toEqual({ type: 'menu', menuId: 'tools', after: 'root' })
+    renamed = editActionPad(renamed, { type: 'update-menu', menuIndex: 0, patch: { id: 'start' } })
+    expect(renamed.rootMenuId).toBe('start')
+    expect(validateActionPadConfig(renamed)).toEqual([])
+    expect(JSON.stringify(original)).toBe(before)
+  })
+
+  it('blocks an ambiguous menu rename before any links change', () => {
+    const original = config()
+    expect(() => editActionPad(original, { type: 'update-menu', menuIndex: 0, patch: { id: 'child' } })).toThrow(ActionPadEditError)
+    expect(original.rootMenuId).toBe('home')
+    expect(original.menus[0]?.groups[0]?.buttons[1]?.tap).toEqual({ type: 'menu', menuId: 'child', after: 'stay' })
+  })
+
+  it('keeps references intact through temporarily blank IDs', () => {
+    let next = editActionPad(config(), { type: 'update-menu', menuIndex: 1, patch: { id: '' } })
+    expect(validateActionPadConfig(next).length).toBeGreaterThan(0)
+    next = editActionPad(next, { type: 'update-menu', menuIndex: 1, patch: { id: 'renamed' } })
+    expect(next.menus[0]?.groups[0]?.buttons[1]?.longPress).toMatchObject({ menuId: 'renamed' })
+    expect(validateActionPadConfig(next)).toEqual([])
+  })
+
+  it('protects root and referenced menus until their dependencies are resolved', () => {
+    const original = config()
+    expect(menuDeletionReason(original, 0)).toMatch(/another root/)
+    expect(menuDeletionReason(original, 1)).toMatch(/Home/)
+    expect(() => editActionPad(original, { type: 'delete-menu', menuIndex: 0 })).toThrow(/root/)
+    expect(() => editActionPad(original, { type: 'delete-menu', menuIndex: 1 })).toThrow(/links/)
+    let next = editActionPad(original, { type: 'set-root-menu', menuIndex: 2 })
+    next = editActionPad(next, { type: 'delete-menu', menuIndex: 0 })
+    expect(next.rootMenuId).toBe('unused')
+    expect(next.menus.map((menu) => menu.id)).toEqual(['child', 'unused'])
+    next = editActionPad(next, { type: 'delete-menu', menuIndex: 0 })
+    expect(next.menus.map((menu) => menu.id)).toEqual(['unused'])
+  })
+
+  it('reorders menus, groups and buttons without changing their contents or root', () => {
+    const original = config()
+    let next = editActionPad(original, { type: 'reorder-menu', menuIndex: 0, direction: 1 })
+    expect(next.menus.map((menu) => menu.id)).toEqual(['child', 'home', 'unused'])
+    expect(next.rootMenuId).toBe('home')
+    next = editActionPad(next, { type: 'reorder-group', location: { menuIndex: 1, groupIndex: 0 }, direction: 1 })
+    expect(next.menus[1]?.groups.map((group) => group.id)).toEqual(['other', 'actions'])
+    next = editActionPad(next, { type: 'reorder-button', location: { menuIndex: 1, groupIndex: 1, buttonIndex: 0 }, direction: 1 })
+    expect(next.menus[1]?.groups[1]?.buttons).toEqual([...original.menus[0]!.groups[0]!.buttons].reverse())
+    expect(editActionPad(next, { type: 'reorder-menu', menuIndex: 0, direction: -1 }).menus).toBe(next.menus)
+    expect(editActionPad(next, { type: 'reorder-button', location: { menuIndex: 1, groupIndex: 1, buttonIndex: 1 }, direction: 1 }).menus[1]?.groups[1]?.buttons).toBe(next.menus[1]?.groups[1]?.buttons)
+  })
+
+  it('renames and deletes groups, rejecting IDs already used in the same menu', () => {
+    const location = { menuIndex: 0, groupIndex: 0 }
+    expect(() => editActionPad(config(), { type: 'update-group', location, id: 'other' })).toThrow(/already exists/)
+    let next = editActionPad(config(), { type: 'update-group', location, id: 'renamed' })
+    expect(next.menus[0]?.groups[0]?.id).toBe('renamed')
+    next = editActionPad(next, { type: 'delete-group', location })
+    expect(next.menus[0]?.groups.map((group) => group.id)).toEqual(['other'])
+  })
+
+  it('retains exact input and all button fields while allowing independent gesture removal', () => {
+    const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
+    const input = '  <C-\\><C-n>\n0\t\uf07c🙂  '
+    let next = editActionPad(config(), {
+      type: 'update-button', location,
+      patch: {
+        label: '001', accessibilityLabel: 'Run command', accessibilityHint: 'Hold for more',
+        styles: { size: '1/4' }, tap: { type: 'input', nvimInput: input, after: 'root' },
+        longPress: { type: 'keyboard', after: 'stay' }
+      }
+    })
+    expect(next.menus[0]?.groups[0]?.buttons[0]).toMatchObject({
+      id: 'input', label: '001', styles: { size: '1/4' },
+      tap: { type: 'input', nvimInput: input, after: 'root' }, longPress: { type: 'keyboard', after: 'stay' }
+    })
+    next = editActionPad(next, { type: 'update-button', location, patch: { tap: undefined, styles: undefined, accessibilityLabel: undefined, accessibilityHint: undefined } })
+    expect(next.menus[0]?.groups[0]?.buttons[0]).toEqual({ id: 'input', label: '001', longPress: { type: 'keyboard', after: 'stay' } })
+    expect(validateActionPadConfig(next)).toEqual([])
+    next = editActionPad(next, { type: 'update-button', location, patch: { longPress: undefined } })
+    expect(validateActionPadConfig(next)).toContainEqual({ path: 'menus[0].groups[0].buttons[0].tap', message: 'A button must define tap or longPress.' })
+  })
+
+  it('moves within a menu and across menus without cloning or changing the moved button', () => {
+    const original = editActionPad(config(), { type: 'add-group', menuIndex: 2 })
+    const moved = original.menus[0]!.groups[0]!.buttons[0]
+    let next = editActionPad(original, {
+      type: 'move-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 },
+      destination: { menuIndex: 2, groupIndex: 0 }
+    })
+    expect(next.menus[0]?.groups[0]?.buttons.map((button) => button.id)).toEqual(['open'])
+    expect(next.menus[2]?.groups[0]?.buttons[0]).toBe(moved)
+    next = editActionPad(next, {
+      type: 'move-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 },
+      destination: { menuIndex: 0, groupIndex: 1 }
+    })
+    expect(next.menus[0]?.groups[0]?.buttons).toEqual([])
+    expect(next.menus[0]?.groups[1]?.buttons.map((button) => button.id)).toEqual(['input', 'open'])
+    expect(original.menus[0]?.groups[0]?.buttons).toHaveLength(2)
+  })
+
+  it('blocks destination collisions but permits the same ID in different groups', () => {
+    const original = config()
+    expect(validateActionPadConfig(original)).toEqual([])
+    expect(() => editActionPad(original, {
+      type: 'move-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 },
+      destination: { menuIndex: 0, groupIndex: 1 }
+    })).toThrow(/Rename this button/)
+    expect(() => editActionPad(original, {
+      type: 'update-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }, patch: { id: 'open' }
+    })).toThrow(/already exists/)
+  })
+
+  it('deletes a button and rejects stale locations without changing other items', () => {
+    const original = config()
+    const next = editActionPad(original, { type: 'delete-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 } })
+    expect(next.menus[0]?.groups[0]?.buttons.map((button) => button.id)).toEqual(['open'])
+    expect(original.menus[0]?.groups[0]?.buttons).toHaveLength(2)
+    expect(() => editActionPad(next, { type: 'delete-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 8 } })).toThrow(/no longer exists/)
+    expect(() => editActionPad(next, { type: 'delete-menu', menuIndex: 9 })).toThrow(/no longer exists/)
+  })
+})

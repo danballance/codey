@@ -5,7 +5,12 @@ import {
   type EditorSnapshot,
   type EditorState
 } from '@codey/editor-core'
-import type { MouseInput, RedrawBatch } from '@codey/nvim-session'
+import type {
+  HostDocument,
+  HostDocumentWrite,
+  MouseInput,
+  RedrawBatch
+} from '@codey/nvim-session'
 import {
   currentPerformanceTags,
   performanceDiagnosticsEnabled,
@@ -43,6 +48,9 @@ export interface MobileSession {
   input(keys: string): Promise<void>
   inputMouse(mouse: MouseInput): Promise<void>
   resize(width: number, height: number): Promise<void>
+  defaultActionPadPath(): Promise<string>
+  readHostDocument(path: string): Promise<HostDocument>
+  writeHostDocument(request: HostDocumentWrite): Promise<HostDocument>
   onRedraw(listener: (batch: RedrawBatch) => void): () => void
   close(): Promise<void>
 }
@@ -61,6 +69,7 @@ export interface FrameScheduler {
 
 interface ActiveConnection extends ConnectionResources {
   readonly generation: number
+  readonly endpoint: Endpoint
   editorState: EditorState
   ready: boolean
   closing: boolean
@@ -136,6 +145,7 @@ export class TabletClientController {
     const connection: ActiveConnection = {
       ...resources,
       generation,
+      endpoint,
       editorState: createEditorState(),
       ready: false,
       closing: false,
@@ -251,6 +261,49 @@ export class TabletClientController {
       if (this.#isCurrent(connection)) {
         await this.#failConnection(connection, reason, 'Mouse input failed')
       }
+    }
+  }
+
+  public defaultActionPadPath(endpoint: Endpoint): Promise<string> {
+    return this.#documentOperation(endpoint, (session) => session.defaultActionPadPath())
+  }
+
+  public readHostDocument(endpoint: Endpoint, path: string): Promise<HostDocument> {
+    return this.#documentOperation(endpoint, (session) => session.readHostDocument(path))
+  }
+
+  public writeHostDocument(endpoint: Endpoint, request: HostDocumentWrite): Promise<HostDocument> {
+    return this.#documentOperation(endpoint, (session) => session.writeHostDocument(request))
+  }
+
+  async #documentOperation<T>(endpoint: Endpoint, operation: (session: MobileSession) => Promise<T>): Promise<T> {
+    const connection = this.#active
+    if (
+      connection === null || !connection.ready || connection.closing ||
+      connection.endpoint.host !== endpoint.host || connection.endpoint.port !== endpoint.port
+    ) {
+      throw new Error('Connect to this configuration’s Neovim host before accessing its files.')
+    }
+
+    // A document failure is not an editor-session failure. The timeout only
+    // stops waiting locally: a write may still complete, so callers reconcile
+    // the file before retrying rather than automatically replaying the write.
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      const result = await Promise.race([
+        operation(connection.session),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(
+            'Host file operation timed out. Its result may be uncertain; reload or reconcile before retrying.'
+          )), 15_000)
+        })
+      ])
+      if (!this.#isCurrent(connection) || !connection.ready || connection.closing) {
+        throw new Error('The connection changed during the file operation. Reconnect and check the file before retrying.')
+      }
+      return result
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout)
     }
   }
 
