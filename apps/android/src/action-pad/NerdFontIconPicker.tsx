@@ -62,7 +62,6 @@ export function NerdFontIconPicker({
       animationType="slide"
       onRequestClose={onDismiss}
       presentationStyle="fullScreen"
-      supportedOrientations={['portrait', 'landscape']}
       visible={visible}
     >
       <SafeAreaView
@@ -73,7 +72,7 @@ export function NerdFontIconPicker({
         <View style={styles.header}>
           <View style={styles.titleBlock}>
             <Text accessibilityRole="header" style={styles.title}>Choose a Nerd Font icon</Text>
-            <Text style={styles.subtitle}>Insert one glyph into the button label.</Text>
+            <Text style={styles.subtitle}>Insert one glyph into the selected run, keeping its size and weight.</Text>
           </View>
           <Pressable
             accessibilityLabel="Close icon picker"

@@ -5,7 +5,8 @@ import {
   CODEY_NERD_FONT_FAMILIES,
   useCodeyNerdFontFaces
 } from '../fonts'
-import { ACTION_PAD_MENU } from './config'
+import { ActionButtonLabel } from './ActionButtonLabel'
+import { plainActionButtonLabel } from './label'
 import {
   ACTION_PAD_LONG_PRESS_MS,
   type ActionButton,
@@ -55,41 +56,29 @@ interface ActivationContext {
   readonly modeToken: object
 }
 
-interface CapacityEnvelope {
-  readonly bottomColumns: number
-  readonly rightRows: number
-}
-
-export type ActionPadPlacement = 'below' | 'right'
-
 export interface ActionPadProps {
-  readonly rootMenu?: ActionMenu
+  readonly rootMenu: ActionMenu
   readonly enabled: boolean
   readonly interactionMode?: 'normal' | 'selection' | 'suspended'
   readonly onEditButton?: (target: ActionPadButtonTarget) => void
   readonly compact?: boolean
-  readonly placement?: ActionPadPlacement
   readonly resetKey?: string | number
   readonly mode: string
-  readonly dimensions: string
   readonly onInput: (input: string) => void
   readonly onKeyboardPress: () => void
 }
 
 export const ActionPad = memo(function ActionPad({
-  rootMenu = ACTION_PAD_MENU,
+  rootMenu,
   enabled,
   interactionMode = 'normal',
   onEditButton,
   compact = false,
-  placement = 'below',
   resetKey,
   mode,
-  dimensions,
   onInput,
   onKeyboardPress
 }: ActionPadProps) {
-  const placedRight = placement === 'right'
   const [nerdFontFacesLoaded] = useCodeyNerdFontFaces()
   const [navigation, dispatchNavigation] = useReducer(
     navigationReducer,
@@ -99,8 +88,8 @@ export const ActionPad = memo(function ActionPad({
   const configuration = useRef({ resetKey, rootMenu })
   const enabledState = useRef(enabled)
   const modeToken = useMemo(() => ({}), [interactionMode])
-  const getCapacityEnvelope = useMemo(
-    () => createCapacityEnvelopeResolver(),
+  const getRailRows = useMemo(
+    () => createRailRowsResolver(),
     [rootMenu]
   )
 
@@ -237,7 +226,7 @@ export const ActionPad = memo(function ActionPad({
       hostGroup,
       definitionMenu,
       definitionGroup,
-      envelope: getCapacityEnvelope(hostGroup),
+      railRows: getRailRows(hostGroup),
       activationContext
     }
   })
@@ -248,7 +237,7 @@ export const ActionPad = memo(function ActionPad({
       activationContext={rendered.activationContext}
       compact={compact}
       enabled={enabled}
-      envelope={rendered.envelope}
+      railRows={rendered.railRows}
       fontFacesLoaded={nerdFontFacesLoaded}
       interactionMode={interactionMode}
       isCurrentActivation={isCurrentActivation}
@@ -256,7 +245,6 @@ export const ActionPad = memo(function ActionPad({
       name={rendered.hostGroup.id}
       onEditButton={onEditButton}
       onInteraction={runInteraction}
-      placedRight={placedRight}
       targetGroupId={rendered.definitionGroup.id}
     />
   ))
@@ -266,8 +254,7 @@ export const ActionPad = memo(function ActionPad({
       accessibilityLabel="Neovim action pad"
       style={[
         styles.panel,
-        compact && styles.compactPanel,
-        placedRight && styles.rightPanel
+        compact && styles.compactPanel
       ]}
       testID="action-pad"
     >
@@ -298,50 +285,20 @@ export const ActionPad = memo(function ActionPad({
           >
             › {navigationContext}
           </Text>
-        ) : (
-          <Text
-            numberOfLines={1}
-            style={[
-              styles.dimensions,
-              nerdFontFacesLoaded && styles.nerdFontRegular,
-              compact && styles.compactHeaderText
-            ]}
-          >
-            {dimensions}
-          </Text>
-        )}
+        ) : null}
       </View>
 
-      {placedRight ? (
-        <ScrollView
-          contentContainerStyle={[
-            styles.verticalGroups,
-            compact && styles.compactVerticalGroups
-          ]}
-          showsVerticalScrollIndicator={false}
-          style={styles.flowScroll}
-          testID="action-pad-flow-scroll"
-        >
-          {groups}
-        </ScrollView>
-      ) : (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={[
-            styles.horizontalFlowScroll,
-            compact && styles.compactHorizontalFlowScroll
-          ]}
-          testID="action-pad-horizontal-scroll"
-        >
-          <View
-            style={[styles.horizontalGroups, compact && styles.compactHorizontalGroups]}
-            testID="action-pad-groups"
-          >
-            {groups}
-          </View>
-        </ScrollView>
-      )}
+      <ScrollView
+        contentContainerStyle={[
+          styles.verticalGroups,
+          compact && styles.compactVerticalGroups
+        ]}
+        showsVerticalScrollIndicator={false}
+        style={styles.flowScroll}
+        testID="action-pad-flow-scroll"
+      >
+        {groups}
+      </ScrollView>
     </View>
   )
 })
@@ -350,7 +307,7 @@ const ActionGroupView = memo(function ActionGroupView({
   activationContext,
   compact,
   enabled,
-  envelope,
+  railRows,
   fontFacesLoaded,
   interactionMode,
   isCurrentActivation,
@@ -358,13 +315,12 @@ const ActionGroupView = memo(function ActionGroupView({
   name,
   onEditButton,
   onInteraction,
-  placedRight,
   targetGroupId
 }: {
   readonly activationContext: ActivationContext
   readonly compact: boolean
   readonly enabled: boolean
-  readonly envelope: CapacityEnvelope
+  readonly railRows: number
   readonly fontFacesLoaded: boolean
   readonly interactionMode: NonNullable<ActionPadProps['interactionMode']>
   readonly isCurrentActivation: (
@@ -380,7 +336,6 @@ const ActionGroupView = memo(function ActionGroupView({
     interaction: ActionInteraction,
     context: ActivationContext
   ) => void
-  readonly placedRight: boolean
   readonly targetGroupId: string
 }) {
   const buttons = activationContext.definitionGroup.buttons
@@ -389,7 +344,6 @@ const ActionGroupView = memo(function ActionGroupView({
       key={definitionKey(button)}
       activationContext={activationContext}
       button={button}
-      column={placedRight}
       compact={compact}
       enabled={enabled}
       fontFacesLoaded={fontFacesLoaded}
@@ -401,53 +355,16 @@ const ActionGroupView = memo(function ActionGroupView({
     />
   )
 
-  if (placedRight) {
-    return (
-      <View
-        style={[
-          styles.columnGroup,
-          compact && styles.compactColumnGroup,
-          rightEnvelopeStyle(envelope.rightRows, compact)
-        ]}
-        testID={`action-pad-${name}-group`}
-      >
-        {buttons.map(renderButton)}
-      </View>
-    )
-  }
-
-  const columnCount = envelope.bottomColumns
-  const rows = [buttons.slice(0, columnCount), buttons.slice(columnCount)]
-  const minimumBasis = columnCount * 48 + (columnCount - 1) * 6
-
   return (
     <View
       style={[
-        styles.rowGroup,
-        {
-          minWidth: minimumBasis,
-          flexBasis: minimumBasis,
-          flexGrow: columnCount,
-          flexShrink: 0
-        }
+        styles.railGroup,
+        compact && styles.compactRailGroup,
+        railEnvelopeStyle(railRows, compact)
       ]}
       testID={`action-pad-${name}-group`}
     >
-      {rows.map((row, rowIndex) => (
-        <View
-          key={`${name}-row-${rowIndex}`}
-          style={[styles.groupRow, compact && styles.compactGroupRow]}
-          testID={`action-pad-${name}-row-${rowIndex + 1}`}
-        >
-          {row.map(renderButton)}
-          {Array.from({ length: columnCount - row.length }, (_, spacerIndex) => (
-            <View
-              key={`${name}-row-${rowIndex}-spacer-${spacerIndex}`}
-              style={styles.buttonSpacer}
-            />
-          ))}
-        </View>
-      ))}
+      {buttons.map(renderButton)}
     </View>
   )
 })
@@ -455,7 +372,6 @@ const ActionGroupView = memo(function ActionGroupView({
 const ActionButtonView = memo(function ActionButtonView({
   activationContext,
   button,
-  column,
   compact,
   enabled,
   fontFacesLoaded,
@@ -467,7 +383,6 @@ const ActionButtonView = memo(function ActionButtonView({
 }: {
   readonly activationContext: ActivationContext
   readonly button: ActionButton
-  readonly column: boolean
   readonly compact: boolean
   readonly enabled: boolean
   readonly fontFacesLoaded: boolean
@@ -549,10 +464,14 @@ const ActionButtonView = memo(function ActionButtonView({
     }
   }
 
+  const accessibleLabel = button.accessibilityLabel?.trim()
+    ? button.accessibilityLabel
+    : plainActionButtonLabel(button.label)
+
   return (
     <Pressable
       accessibilityHint={selecting ? 'Open button settings.' : button.accessibilityHint}
-      accessibilityLabel={`${selecting ? 'Edit ' : ''}${button.accessibilityLabel ?? button.label}`}
+      accessibilityLabel={`${selecting ? 'Edit ' : ''}${accessibleLabel}`}
       accessibilityRole="button"
       accessibilityState={{ disabled: !available }}
       delayLongPress={selecting || button.longPress !== undefined ? ACTION_PAD_LONG_PRESS_MS : undefined}
@@ -565,25 +484,19 @@ const ActionButtonView = memo(function ActionButtonView({
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
-        column && styles.columnButton,
-        column && button.styles?.size === '1/4' && styles.quarterColumnButton,
+        styles.railButton,
+        button.styles.size === '1/4' && styles.quarterRailButton,
         !available && styles.disabled,
         pressed && available && styles.pressed
       ]}
       testID={`action-pad-${button.id}`}
     >
-      <Text
-        numberOfLines={2}
-        style={[
-          styles.buttonText,
-          fontFacesLoaded && styles.nerdFontSemiBold,
-          compact && styles.compactButtonText,
-          selecting && styles.selectionButtonText,
-          selecting && compact && styles.compactSelectionButtonText
-        ]}
-      >
-        {button.label}
-      </Text>
+      <ActionButtonLabel
+        compact={compact}
+        fontFacesLoaded={fontFacesLoaded}
+        label={button.label}
+        testID={`action-pad-${button.id}-label`}
+      />
       {selecting ? (
         <View
           accessible={false}
@@ -734,16 +647,16 @@ function sameActivationContext(
     && first.modeToken === second.modeToken
 }
 
-function createCapacityEnvelopeResolver(): (group: ActionGroup) => CapacityEnvelope {
-  const envelopes = new WeakMap<ActionGroup, CapacityEnvelope>()
+function createRailRowsResolver(): (group: ActionGroup) => number {
+  const rowCounts = new WeakMap<ActionGroup, number>()
   const resolving = new WeakSet<ActionGroup>()
 
-  function resolve(group: ActionGroup): CapacityEnvelope {
-    const cached = envelopes.get(group)
+  function resolve(group: ActionGroup): number {
+    const cached = rowCounts.get(group)
     if (cached !== undefined) return cached
 
-    let envelope = ownCapacity(group)
-    if (resolving.has(group)) return envelope
+    let rows = packedRailRows(group.buttons)
+    if (resolving.has(group)) return rows
     resolving.add(group)
 
     for (const button of group.buttons) {
@@ -753,34 +666,23 @@ function createCapacityEnvelopeResolver(): (group: ActionGroup) => CapacityEnvel
       )[]
       for (const interaction of interactions) {
         if (interaction?.type !== 'group' || interaction.after !== 'stay') continue
-        const target = resolve(interaction.group)
-        envelope = {
-          bottomColumns: Math.max(envelope.bottomColumns, target.bottomColumns),
-          rightRows: Math.max(envelope.rightRows, target.rightRows)
-        }
+        rows = Math.max(rows, resolve(interaction.group))
       }
     }
 
     resolving.delete(group)
-    envelopes.set(group, envelope)
-    return envelope
+    rowCounts.set(group, rows)
+    return rows
   }
 
   return resolve
 }
 
-function ownCapacity(group: ActionGroup): CapacityEnvelope {
-  return {
-    bottomColumns: Math.max(1, Math.ceil(group.buttons.length / 2)),
-    rightRows: packedRightRows(group.buttons)
-  }
-}
-
-function packedRightRows(buttons: readonly ActionButton[]): number {
+function packedRailRows(buttons: readonly ActionButton[]): number {
   let rows = 0
   let usedUnits = 0
   for (const button of buttons) {
-    const units = button.styles?.size === '1/4' ? 1 : 2
+    const units = button.styles.size === '1/4' ? 1 : 2
     if (usedUnits + units > 4) {
       rows += 1
       usedUnits = 0
@@ -794,7 +696,7 @@ function packedRightRows(buttons: readonly ActionButton[]): number {
   return rows + (usedUnits > 0 ? 1 : 0)
 }
 
-function rightEnvelopeStyle(rows: number, compact: boolean): { readonly height: number } {
+function railEnvelopeStyle(rows: number, compact: boolean): { readonly height: number } {
   const buttonHeight = compact ? 48 : 52
   const gap = compact ? 6 : 12
   return { height: rows * buttonHeight + Math.max(0, rows - 1) * gap }
@@ -802,25 +704,19 @@ function rightEnvelopeStyle(rows: number, compact: boolean): { readonly height: 
 
 const styles = StyleSheet.create({
   panel: {
-    minHeight: 213,
+    flex: 1,
+    minHeight: 0,
     padding: 24,
     gap: 18,
-    borderTopWidth: 2,
+    borderLeftWidth: 2,
     borderColor: '#10121a',
     borderRadius: 12,
     backgroundColor: '#16161e'
   },
   compactPanel: {
-    minHeight: 144,
     padding: 8,
     gap: 6,
     borderRadius: 8
-  },
-  rightPanel: {
-    flex: 1,
-    minHeight: 0,
-    borderTopWidth: 0,
-    borderLeftWidth: 2
   },
   flowScroll: {
     flex: 1,
@@ -835,7 +731,7 @@ const styles = StyleSheet.create({
   compactVerticalGroups: {
     gap: 6
   },
-  columnGroup: {
+  railGroup: {
     width: '100%',
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -844,7 +740,7 @@ const styles = StyleSheet.create({
     columnGap: '4%',
     rowGap: 12
   },
-  compactColumnGroup: {
+  compactRailGroup: {
     rowGap: 6
   },
   header: {
@@ -875,10 +771,6 @@ const styles = StyleSheet.create({
   compactHeaderText: {
     fontSize: 11
   },
-  nerdFontRegular: {
-    fontFamily: CODEY_NERD_FONT_FAMILIES.regular,
-    fontWeight: 'normal'
-  },
   nerdFontSemiBold: {
     fontFamily: CODEY_NERD_FONT_FAMILIES.semiBold,
     fontWeight: 'normal'
@@ -900,46 +792,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600'
   },
-  dimensions: {
-    minWidth: 0,
-    flexShrink: 1,
-    color: '#7c8997',
-    fontFamily: 'monospace',
-    fontSize: 12
-  },
-  horizontalFlowScroll: {
-    height: 110,
-    flexGrow: 0,
-    flexShrink: 0
-  },
-  compactHorizontalFlowScroll: {
-    height: 102
-  },
-  horizontalGroups: {
-    minWidth: '100%',
-    height: 110,
-    flexDirection: 'row',
-    gap: 6
-  },
-  compactHorizontalGroups: {
-    height: 102
-  },
-  rowGroup: {
-    gap: 6
-  },
-  groupRow: {
-    height: 52,
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: 6
-  },
-  compactGroupRow: {
-    height: 48
-  },
-  buttonSpacer: {
-    minWidth: 48,
-    flex: 1
-  },
   button: {
     minWidth: 48,
     height: 52,
@@ -957,29 +809,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     borderRadius: 8
   },
-  columnButton: {
+  railButton: {
     width: '48%',
     flex: 0
   },
-  quarterColumnButton: {
+  quarterRailButton: {
     width: '22%'
-  },
-  buttonText: {
-    color: '#c0caf5',
-    fontSize: 15,
-    fontWeight: '600',
-    textAlign: 'center'
-  },
-  compactButtonText: {
-    fontSize: 13
-  },
-  selectionButtonText: {
-    marginTop: 10,
-    lineHeight: 18,
-    includeFontPadding: false
-  },
-  compactSelectionButtonText: {
-    lineHeight: 16
   },
   editIndicator: {
     position: 'absolute',

@@ -29,13 +29,12 @@ reconnection explicit; restart Neovim, then use Connect again.
 
 ## Physical Android tablet
 
-The Android vertical slice targets a 12–14-inch tablet in portrait or landscape.
-It supports windows with a shortest side of at least `600dp`; smaller windows
-and phones show only the unsupported-device screen. Portrait and square windows
-stack the action pad below the terminal, with its ordered button groups sharing
-the available width. Landscape places the same groups in declaration order in a
-scrollable two-column right-hand rail, with the first at the top and the last at
-the bottom.
+The Android vertical slice targets a 12–14-inch tablet in landscape. It supports
+windows that are wider than they are tall and have a shortest side of at least
+`600dp`; portrait, square, smaller windows, and phones show only the
+unsupported-device screen. Supported windows place groups in declaration order
+in a scrollable four-unit right-hand rail, with the first at the top and the
+last at the bottom.
 
 Enable Android developer options and USB debugging, attach the device, and
 accept its authorization prompt. From `nix develop`, verify that ADB can see it:
@@ -85,4 +84,7 @@ other hard links. Use an ordinary user-owned YAML file. Saves normalize
 formatting and discard YAML comments.
 
 Configuration inputs can execute Neovim commands. Only load files you trust;
-previewing the pad never sends its inputs to the host.
+loading or editing the document never sends its inputs to the host. Every button
+must explicitly declare `styles: { size: '1/2' }` or
+`styles: { size: '1/4' }`; older YAML without a size has no automatic migration
+and is rejected until updated.

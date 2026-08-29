@@ -10,11 +10,14 @@ interface TabletCapabilityGateProps {
 
 /**
  * The lazy render callback is the construction boundary for every native and
- * session object. It is deliberately never evaluated below the tablet limit.
+ * session object. It is deliberately never evaluated outside a supported
+ * landscape tablet window.
  */
 export function TabletCapabilityGate({
   capability,
   renderSupported
 }: TabletCapabilityGateProps) {
-  return capability.supported ? renderSupported() : <UnsupportedDeviceScreen />
+  return capability.layout === 'unsupported'
+    ? <UnsupportedDeviceScreen />
+    : renderSupported()
 }

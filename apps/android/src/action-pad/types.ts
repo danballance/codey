@@ -4,8 +4,20 @@ export type ActionAfter = 'root' | 'stay'
 
 export type ActionButtonSize = '1/4' | '1/2'
 
+export const ACTION_BUTTON_FONT_SIZES = [10, 12, 15, 18, 22] as const
+
+export type ActionButtonFontSize = (typeof ACTION_BUTTON_FONT_SIZES)[number]
+
+export interface ActionButtonLabelRun {
+  readonly text: string
+  readonly fontSize: ActionButtonFontSize
+  readonly bold: boolean
+}
+
+export type ActionButtonLabel = string | readonly ActionButtonLabelRun[]
+
 export interface ActionButtonStyles {
-  readonly size?: ActionButtonSize
+  readonly size: ActionButtonSize
 }
 
 export type ActionInteraction =
@@ -36,10 +48,10 @@ export type ActionInteraction =
 
 interface ActionButtonBase {
   readonly id: string
-  readonly label: string
+  readonly label: ActionButtonLabel
   readonly accessibilityLabel?: string
   readonly accessibilityHint?: string
-  readonly styles?: ActionButtonStyles
+  readonly styles: ActionButtonStyles
 }
 
 export type ActionButton = ActionButtonBase & (

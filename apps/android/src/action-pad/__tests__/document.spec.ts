@@ -1,5 +1,5 @@
 import defaultYaml from '../default.yaml'
-import { ACTION_PAD_MENU, DEFAULT_ACTION_PAD_CONFIG } from '../config'
+import { DEFAULT_ACTION_PAD_CONFIG } from '../config'
 import {
   ACTION_PAD_CONFIG_MAX_BYTES,
   ActionPadConfigError,
@@ -20,7 +20,8 @@ const { createHash } = jest.requireActual<{
 }>('node:crypto')
 
 const inputButton: ActionMenuDefinitionButton = {
-  id: 'input', label: 'Input', tap: { type: 'input', nvimInput: '<Esc>', after: 'root' }
+  id: 'input', label: 'Input', styles: { size: '1/2' },
+  tap: { type: 'input', nvimInput: '<Esc>', after: 'root' }
 }
 
 function config(buttons: readonly ActionMenuDefinitionButton[] = [inputButton]): ActionPadConfig {
@@ -58,8 +59,7 @@ describe('action pad YAML document', () => {
     const groups = DEFAULT_ACTION_PAD_CONFIG.menus.flatMap((menu) => menu.groups)
     expect(groups).toHaveLength(30)
     expect(groups.flatMap((group) => group.buttons)).toHaveLength(86)
-    expect(ACTION_PAD_MENU.id).toBe(DEFAULT_ACTION_PAD_CONFIG.rootMenuId)
-    expect(resolveActionPadConfig(parseActionPadConfig(defaultYaml))).toEqual(ACTION_PAD_MENU)
+    expect(resolveActionPadConfig(parseActionPadConfig(defaultYaml)).id).toBe(DEFAULT_ACTION_PAD_CONFIG.rootMenuId)
     expect(parseActionPadConfig(serializeActionPadConfig(DEFAULT_ACTION_PAD_CONFIG))).toEqual(DEFAULT_ACTION_PAD_CONFIG)
   })
 
@@ -73,18 +73,18 @@ describe('action pad YAML document', () => {
       menu.id,
       createHash('sha256').update(JSON.stringify(canonicalValue(menu)), 'utf8').digest('hex')
     ])).toEqual([
-      ['home', '2d5da93ae7fed7d67e0a0a86fdfe28f7df24c6dff971c61cddc2f4c1a5a02a1a'],
-      ['command', '5dbb45f334d1b984364e295869fec236710dcff74d82e9745a5fd5d7f2d85b99'],
-      ['leader', 'e1d1d2526d1c3a8c5a88dffe970b0da0818e31c24259a45c5d83dd1d158c3d9c'],
-      ['motions', '16a4ca6e395d3470a0819726b88db8b343e2aa8fd0bd3083d93ac203ba8c0226'],
-      ['text-objects', 'fbc671fff3163f643ee74876f3834d51148a3ac50cb879cd940d7063f034f081'],
-      ['up-navigation', '013cf3c74d05b01f793fa30fb0beb411da710ebcacc227915fc6fff5ed79f47e'],
-      ['down-navigation', '63970675b9cd721a34dccb5838dbc30ccaf9c3c85900f3d3f6ead517c75f6697'],
-      ['search', '35134ecdb52130bde3a4d9b1558ee5d9cff1495b9b4073648ec3f1037fad459c'],
-      ['window', 'f038cfc67aadc61760fb6fac02c33e52e9109b3ec791224dd31add67beff8c5b'],
-      ['code', '19181a40404e1a9baf087945800f6d91030fbdff667f6e2613cd5f2976c6b1c0'],
-      ['yank', '41c05672f76daef01ea7caf249e3c8f7751deef01f7ada94d8130f677d8fd07f'],
-      ['delete', '662b5ff932c3719f6186228f73cc76f6770d13bd7358668ad1a82da50046aa1a']
+      ['home', 'ffe1e7af5487b51ac855182339cce696bc819e8dd12db72fa9c74e036c035c6d'],
+      ['command', '088c69aaec2e8adabcf6530536a4c3eb0bdf7a03e98f8abefdb89cca4c68488f'],
+      ['leader', 'c095b776be6f03a1a6ed187f3abe1497dec161134253ff69278cea0e3c77ac6f'],
+      ['motions', '45b4cebeae35790fb2118839fc5ad2f4ef465eb8e382cf564d2ea29fb2ab19f0'],
+      ['text-objects', '92e25dab00be6afddeebc5d03c9bc76b7697de8df23c4f431b8e768f6c4f8ca3'],
+      ['up-navigation', '27e5424635e74175666eef165ff0043afd4fe60c8a79690cc243d1f0fe202708'],
+      ['down-navigation', '25cd67a174db8cb412a7793f21ae32b16b3a2d4bf8ca985647a32a6341c65e57'],
+      ['search', '820267b08b06976288f272a6cb6f810df2aa5994f0633efdc35ddc2272072b7e'],
+      ['window', '2a9e2eade404e674b30892d501e382483dff737797b7364baaae935b9ed07b5b'],
+      ['code', 'fc18e26bde5d6504635e65a05fe63318150296ae87fb56453d8dc94b8848a06a'],
+      ['yank', '6cc2db7425c8978a7fde6405aa964d30882a0dfe0fa7458b767849792ed2ca05'],
+      ['delete', '97b27baf8be48c272ae1bf114d6938a098ba882fa2cb7c9b95df2a7b60e3b056']
     ])
   })
 
@@ -96,14 +96,44 @@ describe('action pad YAML document', () => {
         tap: { type: 'input', nvimInput: '  <Esc>:echo "it\'s # λ"<CR>\n\t  ', after: 'stay' },
         longPress: { type: 'keyboard', after: 'root' }
       },
-      { id: 'hold', label: '⬆ 😀 \uf07c \u{f01c9}', styles: {}, longPress: { type: 'input', nvimInput: '{}: # \\ 2', after: 'root' } },
-      { id: 'back', label: 'Back', tap: { type: 'back', after: 'stay' } }
+      { id: 'hold', label: '⬆ 😀 \uf07c \u{f01c9}', styles: { size: '1/2' }, longPress: { type: 'input', nvimInput: '{}: # \\ 2', after: 'root' } },
+      { id: 'back', label: 'Back', styles: { size: '1/2' }, tap: { type: 'back', after: 'stay' } }
     ])
     const text = serializeActionPadConfig(value)
 
     expect(text).toContain("label: '2'")
     expect(parseActionPadConfig(text)).toEqual(value)
     expect(serializeActionPadConfig(parseActionPadConfig(text))).toBe(text)
+  })
+
+  it('round trips styled label runs without merging boundaries or changing typography', () => {
+    const label = [
+      { text: '\uf07c ', fontSize: 22, bold: false },
+      { text: 'Save', fontSize: 15, bold: true },
+      { text: ' ', fontSize: 10, bold: false },
+      { text: 'all 😀 \u{f01c9}', fontSize: 12, bold: false },
+      { text: '!', fontSize: 18, bold: true }
+    ] as const
+    const value = config([{ ...inputButton, label }])
+
+    const source = serializeActionPadConfig(value)
+    const parsed = parseActionPadConfig(source)
+    const resolved = resolveActionPadConfig(parsed)
+
+    expect(source).toContain('fontSize: 22')
+    expect(parsed).toEqual(value)
+    expect(parsed.menus[0]?.groups[0]?.buttons[0]?.label).toEqual(label)
+    expect(resolved.groups[0]?.buttons[0]?.label).toEqual(label)
+    expect(serializeActionPadConfig(parsed)).toBe(source)
+  })
+
+  it('keeps legacy labels as scalar strings when normalizing and serializing', () => {
+    const source = serializeActionPadConfig(config())
+    const parsed = parseActionPadConfig(source)
+
+    expect(source).toContain("label: 'Input'")
+    expect(typeof parsed.menus[0]?.groups[0]?.buttons[0]?.label).toBe('string')
+    expect(serializeActionPadConfig(parsed)).toBe(source)
   })
 
   it('round trips group interactions without changing their destination IDs', () => {
@@ -114,6 +144,7 @@ describe('action pad YAML document', () => {
         {
           id: 'home', label: 'Home', groups: [{ id: 'actions', buttons: [{
             id: 'delete', label: 'Delete',
+            styles: { size: '1/2' },
             tap: { type: 'group', menuId: 'delete', groupId: 'options', after: 'stay' }
           }] }]
         },
@@ -131,13 +162,15 @@ describe('action pad YAML document', () => {
   })
 
   it('normalizes formatting without changing array order or filling optional fields', () => {
-    const yaml = '# user comment\n' + JSON.stringify(config([{ id: 'hold', label: 'Hold', longPress: { type: 'back', after: 'root' } }]))
+    const yaml = '# user comment\n' + JSON.stringify(config([{
+      id: 'hold', label: 'Hold', styles: { size: '1/2' }, longPress: { type: 'back', after: 'root' }
+    }]))
     const value = parseActionPadConfig(yaml)
     const normalized = serializeActionPadConfig(value)
 
     expect(normalized).not.toContain('# user comment')
     expect(normalized).not.toContain('tap:')
-    expect(normalized).not.toContain('styles:')
+    expect(normalized).toContain("size: '1/2'")
     expect(parseActionPadConfig(normalized)).toEqual(value)
   })
 
@@ -174,6 +207,8 @@ describe('action pad document validation', () => {
     [{ ...inputButton, label: 2 }, 'label'],
     [{ ...inputButton, label: '   ' }, 'label'],
     [{ ...inputButton, typo: true }, 'typo'],
+    [{ id: 'missing-styles', label: 'Missing styles', tap: inputButton.tap }, 'styles'],
+    [{ ...inputButton, styles: {} }, 'styles.size'],
     [{ ...inputButton, styles: { color: 'red' } }, 'styles.color'],
     [{ ...inputButton, styles: { size: '1/3' } }, 'styles.size'],
     [{ ...inputButton, tap: { type: 'input', nvimInput: 2, after: 'root' } }, 'tap.nvimInput'],
@@ -185,7 +220,7 @@ describe('action pad document validation', () => {
     [{ ...inputButton, tap: { type: 'group', menuId: 'child', groupId: 'actions', nvimInput: 'x', after: 'root' } }, 'tap.nvimInput'],
     [{ ...inputButton, tap: { type: 'back', nvimInput: 'x', after: 'root' } }, 'tap.nvimInput'],
     [{ ...inputButton, tap: { type: 'shell', after: 'root' } }, 'tap.type'],
-    [{ id: 'empty', label: 'Empty' }, 'tap']
+    [{ id: 'empty', label: 'Empty', styles: { size: '1/2' } }, 'tap']
   ])('returns a specific path for an invalid button (%s)', (button, suffix) => {
     const value = candidateWithButton(button)
     const issues = validateActionPadConfig(value)
@@ -194,6 +229,35 @@ describe('action pad document validation', () => {
       expect.objectContaining({ path: `menus[0].groups[0].buttons[0].${suffix}` })
     ]))
     expect(() => parseActionPadConfig(JSON.stringify(value))).toThrow(ActionPadConfigError)
+  })
+
+  it.each([
+    [[], 'label'],
+    [[{ text: 'Text', fontSize: 15, bold: false, italic: true }], 'label[0].italic'],
+    [[{ text: 'Text', fontSize: 13, bold: false }], 'label[0].fontSize'],
+    [[{ text: 'Text', fontSize: 15, bold: 'false' }], 'label[0].bold'],
+    [[{ text: 2, fontSize: 15, bold: false }], 'label[0].text'],
+    [[{ text: '', fontSize: 15, bold: false }], 'label[0].text'],
+    [[{ text: '  ', fontSize: 15, bold: false }], 'label'],
+    [Array.from({ length: 65 }, () => ({ text: 'x', fontSize: 15, bold: false })), 'label']
+  ])('rejects an invalid styled label at its exact run path (%s)', (label, suffix) => {
+    const value = candidateWithButton({ ...inputButton, label })
+
+    expect(validateActionPadConfig(value)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: `menus[0].groups[0].buttons[0].${suffix}` })
+    ]))
+    expect(() => parseActionPadConfig(JSON.stringify(value))).toThrow(ActionPadConfigError)
+  })
+
+  it('allows whitespace separator runs when the combined rich label has visible text', () => {
+    expect(validateActionPadConfig(config([{
+      ...inputButton,
+      label: [
+        { text: 'Save', fontSize: 15, bold: true },
+        { text: '   ', fontSize: 10, bold: false },
+        { text: 'all', fontSize: 15, bold: false }
+      ]
+    }]))).toEqual([])
   })
 
   it('requires a supported schema version and a root that exists', () => {
@@ -227,13 +291,15 @@ describe('action pad document validation', () => {
 
   it('validates references and cycles in unreachable menus and both gesture slots', () => {
     const missing = { id: 'orphan', label: 'Orphan', groups: [{ id: 'actions', buttons: [{
-      id: 'hold', label: 'Hold', longPress: { type: 'menu', menuId: 'missing', after: 'stay' }
+      id: 'hold', label: 'Hold', styles: { size: '1/2' },
+      longPress: { type: 'menu', menuId: 'missing', after: 'stay' }
     }] }] }
     expect(validateActionPadConfig({ ...config(), menus: [...config().menus, missing] })).toEqual([
       expect.objectContaining({ path: 'menus[1].groups[0].buttons[0].longPress.menuId', message: 'Missing action menu definition: missing' })
     ])
     const cycle = { ...missing, groups: [{ id: 'actions', buttons: [{
-      id: 'hold', label: 'Hold', longPress: { type: 'menu', menuId: 'orphan', after: 'root' }
+      id: 'hold', label: 'Hold', styles: { size: '1/2' },
+      longPress: { type: 'menu', menuId: 'orphan', after: 'root' }
     }] }] }
     expect(validateActionPadConfig({ ...config(), menus: [...config().menus, cycle] })).toEqual([
       expect.objectContaining({ path: 'menus[1].groups[0].buttons[0].longPress.menuId', message: 'Cyclic action menu reference: orphan -> orphan' })
@@ -249,6 +315,7 @@ describe('action pad document validation', () => {
           ...config().menus[0]!,
           groups: [{ id: 'actions', buttons: [{
             id: 'open', label: 'Open',
+            styles: { size: '1/2' },
             tap: { type: 'group', menuId, groupId, after: 'stay' }
           }] }]
         },
@@ -284,12 +351,14 @@ describe('action pad document validation', () => {
         {
           id: 'home', label: 'Home', groups: [{ id: 'actions', buttons: [{
             id: 'cluster', label: 'Cluster',
+            styles: { size: '1/2' },
             tap: { type: 'group', menuId: 'child', groupId: 'options', after: 'stay' }
           }] }]
         },
         {
           id: 'child', label: 'Child', groups: [{ id: 'options', buttons: [{
-            id: 'home', label: 'Home', tap: { type: 'menu', menuId: 'home', after: 'stay' }
+            id: 'home', label: 'Home', styles: { size: '1/2' },
+            tap: { type: 'menu', menuId: 'home', after: 'stay' }
           }] }]
         }
       ]
@@ -314,7 +383,7 @@ describe('action pad document validation', () => {
 
   it('recovers structurally safe incomplete drafts without making them valid active configurations', () => {
     const draft = { version: 1, rootMenuId: '', menus: [
-      { id: '', label: '', groups: [{ id: '', buttons: [{ id: '', label: '' }] }] },
+      { id: '', label: '', groups: [{ id: '', buttons: [{ id: '', label: '', styles: { size: '1/2' } }] }] },
       { id: '', label: '', groups: [] }
     ] }
     const brokenReference = config([{ ...inputButton, tap: { type: 'menu', menuId: 'missing', after: 'stay' } }])
@@ -323,12 +392,29 @@ describe('action pad document validation', () => {
       ...inputButton,
       tap: { type: 'group', menuId: '', groupId: '', after: 'stay' }
     }])
+    const missingStyles = {
+      id: inputButton.id,
+      label: inputButton.label,
+      tap: inputButton.tap
+    }
+    const emptyRunDraft = config([{
+      ...inputButton,
+      label: [{ text: '', fontSize: 15, bold: false }]
+    }])
 
-    for (const value of [draft, brokenReference, cycle, incompleteGroup]) {
+    for (const value of [draft, brokenReference, cycle, incompleteGroup, emptyRunDraft]) {
       expect(isActionPadConfigShape(value)).toBe(true)
       expect(validateActionPadConfig(value).length).toBeGreaterThan(0)
     }
-    for (const value of [null, [], { ...draft, menus: [null] }, candidateWithButton({ ...inputButton, styles: { size: 'wide' } })]) {
+    for (const value of [
+      null,
+      [],
+      { ...draft, menus: [null] },
+      candidateWithButton(missingStyles),
+      candidateWithButton({ ...inputButton, label: [] }),
+      candidateWithButton({ ...inputButton, styles: {} }),
+      candidateWithButton({ ...inputButton, styles: { size: 'wide' } })
+    ]) {
       expect(isActionPadConfigShape(value)).toBe(false)
     }
   })
@@ -341,6 +427,29 @@ describe('action pad document validation', () => {
     expect(validateActionPadConfig(value)).toEqual([
       expect.objectContaining({ path: 'menus', message: 'Must contain at most 128 items.' })
     ])
+    expect(isActionPadConfigShape(value)).toBe(false)
+  })
+
+  it('counts styled label runs toward the total configuration complexity limit', () => {
+    const home = config().menus[0]!
+    const value = {
+      ...config(),
+      menus: [{
+        ...home,
+        groups: [{
+          id: 'actions',
+          buttons: Array.from({ length: 910 }, (_, index) => ({
+            ...inputButton,
+            id: `input-${index}`,
+            label: Array.from({ length: 10 }, () => ({ text: 'x', fontSize: 15, bold: false }))
+          }))
+        }]
+      }]
+    }
+
+    expect(validateActionPadConfig(value)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('label runs') })
+    ]))
     expect(isActionPadConfigShape(value)).toBe(false)
   })
 })

@@ -17,20 +17,32 @@ function config(): ActionPadConfig {
         id: 'home', label: 'Home', groups: [
           {
             id: 'actions', buttons: [
-              { id: 'input', label: 'Input', tap: { type: 'input', nvimInput: 'x', after: 'stay' } },
               {
-                id: 'open', label: 'Open',
+                id: 'input', label: 'Input', styles: { size: '1/2' },
+                tap: { type: 'input', nvimInput: 'x', after: 'stay' }
+              },
+              {
+                id: 'open', label: 'Open', styles: { size: '1/2' },
                 tap: { type: 'menu', menuId: 'child', after: 'stay' },
                 longPress: { type: 'menu', menuId: 'child', after: 'root' }
               }
             ]
           },
-          { id: 'other', buttons: [{ id: 'input', label: 'Other', tap: { type: 'keyboard', after: 'stay' } }] }
+          {
+            id: 'other', buttons: [{
+              id: 'input', label: 'Other', styles: { size: '1/2' },
+              tap: { type: 'keyboard', after: 'stay' }
+            }]
+          }
         ]
       },
       {
         id: 'child', label: 'Child', groups: [
-          { id: 'actions', buttons: [{ id: 'back', label: 'Back', tap: { type: 'back', after: 'stay' } }] }
+          {
+            id: 'actions', buttons: [{
+              id: 'back', label: 'Back', styles: { size: '1/2' }, tap: { type: 'back', after: 'stay' }
+            }]
+          }
         ]
       },
       { id: 'unused', label: 'Unused', groups: [] }
@@ -74,6 +86,7 @@ describe('Action Pad edits', () => {
     expect(validateActionPadConfig(next)).toContainEqual({
       path: 'menus[2].groups[0].buttons[0].tap.nvimInput', message: 'Must not be empty.'
     })
+    expect(next.menus[2]?.groups[0]?.buttons[0]?.styles).toEqual({ size: '1/2' })
     next = editActionPad(next, {
       type: 'update-button', location: { menuIndex: 2, groupIndex: 0, buttonIndex: 0 },
       patch: { tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' } }
@@ -291,7 +304,7 @@ describe('Action Pad edits', () => {
         {
           id: 'orphan-parent', label: 'Orphan parent', groups: [{
             id: 'actions', buttons: [{
-              id: 'open-child', label: 'Open child',
+              id: 'open-child', label: 'Open child', styles: { size: '1/2' },
               tap: { type: 'menu', menuId: 'orphan-child', after: 'stay' }
             }]
           }]
@@ -349,7 +362,14 @@ describe('Action Pad edits', () => {
   })
 
   it('reorders menus, groups and buttons without changing their contents or root', () => {
-    const original = config()
+    const original = editActionPad(config(), {
+      type: 'update-button',
+      location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 },
+      patch: { label: [
+        { text: '\uf07c ', fontSize: 22, bold: false },
+        { text: 'Input', fontSize: 15, bold: true }
+      ] }
+    })
     let next = editActionPad(original, { type: 'reorder-menu', menuIndex: 0, direction: 1 })
     expect(next.menus.map((menu) => menu.id)).toEqual(['child', 'home', 'unused'])
     expect(next.rootMenuId).toBe('home')
@@ -385,8 +405,13 @@ describe('Action Pad edits', () => {
       id: 'input', label: '001', styles: { size: '1/4' },
       tap: { type: 'input', nvimInput: input, after: 'root' }, longPress: { type: 'keyboard', after: 'stay' }
     })
-    next = editActionPad(next, { type: 'update-button', location, patch: { tap: undefined, styles: undefined, accessibilityLabel: undefined, accessibilityHint: undefined } })
-    expect(next.menus[0]?.groups[0]?.buttons[0]).toEqual({ id: 'input', label: '001', longPress: { type: 'keyboard', after: 'stay' } })
+    next = editActionPad(next, {
+      type: 'update-button', location,
+      patch: { tap: undefined, styles: undefined, accessibilityLabel: undefined, accessibilityHint: undefined }
+    })
+    expect(next.menus[0]?.groups[0]?.buttons[0]).toEqual({
+      id: 'input', label: '001', styles: { size: '1/4' }, longPress: { type: 'keyboard', after: 'stay' }
+    })
     expect(validateActionPadConfig(next)).toEqual([])
     next = editActionPad(next, { type: 'update-button', location, patch: { longPress: undefined } })
     expect(validateActionPadConfig(next)).toContainEqual({ path: 'menus[0].groups[0].buttons[0].tap', message: 'A button must define tap or longPress.' })
@@ -418,6 +443,62 @@ describe('Action Pad edits', () => {
     expect(JSON.stringify(original)).toBe(before)
   })
 
+  it('deep-copies rich labels and gives the copy suffix a readable default treatment', () => {
+    const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
+    const original = editActionPad(config(), {
+      type: 'update-button',
+      location,
+      patch: {
+        label: [
+          { text: '\uf07c ', fontSize: 22, bold: false },
+          { text: 'Open', fontSize: 15, bold: false }
+        ]
+      }
+    })
+    const source = original.menus[0]!.groups[0]!.buttons[0]!
+
+    const appended = editActionPad(original, { type: 'duplicate-button', location })
+    const appendedLabel = appended.menus[0]!.groups[0]!.buttons[1]!.label
+    expect(appendedLabel).toEqual([
+      { text: '\uf07c ', fontSize: 22, bold: false },
+      { text: 'Open copy', fontSize: 15, bold: false }
+    ])
+    expect(appendedLabel).not.toBe(source.label)
+    expect(Array.isArray(appendedLabel) && Array.isArray(source.label) && appendedLabel[0]).not.toBe(
+      Array.isArray(source.label) ? source.label[0] : undefined
+    )
+
+    const boldEnding = editActionPad(config(), {
+      type: 'update-button',
+      location,
+      patch: { label: [{ text: 'Open', fontSize: 18, bold: true }] }
+    })
+    const added = editActionPad(boldEnding, { type: 'duplicate-button', location })
+    expect(added.menus[0]!.groups[0]!.buttons[1]!.label).toEqual([
+      { text: 'Open', fontSize: 18, bold: true },
+      { text: ' copy', fontSize: 15, bold: false }
+    ])
+  })
+
+  it('rejects duplication when a 64-run label needs a separate copy suffix run', () => {
+    const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
+    const original = editActionPad(config(), {
+      type: 'update-button',
+      location,
+      patch: {
+        label: Array.from({ length: 64 }, (_, index) => ({
+          text: String(index),
+          fontSize: 22 as const,
+          bold: true
+        }))
+      }
+    })
+
+    expect(() => editActionPad(original, { type: 'duplicate-button', location })).toThrow(
+      'This label already has 64 runs. Remove a run or end it with a regular size-15 run before duplicating the button.'
+    )
+  })
+
   it('generates duplicate IDs across the selected menu and through repeated duplication', () => {
     const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
     let next = editActionPad(config(), {
@@ -431,7 +512,15 @@ describe('Action Pad edits', () => {
   })
 
   it('moves within a menu and across menus without cloning or changing the moved button', () => {
-    const original = editActionPad(config(), { type: 'add-group', menuIndex: 2 })
+    let original = editActionPad(config(), { type: 'add-group', menuIndex: 2 })
+    original = editActionPad(original, {
+      type: 'update-button',
+      location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 },
+      patch: { label: [
+        { text: '\uf07c ', fontSize: 22, bold: false },
+        { text: 'Input', fontSize: 15, bold: true }
+      ] }
+    })
     const moved = original.menus[0]!.groups[0]!.buttons[0]
     let next = editActionPad(original, {
       type: 'move-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 },
@@ -439,6 +528,10 @@ describe('Action Pad edits', () => {
     })
     expect(next.menus[0]?.groups[0]?.buttons.map((button) => button.id)).toEqual(['open'])
     expect(next.menus[2]?.groups[0]?.buttons[0]).toBe(moved)
+    expect(next.menus[2]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: '\uf07c ', fontSize: 22, bold: false },
+      { text: 'Input', fontSize: 15, bold: true }
+    ])
     next = editActionPad(next, {
       type: 'move-button', location: { menuIndex: 0, groupIndex: 0, buttonIndex: 0 },
       destination: { menuIndex: 0, groupIndex: 1 }

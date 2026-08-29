@@ -17,7 +17,10 @@ const fixture: ActionPadConfig = {
   rootMenuId: 'home',
   menus: [{
     id: 'home', label: 'Home', groups: [{
-      id: 'main', buttons: [{ id: 'escape', label: 'Esc', tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' } }]
+      id: 'main', buttons: [{
+        id: 'escape', label: 'Esc', styles: { size: '1/2' },
+        tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' }
+      }]
     }]
   }]
 }
@@ -29,13 +32,32 @@ function editLabel(config: ActionPadConfig, label = 'Changed'): ActionPadConfig 
   }
 }
 
+function editButtonLabel(
+  config: ActionPadConfig,
+  label: ActionPadConfig['menus'][number]['groups'][number]['buttons'][number]['label']
+): ActionPadConfig {
+  return {
+    ...config,
+    menus: config.menus.map((menu, menuIndex) => menuIndex === 0 ? {
+      ...menu,
+      groups: menu.groups.map((group, groupIndex) => groupIndex === 0 ? {
+        ...group,
+        buttons: group.buttons.map((button, buttonIndex) => buttonIndex === 0
+          ? { ...button, label }
+          : button)
+      } : group)
+    } : menu)
+  }
+}
+
 function withUnusedMenu(config: ActionPadConfig): ActionPadConfig {
   return {
     ...config,
     menus: [...config.menus, {
       id: 'unused', label: 'Unused', groups: [{
         id: 'tools', buttons: [{
-          id: 'noop', label: 'No-op', tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' }
+          id: 'noop', label: 'No-op', styles: { size: '1/2' },
+          tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' }
         }]
       }]
     }]
@@ -113,6 +135,29 @@ describe('ActionPadConfigStore', () => {
     expect(test.documents.writeHostDocument).toHaveBeenCalledWith(endpoint, expect.objectContaining({
       path: sourcePath, expectedRevision: '1', expectedResolvedPath: sourcePath
     }))
+  })
+
+  it('recovers, saves, and reloads rich button-label runs without flattening them', async () => {
+    const test = setup()
+    await test.connect()
+    const richLabel = [
+      { text: '\uf07c ', fontSize: 22 as const, bold: false },
+      { text: 'Open', fontSize: 15 as const, bold: true },
+      { text: ' file', fontSize: 12 as const, bold: false }
+    ]
+    const draft = editButtonLabel(fixture, richLabel)
+    test.store.setDraft(draft)
+    await test.store.flushRecovery()
+
+    const restored = new ActionPadConfigStore(test.documents, test.storage)
+    await restored.selectEndpoint(endpoint)
+    expect(restored.getState()).toMatchObject({ activeConfig: fixture, draft, dirty: true })
+    await restored.setConnected(true)
+    await restored.save(sourcePath)
+
+    const saved = parseActionPadConfig(test.files.get(sourcePath)!.text!)
+    expect(saved.menus[0]!.groups[0]!.buttons[0]!.label).toEqual(richLabel)
+    expect(restored.getState()).toMatchObject({ activeConfig: draft, draft, dirty: false })
   })
 
   it('recovers a removed menu offline and keeps it absent after save and a fresh reload', async () => {
@@ -341,7 +386,12 @@ describe('ActionPadConfigStore', () => {
   it('exports a snapshot with confirmation without changing the link, active pad, or dirty state', async () => {
     const test = setup()
     await test.connect()
-    const draft = editLabel(fixture)
+    const richLabel = [
+      { text: '\uf07c ', fontSize: 22 as const, bold: false },
+      { text: 'Export', fontSize: 15 as const, bold: true },
+      { text: ' copy', fontSize: 12 as const, bold: false }
+    ]
+    const draft = editButtonLabel(fixture, richLabel)
     test.store.setDraft(draft)
     const destination = '/home/test/export.yaml'
     test.put(destination, 'existing backup')
@@ -351,6 +401,7 @@ describe('ActionPadConfigStore', () => {
     expect(test.files.get(destination)?.text).toBe('existing backup')
     await test.store.export(destination, async () => true)
     expect(test.files.get(destination)?.text).toBe(serializeActionPadConfig(draft))
+    expect(parseActionPadConfig(test.files.get(destination)!.text!).menus[0]!.groups[0]!.buttons[0]!.label).toEqual(richLabel)
     expect(test.store.getState()).toMatchObject({ sourcePath, activeConfig: fixture, draft, dirty: true })
     test.documents.writeHostDocument.mockClear()
     await test.store.export(sourcePath, async () => true)
@@ -385,6 +436,40 @@ describe('ActionPadConfigStore', () => {
     test.store.discardDraft()
     expect(test.store.getState()).toMatchObject({ activeConfig: fixture, draft: fixture, dirty: false })
     expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
+  })
+
+  it('rejects legacy recovery configurations without explicit button sizes', async () => {
+    const test = setup()
+    test.storageRecords.set(actionPadStorageKey(endpoint), JSON.stringify({
+      version: 1,
+      sourcePath,
+      activeConfig: {
+        version: 1,
+        rootMenuId: 'home',
+        menus: [{
+          id: 'home', label: 'Home', groups: [{
+            id: 'main', buttons: [{
+              id: 'escape', label: 'Esc',
+              tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' }
+            }]
+          }]
+        }]
+      },
+      draft: null,
+      idDrafts: {},
+      baseline: null,
+      pendingSave: null
+    }))
+
+    await test.store.selectEndpoint(endpoint)
+
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: DEFAULT_ACTION_PAD_CONFIG,
+      draft: DEFAULT_ACTION_PAD_CONFIG,
+      dirty: false,
+      error: true
+    })
+    expect(test.store.getState().message).toContain('Invalid cached configuration')
   })
 
   it('falls back safely on malformed recovery data and reports storage failure', async () => {

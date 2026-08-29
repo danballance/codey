@@ -1,4 +1,5 @@
 import { validateActionPadConfig, type ActionPadConfig } from './document'
+import type { ActionButtonLabel } from './types'
 
 export type EditableMenu = ActionPadConfig['menus'][number]
 export type EditableGroup = EditableMenu['groups'][number]
@@ -272,6 +273,7 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
         buttons: [...group.buttons, {
           id: createActionPadId('button', menu.groups.flatMap((candidate) => candidate.buttons.map((button) => button.id))),
           label: 'New button',
+          styles: { size: '1/2' },
           tap: { type: 'input', nvimInput: '', after: 'stay' }
         }]
       })
@@ -283,8 +285,8 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
       const duplicate: EditableButton = {
         ...button,
         id: createActionPadId(button.id, menu.groups.flatMap((candidate) => candidate.buttons.map(({ id }) => id))),
-        label: `${button.label} copy`,
-        ...(button.styles === undefined ? {} : { styles: { ...button.styles } }),
+        label: duplicateButtonLabel(button.label),
+        styles: { ...button.styles },
         ...(button.tap === undefined ? {} : { tap: { ...button.tap } }),
         ...(button.longPress === undefined ? {} : { longPress: { ...button.longPress } })
       }
@@ -303,8 +305,8 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
       if (edit.patch.id !== undefined && group.buttons.some((candidate, index) => index !== edit.location.buttonIndex && candidate.id === edit.patch.id)) {
         throw new ActionPadEditError(`A button with ID “${edit.patch.id}” already exists in this group.`)
       }
-      const updated = { ...button, ...edit.patch }
-      for (const optional of ['tap', 'longPress', 'accessibilityLabel', 'accessibilityHint', 'styles'] as const) {
+      const updated = { ...button, ...edit.patch, styles: edit.patch.styles ?? button.styles }
+      for (const optional of ['tap', 'longPress', 'accessibilityLabel', 'accessibilityHint'] as const) {
         if (updated[optional] === undefined) delete updated[optional]
       }
       return replaceGroup(config, edit.location, {
@@ -343,6 +345,23 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
       return replaceGroup(removed, edit.destination, { ...destination, buttons: [...destination.buttons, button] })
     }
   }
+}
+
+function duplicateButtonLabel(label: ActionButtonLabel): ActionButtonLabel {
+  if (typeof label === 'string') return `${label} copy`
+
+  const runs = label.map((run) => ({ ...run }))
+  const lastIndex = runs.length - 1
+  const last = runs[lastIndex]
+  if (last !== undefined && last.fontSize === 15 && !last.bold) {
+    runs[lastIndex] = { ...last, text: `${last.text} copy` }
+  } else {
+    if (runs.length >= 64) {
+      throw new ActionPadEditError('This label already has 64 runs. Remove a run or end it with a regular size-15 run before duplicating the button.')
+    }
+    runs.push({ text: ' copy', fontSize: 15, bold: false })
+  }
+  return runs
 }
 
 function requireMenu(config: ActionPadConfig, index: number): EditableMenu {

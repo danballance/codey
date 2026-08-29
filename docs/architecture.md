@@ -73,22 +73,22 @@ command-line, popup-menu, or message UIs.
 ## Android platform boundary
 
 The app evaluates the active Android window before constructing any editor
-resource. The generated manifest leaves orientation unspecified. Runtime
-eligibility depends only on tablet-sized bounds:
+resource. Expo requests landscape in the generated manifest, and the runtime
+gate remains authoritative when a large-screen device ignores that request:
 
-- shortest side below `600dp`: unsupported; no transport, session, renderer, or
-  IME is created;
-- shortest side at least `600dp`, width below `840dp`: supported condensed
+- portrait or square bounds, or a shortest side below `600dp`: unsupported; no
+  transport, session, renderer, or IME is created;
+- landscape bounds with a shortest side at least `600dp` and width below
+  `840dp`: supported condensed
   tablet shell;
-- shortest side at least `600dp`, width at least `840dp`: primary large-tablet
-  shell.
+- landscape bounds with a shortest side at least `600dp` and width at least
+  `840dp`: primary large-tablet shell.
 
 Phones are not filtered from the manifest. If an active editor window becomes
 unsupported during multi-window resizing, the controller tears down the session
-idempotently before showing the unsupported-device screen. Supported portrait
-and square bounds use a stacked terminal and action pad; landscape bounds place
-the same persistent action pad in a fixed `336dp` right rail. Changing layout
-does not recreate the connection, editor controller, or action-pad state.
+idempotently before showing the unsupported-device screen. Returning to
+supported landscape constructs a fresh disconnected client. The supported
+workspace places the action pad in a fixed `336dp` right rail.
 
 The app-local controller owns exactly one current connection. It validates and
 persists host/port settings, exposes explicit connect, disconnect, and reconnect
@@ -161,30 +161,20 @@ and modified keys are complete trusted `nvim_input` strings such as `<Esc>` and
 for either. Inputs can retain a cluster for repetition or return the complete
 pad to root.
 
-Below the editor, the action pad normally follows the Figma 213dp treatment.
-When the software keyboard removes at least 120dp of usable height, it compacts
-to 144dp while retaining two 48dp touch rows and yields the remaining space to
-the editor. To the editor's right, it uses a `336dp` rail at full workspace
-height. The trusted configuration still owns density and can overflow, but a
-cluster swap never changes sibling positions, the scroll-view instance, its
-content extent, or its scroll offset.
+The action pad uses a `336dp` rail at full workspace height. When the software
+keyboard removes at least 120dp of usable height, the rail switches to its
+compact treatment while retaining 48dp touch targets. The trusted configuration
+still owns density and can overflow, but a cluster swap never changes sibling
+positions, the scroll-view instance, its content extent, or its scroll offset.
 
-Each base-page slot has a fixed capacity envelope computed by following only
-group-action targets reachable from that slot. Below the editor, a variant with
-`buttonCount` buttons needs `max(1, ceil(buttonCount / 2))` columns. The slot
-always renders against the maximum reachable column count with 48dp minimum
-cells and 6dp internal and inter-group gaps. Its minimum basis is
-`columns × 48 + (columns - 1) × 6`; surplus width is distributed
-proportionally. Oversized configurations remain in a horizontal overflow
-container whose content width is fixed across substitutions.
-
-In the right rail, default and half-sized buttons consume two units and quarter
-buttons consume one unit in four-unit rows. A slot reserves the maximum exact
-row height across its reachable variants using the normal or compact button
-height and existing gaps. The shared vertical overflow container therefore
-keeps the same geometry through a substitution. Both placements preserve 48dp
-touch targets and the existing press ownership, long-press, release, and stale
-activation guards.
+Each base-page slot has a fixed rail-capacity envelope computed by following
+only group-action targets reachable from that slot. Every button explicitly
+declares `styles.size` as `"1/2"` or `"1/4"`: half buttons consume two units and
+quarter buttons consume one unit in four-unit rows. A slot reserves the maximum
+exact row height across its reachable variants using the normal or compact
+button height and existing gaps. The shared vertical overflow container keeps
+the same geometry through a substitution while preserving the existing press
+ownership, long-press, release, and stale-activation guards.
 
 The current Neovim mode, full-page breadcrumb, and active-cluster label are
 projections in the action-pad header, not a second Neovim state machine. The
@@ -194,21 +184,34 @@ cluster. Hardware-key input remains independent of the touch-menu path.
 
 The action document is YAML data, with `version`, `rootMenuId`, and ordered
 menus, groups, and buttons. A `group` interaction carries both `menuId` and
-`groupId`. Strict semantic validation requires both destinations, rejects
-same-menu references and cycles mixed across menu/group links, and the resolver
-preserves destination object identity. The bundled starter and user-selected
-host files use the same parser. The renderer sees only a validated graph, whose
-identity changes after a successful Load/Save rather than on each form edit or
-editor redraw; replacement resets navigation to root. This prototype
-deliberately evolves schema version 1 in place and does not promise that older
-builds can read group-enabled version-1 documents.
+`groupId`, and every button carries an explicit `styles.size` of `"1/2"` or
+`"1/4"`. A button label is either a legacy string or an ordered list of at most
+64 explicit `{text, fontSize, bold}` runs. The fixed font-size set is 10, 12, 15,
+18, and 22; compact mode uses 9, 10, 13, 16, and 19. Non-bold runs and scalar
+labels use regular weight; bold runs use the bold face, with system fallbacks
+of 400 and 700. Each editor run can contain both text and icons. Its icon picker
+inserts at the remembered selection without changing typography or run count;
+run identities and UTF-16 cursor state are editor-only and never persisted.
+Pending insertion is discarded when its document or target changes.
+Strict semantic validation
+requires those fields and both destinations, rejects malformed or blank rich
+labels, rejects same-menu references and cycles mixed across menu/group links,
+and the resolver preserves destination object identity. The bundled starter
+and user-selected host files use the same parser. The renderer sees only a
+validated graph, whose identity changes after a successful Load/Save rather
+than on each form edit or editor redraw; replacement resets navigation to root.
+This prototype deliberately evolves schema version 1 in place. It provides no
+migration or implicit size for older documents, and older builds reject rich
+labels even though legacy strings remain valid.
 
 The configuration store owns the active document, editable draft, host-file
 identity/revision, and endpoint-specific recovery cache. The separate editor
-uses the same layout renderer with no-op input/keyboard callbacks. Entering the
-editor settles the prior IME composition and blurs the Neovim input target;
-ordinary form text cannot enter the session. Editor access sits outside user
-configuration so an empty or unusable pad can always be repaired.
+does not mount an interactive action pad; its button-label form reuses the
+production text renderer in a noninteractive Normal/Compact preview. Entering
+the editor settles the prior IME composition, blurs the Neovim input target,
+and suspends active pad input; ordinary form text cannot enter the session.
+Editor access sits outside user configuration so an empty or unusable pad can
+always be repaired.
 
 Host document operations are typed `nvim-session` methods implemented by fixed
 `nvim_exec_lua` chunks with paths/content passed as RPC arguments. Reads do not
@@ -220,8 +223,8 @@ session. A timed-out write is not automatically replayed: its outcome must be
 reconciled by reading the file.
 
 User-selected configurations are executable input configuration, not a safe
-command sandbox. Loading/editing/previewing does not dispatch their inputs, but
-active input buttons may execute arbitrary Neovim commands. The existing
+command sandbox. Loading or editing does not dispatch their inputs, but active
+input buttons may execute arbitrary Neovim commands. The existing
 trusted-private-network requirement applies to both input and host file access.
 There is no Android file backend, cloud/Git synchronization, or remote file
 browser; Load/Save/Export use explicit host paths.
@@ -234,7 +237,7 @@ directory. Native module source remains tracked under `apps/android/modules/`.
 - One configured endpoint and one active connection per client.
 - One basic Neovim grid.
 - Manual host process startup and manual reconnect.
-- Android requires a tablet-sized window and a development build.
+- Android requires a landscape tablet-sized window and a development build.
 - No TLS, authentication, discovery, daemon, or remote-access relay.
 - Mouse gestures beyond a single left-button tap, clipboard integration, iOS,
   emulator support, advanced UI extensions, and Android phone layouts are out

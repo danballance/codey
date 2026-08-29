@@ -3,7 +3,9 @@ import { Alert, Dimensions, ScrollView, StyleSheet, TextInput } from 'react-nati
 import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react-native'
 
 import { ActionPadEditor, type ActionPadEditorProps } from '../ActionPadEditor'
+import { NerdFontIconPicker } from '../NerdFontIconPicker'
 import { type ActionPadConfig } from '../document'
+import { type ActionButtonLabel } from '../types'
 
 const mockUseCodeyNerdFontFaces = jest.fn((): [boolean, Error | null] => [true, null])
 const mockBmpIcon = {
@@ -54,17 +56,17 @@ function config(): ActionPadConfig {
         id: 'home', label: 'Home', groups: [{
           id: 'actions', buttons: [
             {
-              id: 'input', label: 'Run input', tap: { type: 'input', nvimInput: 'x', after: 'stay' },
+              id: 'input', label: 'Run input', styles: { size: '1/2' }, tap: { type: 'input', nvimInput: 'x', after: 'stay' },
               longPress: { type: 'input', nvimInput: '<C-x>', after: 'stay' }
             },
-            { id: 'open', label: 'Open child', tap: { type: 'menu', menuId: 'child', after: 'stay' } },
-            { id: 'keyboard', label: 'Keyboard', tap: { type: 'keyboard', after: 'stay' } }
+            { id: 'open', label: 'Open child', styles: { size: '1/2' }, tap: { type: 'menu', menuId: 'child', after: 'stay' } },
+            { id: 'keyboard', label: 'Keyboard', styles: { size: '1/2' }, tap: { type: 'keyboard', after: 'stay' } }
           ]
         }]
       },
       {
         id: 'child', label: 'Child', groups: [{
-          id: 'target', buttons: [{ id: 'back', label: 'Go back', tap: { type: 'back', after: 'stay' } }]
+          id: 'target', buttons: [{ id: 'back', label: 'Go back', styles: { size: '1/2' }, tap: { type: 'back', after: 'stay' } }]
         }]
       }
     ]
@@ -80,12 +82,12 @@ function menuManagerConfig(): ActionPadConfig {
         id: 'home', label: 'Home', groups: [{
           id: 'actions', buttons: [
             {
-              id: 'launch', label: 'Launch child',
+              id: 'launch', label: 'Launch child', styles: { size: '1/2' },
               tap: { type: 'menu', menuId: 'child', after: 'stay' },
               longPress: { type: 'group', menuId: 'child', groupId: 'target', after: 'stay' }
             },
             {
-              id: 'alternate', label: 'Alternate child',
+              id: 'alternate', label: 'Alternate child', styles: { size: '1/2' },
               tap: { type: 'group', menuId: 'child', groupId: 'target', after: 'stay' },
               longPress: { type: 'menu', menuId: 'child', after: 'stay' }
             }
@@ -94,13 +96,13 @@ function menuManagerConfig(): ActionPadConfig {
       },
       {
         id: 'child', label: 'Child', groups: [{
-          id: 'target', buttons: [{ id: 'back', label: 'Go back', tap: { type: 'back', after: 'stay' } }]
+          id: 'target', buttons: [{ id: 'back', label: 'Go back', styles: { size: '1/2' }, tap: { type: 'back', after: 'stay' } }]
         }]
       },
       {
         id: 'orphan-parent', label: 'Orphan parent', groups: [{
           id: 'tools', buttons: [{
-            id: 'open-orphan', label: 'Open orphan child',
+            id: 'open-orphan', label: 'Open orphan child', styles: { size: '1/2' },
             tap: { type: 'menu', menuId: 'orphan-child', after: 'stay' }
           }]
         }]
@@ -108,7 +110,7 @@ function menuManagerConfig(): ActionPadConfig {
       {
         id: 'orphan-child', label: 'Orphan child', groups: [{
           id: 'leaf', buttons: [{
-            id: 'noop', label: 'No-op', tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' }
+            id: 'noop', label: 'No-op', styles: { size: '1/2' }, tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' }
           }]
         }]
       }
@@ -140,6 +142,31 @@ function renderEditor(overrides: Partial<ActionPadEditorProps> = {}) {
   }
   const screen = render(<Harness />)
   return { ...screen, props: initialProps, draft: () => latest }
+}
+
+function configWithLabel(label: ActionButtonLabel): ActionPadConfig {
+  const original = config()
+  return {
+    ...original,
+    menus: original.menus.map((menu, menuIndex) => menuIndex === 0 ? {
+      ...menu,
+      groups: menu.groups.map((group, groupIndex) => groupIndex === 0 ? {
+        ...group,
+        buttons: group.buttons.map((button, buttonIndex) => buttonIndex === 0 ? { ...button, label } : button)
+      } : group)
+    } : menu)
+  }
+}
+
+function selectRunText(screen: ReturnType<typeof render>, run: number, start: number, end = start) {
+  fireEvent(screen.getByLabelText(run === 1 ? 'Button label' : `Button label run ${run}`), 'selectionChange', {
+    nativeEvent: { selection: { start, end } }
+  })
+}
+
+function captureIconInsertion(screen: ReturnType<typeof render>) {
+  const onSelect: (icon: typeof mockBmpIcon) => void = screen.UNSAFE_getByType(NerdFontIconPicker).props.onSelect
+  return () => onSelect(mockBmpIcon)
 }
 
 function emitLayout(screen: ReturnType<typeof render>, testID: string, y: number) {
@@ -244,6 +271,7 @@ describe('ActionPadEditor', () => {
           buttons: Array.from({ length: 30 }, (_, index) => ({
             id: `link-${index + 1}`,
             label: `Link ${index + 1}`,
+            styles: { size: '1/2' as const },
             tap: { type: 'menu' as const, menuId: 'child', after: 'stay' as const }
           }))
         }]
@@ -269,10 +297,10 @@ describe('ActionPadEditor', () => {
     let draft: ActionPadConfig = {
       ...config(), menus: [...config().menus, {
         id: 'another', label: 'Home', groups: [
-          { id: 'elsewhere', buttons: [{ id: 'input', label: 'Run input', tap: { type: 'input', nvimInput: 'wrong group', after: 'stay' } }] },
+          { id: 'elsewhere', buttons: [{ id: 'input', label: 'Run input', styles: { size: '1/2' }, tap: { type: 'input', nvimInput: 'wrong group', after: 'stay' } }] },
           { id: 'actions', buttons: [
-            { id: 'other', label: 'Other', tap: { type: 'back', after: 'stay' } },
-            { id: 'input', label: 'Run input', tap: { type: 'input', nvimInput: 'chosen', after: 'stay' } }
+            { id: 'other', label: 'Other', styles: { size: '1/2' }, tap: { type: 'back', after: 'stay' } },
+            { id: 'input', label: 'Run input', styles: { size: '1/2' }, tap: { type: 'input', nvimInput: 'chosen', after: 'stay' } }
           ] }
         ]
       }]
@@ -425,6 +453,8 @@ describe('ActionPadEditor', () => {
   it('edits labels, exact Neovim input, accessibility text and size with regular text fields', () => {
     const screen = renderEditor()
     const exactInput = '  <C-w>h\n\t0\uf07c🙂  '
+    expect(screen.getByRole('button', { name: 'Button size: Half' }).props.accessibilityState.selected).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Button size: Default' })).toBeNull()
     fireEvent.changeText(screen.getByLabelText('Button label'), '001 \uf07c')
     fireEvent.changeText(screen.getByLabelText('Tap Neovim input'), exactInput)
     fireEvent.changeText(screen.getByLabelText('Button ID'), 'new-id')
@@ -496,54 +526,143 @@ describe('ActionPadEditor', () => {
     expect(noticeStyle.fontWeight).toBe(loaded ? 'normal' : undefined)
   })
 
-  it.each([
-    {
-      name: 'BMP icon at a collapsed cursor', selection: { start: 3, end: 3 }, action: 'Insert mock BMP icon',
-      expected: `Run${mockBmpIcon.glyph} input`, caret: 4
-    },
-    {
-      name: 'astral icon over selected text', selection: { start: 0, end: 3 }, action: 'Insert mock astral icon',
-      expected: `${mockAstralIcon.glyph} input`, caret: 2
-    }
-  ])('inserts a $name and restores the label caret', async ({ selection, action, expected, caret }) => {
+  it('keeps text-only legacy edits as strings and converts to ordered runs for typography controls', async () => {
     const focus = jest.spyOn(TextInput.prototype, 'focus').mockClear()
     const screen = renderEditor()
-    const label = screen.getByLabelText('Button label')
-    fireEvent(label, 'selectionChange', { nativeEvent: { selection } })
-    fireEvent.press(screen.getByRole('button', { name: 'Choose Nerd Font icon…' }))
+
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1 font size: 15' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1 weight: Regular' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe('Run input')
+    expect(screen.props.onChange).not.toHaveBeenCalled()
+
+    fireEvent.changeText(screen.getByLabelText('Button label'), 'Edited legacy')
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe('Edited legacy')
+
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1 font size: 18' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1 weight: Bold' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: 'Edited legacy', fontSize: 18, bold: true }
+    ])
+
+    fireEvent.press(screen.getByRole('button', { name: 'Add run' }))
+    await waitFor(() => expect(focus).toHaveBeenCalled())
+    expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
+    expect(StyleSheet.flatten(screen.getByLabelText('Button label run 2').props.style).borderColor).toBe('#ff7b72')
+    fireEvent.changeText(screen.getByLabelText('Button label run 2'), ' first')
+    expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
+
+    fireEvent.press(screen.getByRole('button', { name: 'Move label run 2 earlier' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: ' first', fontSize: 15, bold: false },
+      { text: 'Edited legacy', fontSize: 18, bold: true }
+    ])
+    fireEvent.press(screen.getByRole('button', { name: 'Delete label run 1' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Remove label formatting' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe('Edited legacy')
+    expect(screen.queryByRole('button', { name: 'Remove label formatting' })).toBeNull()
+  })
+
+  it('previews the selected button width at normal and compact density with production metrics', () => {
+    const screen = renderEditor()
+    const stageNode = () => screen.getByTestId('action-button-label-preview', { includeHiddenElements: true })
+    const stage = () => StyleSheet.flatten(stageNode().props.style)
+    const previewButton = () => StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style)
+    const previewText = () => StyleSheet.flatten(screen.getByTestId('action-button-label-preview-text', { includeHiddenElements: true }).props.style)
+
+    expect(stage()).toMatchObject({ width: 336, padding: 24, borderLeftWidth: 2 })
+    expect(previewButton()).toMatchObject({ width: '48%', height: 52, borderWidth: 1, borderColor: 'transparent' })
+    expect(previewText()).toMatchObject({ fontSize: 15, fontFamily: 'CodeyNerdFont-Regular' })
+    expect(stageNode().props).toMatchObject({
+      accessible: false,
+      accessibilityElementsHidden: true,
+      importantForAccessibility: 'no-hide-descendants'
+    })
+    expect(screen.getByRole('button', { name: 'Preview density: Normal' }).props.accessibilityState.selected).toBe(true)
+
+    fireEvent.press(screen.getByRole('button', { name: 'Preview density: Compact' }))
+    expect(stage().padding).toBe(8)
+    expect(previewButton()).toMatchObject({ width: '48%', height: 48 })
+    expect(previewText()).toMatchObject({ fontSize: 13, fontFamily: 'CodeyNerdFont-Regular' })
+    fireEvent.press(screen.getByRole('button', { name: 'Button size: Quarter' }))
+    expect(previewButton().width).toBe('22%')
+  })
+
+  it('caps new runs at 64 but still inserts icons into existing runs', () => {
+    const original = config()
+    const home = original.menus[0]!
+    const group = home.groups[0]!
+    const draft: ActionPadConfig = {
+      ...original,
+      menus: [{
+        ...home,
+        groups: [{
+          ...group,
+          buttons: group.buttons.map((button, index) => index === 0 ? {
+            ...button,
+            label: Array.from({ length: 64 }, (_, runIndex) => ({ text: String(runIndex), fontSize: 15 as const, bold: false }))
+          } : button)
+        }]
+      }, original.menus[1]!]
+    }
+    const screen = renderEditor({ config: draft })
+
+    expect(screen.getByRole('button', { name: 'Add run' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Run 64: Insert Nerd Font icon…' })).toBeEnabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 64: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
+    const label = screen.draft().menus[0]?.groups[0]?.buttons[0]?.label
+    expect(label).toHaveLength(64)
+    expect(label?.[63]).toEqual({ text: `63${mockBmpIcon.glyph}`, fontSize: 15, bold: false })
+  })
+
+  it.each([
+    { name: 'BMP', action: 'Insert mock BMP icon', icon: mockBmpIcon },
+    { name: 'astral', action: 'Insert mock astral icon', icon: mockAstralIcon }
+  ])('appends a $name icon to a legacy string and warns without blocking Save', ({ action, icon }) => {
+    const screen = renderEditor()
+    expect(screen.queryByRole('button', { name: 'Add Nerd Font icon run…' })).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
     expect(screen.getByTestId('mock-nerd-font-icon-picker')).toBeTruthy()
 
     fireEvent.press(screen.getByRole('button', { name: action }))
 
     expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
-    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(expected)
-    expect(screen.getByLabelText('Button label').props.selection).toEqual({ start: caret, end: caret })
-    await waitFor(() => expect(focus).toHaveBeenCalled())
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(`Run input${icon.glyph}`)
+    expect(screen.getAllByTestId(/^action-button-label-run-/)).toHaveLength(1)
+    expect(screen.getByTestId('action-pad-label-accessibility-warning')).toHaveTextContent(/human-readable Accessibility label/)
+    expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
+    fireEvent.changeText(screen.getByLabelText('Accessibility label'), 'Run Neovim input')
+    expect(screen.queryByTestId('action-pad-label-accessibility-warning')).toBeNull()
+    fireEvent.changeText(screen.getByLabelText('Accessibility label'), '   ')
+    expect(screen.getByTestId('action-pad-label-accessibility-warning')).toBeTruthy()
   })
 
-  it('defaults icon insertion to the label end and dismisses without changing the draft', () => {
+  it('dismisses icon selection without changing the legacy label', () => {
     const screen = renderEditor()
-    fireEvent.press(screen.getByRole('button', { name: 'Choose Nerd Font icon…' }))
+    selectRunText(screen, 1, 2, 5)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const staleInsert = captureIconInsertion(screen)
     fireEvent.press(screen.getByRole('button', { name: 'Close mock icon picker' }))
+    act(() => staleInsert())
     expect(screen.draft()).toEqual(config())
     expect(screen.props.onChange).not.toHaveBeenCalled()
-
-    fireEvent.press(screen.getByRole('button', { name: 'Choose Nerd Font icon…' }))
-    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
-    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(`Run input${mockBmpIcon.glyph}`)
   })
 
-  it('does not reuse a deleted button selection when its successor takes the same indexes', () => {
+  it('ignores a deleted button’s stale picker callback when its successor takes the same indexes', () => {
     const alert = jest.spyOn(Alert, 'alert')
     const screen = renderEditor()
-    fireEvent(screen.getByLabelText('Button label'), 'selectionChange', {
-      nativeEvent: { selection: { start: 0, end: 3 } }
-    })
+    selectRunText(screen, 1, 1)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const staleInsert = captureIconInsertion(screen)
     fireEvent.press(screen.getByRole('button', { name: 'Delete button' }))
     act(() => { alert.mock.calls[0]?.[2]?.find((item) => item.text === 'Delete')?.onPress?.() })
     expect(screen.getByLabelText('Button label').props.value).toBe('Open child')
+    expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
+    act(() => staleInsert())
+    expect(screen.getByLabelText('Button label').props.value).toBe('Open child')
 
-    fireEvent.press(screen.getByRole('button', { name: 'Choose Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
     fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
     expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(`Open child${mockBmpIcon.glyph}`)
   })
@@ -554,7 +673,7 @@ describe('ActionPadEditor', () => {
   ])('disables the icon chooser when the font is not ready ($name)', ({ loaded, error, name }) => {
     mockUseCodeyNerdFontFaces.mockReturnValue([loaded, error])
     const screen = renderEditor()
-    expect(screen.getByRole('button', { name })).toBeDisabled()
+    expect(screen.getByRole('button', { name: `Run 1: ${name}` })).toBeDisabled()
     if (error) expect(screen.getByText(/icon previews are unavailable/)).toBeTruthy()
     expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
   })
@@ -562,17 +681,235 @@ describe('ActionPadEditor', () => {
   it('closes the icon picker when work starts or the controlled document is replaced', async () => {
     const initial = props()
     const screen = render(<ActionPadEditor {...initial} />)
-    fireEvent.press(screen.getByRole('button', { name: 'Choose Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const busyInsert = captureIconInsertion(screen)
     expect(screen.getByTestId('mock-nerd-font-icon-picker')).toBeTruthy()
 
     screen.rerender(<ActionPadEditor {...initial} busy />)
     expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
+    act(() => busyInsert())
+    expect(initial.onChange).not.toHaveBeenCalled()
 
     screen.rerender(<ActionPadEditor {...initial} />)
-    fireEvent.press(screen.getByRole('button', { name: 'Choose Nerd Font icon…' }))
+    selectRunText(screen, 1, 1)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const staleInsert = captureIconInsertion(screen)
     const replacement = { ...initial.config, menus: initial.config.menus.map((menu, index) => index === 0 ? { ...menu, label: 'Replacement' } : menu) }
     screen.rerender(<ActionPadEditor {...initial} config={replacement} />)
     await waitFor(() => expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull())
+    act(() => staleInsert())
+    expect(initial.onChange).not.toHaveBeenCalled()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    const changed = (initial.onChange as jest.Mock).mock.calls[0]?.[0] as ActionPadConfig
+    expect(changed.menus[0]?.groups[0]?.buttons[0]?.label).toBe(`Run input${mockBmpIcon.glyph}`)
+  })
+
+  it.each([true, false])('uses regular/bold in run fields and both previews (fonts loaded: %s)', (loaded) => {
+    mockUseCodeyNerdFontFaces.mockReturnValue([loaded, loaded ? null : new Error('font failed')])
+    const screen = renderEditor({ config: configWithLabel([
+      { text: 'regular content', fontSize: 12, bold: false },
+      { text: 'bold content', fontSize: 22, bold: true }
+    ]) })
+    for (const [field, fontFamily, fontWeight] of [
+      ['Button label', 'CodeyNerdFont-Regular', '400'],
+      ['Button label run 2', 'CodeyNerdFont-Bold', '700']
+    ]) {
+      expect(StyleSheet.flatten(screen.getByLabelText(field!).props.style)).toMatchObject({
+        fontFamily: loaded ? fontFamily : 'monospace', fontWeight: loaded ? 'normal' : fontWeight
+      })
+    }
+    for (const compact of [false, true]) {
+      if (compact) fireEvent.press(screen.getByRole('button', { name: 'Preview density: Compact' }))
+      for (const [text, family, weight, size] of [
+        ['regular content', 'CodeyNerdFont-Regular', '400', compact ? 10 : 12],
+        ['bold content', 'CodeyNerdFont-Bold', '700', compact ? 19 : 22]
+      ] as const) {
+        const style = StyleSheet.flatten(screen.getByText(text, { includeHiddenElements: true }).props.style)
+        expect(style).toMatchObject({ fontSize: size, fontWeight: loaded ? 'normal' : weight })
+        expect(style.fontFamily).toBe(loaded ? family : undefined)
+      }
+    }
+  })
+
+  it.each([
+    { text: 'Save', start: 0, end: 0, expected: `${mockAstralIcon.glyph}Save`, cursor: 2 },
+    { text: 'Save', start: 2, end: 2, expected: `Sa${mockAstralIcon.glyph}ve`, cursor: 4 },
+    { text: 'Save', start: 4, end: 4, expected: `Save${mockAstralIcon.glyph}`, cursor: 6 },
+    { text: 'Save all', start: 0, end: 4, expected: `${mockAstralIcon.glyph} all`, cursor: 2 },
+    { text: 'A😀B', start: 3, end: 3, expected: `A😀${mockAstralIcon.glyph}B`, cursor: 5 },
+    { text: `A${mockAstralIcon.glyph}😀B`, start: 1, end: 3, expected: `A${mockAstralIcon.glyph}😀B`, cursor: 3 }
+  ])('inserts into $text at $start–$end and restores focus/caret', async ({ text, start, end, expected, cursor }) => {
+    const focus = jest.spyOn(TextInput.prototype, 'focus').mockClear()
+    const screen = renderEditor({ config: configWithLabel(text) })
+    selectRunText(screen, 1, start, end)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    // Blurring the input for the picker must not change the captured selection.
+    selectRunText(screen, 1, text.length)
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock astral icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(expected)
+    expect(screen.getByLabelText('Button label').props.selection).toEqual({ start: cursor, end: cursor })
+    await waitFor(() => expect(focus).toHaveBeenCalled())
+    selectRunText(screen, 1, cursor)
+    expect(screen.getByLabelText('Button label').props.selection).toBeUndefined()
+  })
+
+  it('supports consecutive insertions and then a new native cursor position', () => {
+    const screen = renderEditor({ config: configWithLabel('A😀B') })
+    selectRunText(screen, 1, 3)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock astral icon' }))
+    selectRunText(screen, 1, 3) // A late event for the pre-insertion text.
+    expect(screen.getByLabelText('Button label').props.selection).toEqual({ start: 5, end: 5 })
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(`A😀${mockAstralIcon.glyph}${mockBmpIcon.glyph}B`)
+    selectRunText(screen, 1, 6) // Acknowledge the restored caret.
+    selectRunText(screen, 1, 0)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(`${mockBmpIcon.glyph}A😀${mockAstralIcon.glyph}${mockBmpIcon.glyph}B`)
+  })
+
+  it('inserts into a mixed run without changing its size/weight or neighbouring runs', () => {
+    const first = { text: 'Save ', fontSize: 12 as const, bold: false }
+    const screen = renderEditor({ config: configWithLabel([
+      first, { text: 'all files', fontSize: 18, bold: true }
+    ]) })
+    selectRunText(screen, 2, 3)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 2: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      first, { text: `all${mockBmpIcon.glyph} files`, fontSize: 18, bold: true }
+    ])
+    expect(screen.getAllByTestId(/^action-button-label-run-/)).toHaveLength(2)
+    expect(screen.getByLabelText('Button label run 2').props.selection).toEqual({ start: 4, end: 4 })
+  })
+
+  it('creates an icon-only run through Add run and permits restyling it', async () => {
+    const focus = jest.spyOn(TextInput.prototype, 'focus').mockClear()
+    const screen = renderEditor()
+    fireEvent.press(screen.getByRole('button', { name: 'Add run' }))
+    await waitFor(() => expect(focus).toHaveBeenCalled())
+    expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 2: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock astral icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: 'Run input', fontSize: 15, bold: false },
+      { text: mockAstralIcon.glyph, fontSize: 15, bold: false }
+    ])
+    expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 2 font size: 22' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label?.[1]).toEqual({
+      text: mockAstralIcon.glyph, fontSize: 22, bold: false
+    })
+  })
+
+  it('keeps remembered selections and native input identities with reordered and surviving runs', () => {
+    const screen = renderEditor({ config: configWithLabel([
+      { text: 'First', fontSize: 15, bold: false },
+      { text: 'Second', fontSize: 18, bold: true },
+      { text: 'Third', fontSize: 12, bold: false }
+    ]) })
+    const firstInput = screen.getByLabelText('Button label')
+    const secondInput = screen.getByLabelText('Button label run 2')
+    selectRunText(screen, 1, 2)
+    selectRunText(screen, 2, 3)
+    selectRunText(screen, 3, 1)
+    fireEvent.press(screen.getByRole('button', { name: 'Move label run 2 earlier' }))
+    expect(screen.getByLabelText('Button label')).toBe(secondInput)
+    expect(screen.getByLabelText('Button label run 2')).toBe(firstInput)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.getByLabelText('Button label').props.value).toBe(`Sec${mockBmpIcon.glyph}ond`)
+    fireEvent.press(screen.getByRole('button', { name: 'Delete label run 1' }))
+    expect(screen.getByLabelText('Button label')).toBe(firstInput)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: `Fi${mockBmpIcon.glyph}rst`, fontSize: 15, bold: false },
+      { text: 'Third', fontSize: 12, bold: false }
+    ])
+  })
+
+  it.each(['Move label run 2 earlier', 'Delete label run 2', 'Remove label formatting', 'Run 2 weight: Regular'])(
+    'cancels a captured insertion after %s, including callbacks arriving during a newer picker', (action) => {
+      const screen = renderEditor({ config: configWithLabel([
+        { text: 'First', fontSize: 15, bold: false },
+        { text: 'Second', fontSize: 18, bold: true }
+      ]) })
+      selectRunText(screen, 2, 3)
+      fireEvent.press(screen.getByRole('button', { name: 'Run 2: Insert Nerd Font icon…' }))
+      const staleInsert = captureIconInsertion(screen)
+      fireEvent.press(screen.getByRole('button', { name: action }))
+      const changedDraft = screen.draft()
+      expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
+      fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+      act(() => staleInsert())
+      expect(screen.draft()).toEqual(changedDraft)
+      expect(screen.getByTestId('mock-nerd-font-icon-picker')).toBeTruthy()
+      fireEvent.press(screen.getByRole('button', { name: 'Close mock icon picker' }))
+    }
+  )
+
+  it('cancels the picker if fonts become unavailable and rejects its late callback', () => {
+    const initial = props()
+    const screen = render(<ActionPadEditor {...initial} />)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const staleInsert = captureIconInsertion(screen)
+    mockUseCodeyNerdFontFaces.mockReturnValue([false, new Error('font failed')])
+    screen.rerender(<ActionPadEditor {...initial} />)
+    expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
+    act(() => staleInsert())
+    expect(initial.onChange).not.toHaveBeenCalled()
+  })
+
+  it('cancels insertion and resets remembered selections when another button is selected', () => {
+    const screen = renderEditor()
+    selectRunText(screen, 1, 1)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const staleInsert = captureIconInsertion(screen)
+    fireEvent.press(screen.getByRole('button', { name: 'Choose button' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Button: Open child (open)' }))
+    expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
+    act(() => staleInsert())
+    expect(screen.props.onChange).not.toHaveBeenCalled()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[1]?.label).toBe(`Open child${mockBmpIcon.glyph}`)
+  })
+
+  it('rejects a captured text range when the target run text changes', () => {
+    const screen = renderEditor()
+    selectRunText(screen, 1, 1, 4)
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const staleInsert = captureIconInsertion(screen)
+    fireEvent.changeText(screen.getByLabelText('Button label'), 'New text')
+    expect(screen.queryByTestId('mock-nerd-font-icon-picker')).toBeNull()
+    act(() => staleInsert())
+    expect(screen.getByLabelText('Button label').props.value).toBe('New text')
+    expect(screen.props.onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops old run selections when formatting is removed', () => {
+    const screen = renderEditor({ config: configWithLabel([
+      { text: 'First', fontSize: 15, bold: false },
+      { text: 'Second', fontSize: 18, bold: true }
+    ]) })
+    selectRunText(screen, 1, 1)
+    fireEvent.press(screen.getByRole('button', { name: 'Remove label formatting' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Insert mock BMP icon' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe(`FirstSecond${mockBmpIcon.glyph}`)
+  })
+
+  it('discards a pending insertion when the editor is closed', () => {
+    const screen = renderEditor()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' }))
+    const staleInsert = captureIconInsertion(screen)
+    screen.unmount()
+    act(() => staleInsert())
+    expect(screen.props.onChange).not.toHaveBeenCalled()
   })
 
   it('configures tap and hold independently and supports hold-only buttons', () => {
@@ -605,7 +942,7 @@ describe('ActionPadEditor', () => {
       ...base,
       menus: [...base.menus, {
         id: 'other', label: 'Other', groups: [{
-          id: 'choices', buttons: [{ id: 'choice', label: 'Choice', tap: { type: 'back', after: 'stay' } }]
+          id: 'choices', buttons: [{ id: 'choice', label: 'Choice', styles: { size: '1/2' }, tap: { type: 'back', after: 'stay' } }]
         }]
       }]
     }
@@ -715,7 +1052,7 @@ describe('ActionPadEditor', () => {
     expect(screen.getByText('The configuration changed while the confirmation was open. Review the new document and try again.')).toBeTruthy()
   })
 
-  it('cancels or confirms individual deletion, updates every picker and preview, and clamps final-index selection', () => {
+  it('cancels or confirms individual deletion, updates every picker, and clamps final-index selection', () => {
     const alert = jest.spyOn(Alert, 'alert')
     const screen = renderEditor({ config: menuManagerConfig(), initialButton: undefined })
 
@@ -732,7 +1069,9 @@ describe('ActionPadEditor', () => {
     act(() => { alert.mock.calls.at(-1)?.[2]?.find((item) => item.text === 'Delete')?.onPress?.() })
     expect(screen.draft().menus.map((candidate) => candidate.id)).toEqual(['home', 'child', 'orphan-child'])
     expect(screen.queryByText('Open orphan child')).toBeNull()
-    expect(within(screen.getByTestId('action-pad-editor-preview')).getByText('No-op')).toBeTruthy()
+    expect(within(screen.getByTestId('action-pad-menu-row-2')).getByText('Orphan child (orphan-child)')).toBeTruthy()
+    expect(within(screen.getByTestId('action-pad-menu-row-2')).getByText('Unused')).toBeTruthy()
+    expect(screen.props.onSave).not.toHaveBeenCalled()
 
     fireEvent.press(screen.getByRole('button', { name: 'Choose menu' }))
     expect(screen.queryByRole('button', { name: 'Menu: Orphan parent (orphan-parent)' })).toBeNull()
@@ -772,7 +1111,7 @@ describe('ActionPadEditor', () => {
     expect(screen.getByText('Add a menu to start building your Action Pad.')).toBeTruthy()
   })
 
-  it('previews, cancels and atomically removes an internally linked unused subtree', () => {
+  it('summarizes, cancels and atomically removes an internally linked unused subtree', () => {
     const original = menuManagerConfig()
     const screen = renderEditor({ config: original, initialButton: undefined })
 
@@ -882,17 +1221,15 @@ describe('ActionPadEditor', () => {
     expect(screen.getByLabelText('Button ID').props.value).toBe('input')
   })
 
-  it('shows field errors and keeps the last valid preview while a field is incomplete', () => {
+  it('shows field errors and gates Save while a field is incomplete', () => {
     const screen = renderEditor()
-    const preview = () => within(screen.getByTestId('action-pad-editor-preview'))
     fireEvent.changeText(screen.getByLabelText('Button label'), '')
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
-    expect(preview().getByText('Run input')).toBeTruthy()
-    expect(preview().getByText('Showing the last valid preview while you complete the fields.')).toBeTruthy()
+    expect(screen.getAllByText('Must not be empty.').length).toBeGreaterThan(0)
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe('')
     expect(StyleSheet.flatten(screen.getByLabelText('Button label').props.style).borderColor).toBe('#ff7b72')
     fireEvent.changeText(screen.getByLabelText('Button label'), 'Updated')
-    expect(preview().getByText('Updated')).toBeTruthy()
-    expect(preview().queryByText('Run input')).toBeNull()
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe('Updated')
     expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
 
     fireEvent.changeText(screen.getByLabelText('Button ID'), 'open')
@@ -957,7 +1294,7 @@ describe('ActionPadEditor', () => {
     const replacement: ActionPadConfig = {
       version: 1, rootMenuId: 'new-root', menus: [
         { id: 'other', label: 'Other', groups: [] },
-        { id: 'new-root', label: 'Loaded root', groups: [{ id: 'loaded-group', buttons: [{ id: 'loaded-button', label: 'Loaded button', tap: { type: 'back', after: 'stay' } }] }] }
+        { id: 'new-root', label: 'Loaded root', groups: [{ id: 'loaded-group', buttons: [{ id: 'loaded-button', label: 'Loaded button', styles: { size: '1/2' }, tap: { type: 'back', after: 'stay' } }] }] }
       ]
     }
     screen.rerender(<ActionPadEditor {...initial} config={replacement} />)
@@ -990,55 +1327,6 @@ describe('ActionPadEditor', () => {
     await act(async () => { finishLoad() })
     expect(screen.getByLabelText('Button label').props.editable).toBe(true)
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
-  })
-
-  it('isolates input and keyboard preview actions while allowing menu navigation', () => {
-    const screen = renderEditor()
-    const preview = within(screen.getByTestId('action-pad-editor-preview'))
-    const input = preview.getByTestId('action-pad-input')
-    fireEvent.press(input)
-    fireEvent(input, 'pressIn')
-    fireEvent(input, 'longPress')
-    fireEvent.press(input)
-    fireEvent.press(preview.getByTestId('action-pad-keyboard'))
-    fireEvent.press(preview.getByTestId('action-pad-open'))
-    expect(preview.getByLabelText('Current action path: Child')).toBeTruthy()
-    fireEvent.press(preview.getByTestId('action-pad-back'))
-    expect(preview.getByTestId('action-pad-input')).toBeTruthy()
-
-    expect(screen.props.onChange).not.toHaveBeenCalled()
-    expect(screen.props.onLoad).not.toHaveBeenCalled()
-    expect(screen.props.onSave).not.toHaveBeenCalled()
-    expect(screen.props.onExport).not.toHaveBeenCalled()
-    expect(screen.props.onCancel).not.toHaveBeenCalled()
-  })
-
-  it('allows group-action navigation in the safe preview without changing the draft', () => {
-    const base = config()
-    const home = base.menus[0]!
-    const linked: ActionPadConfig = {
-      ...base,
-      menus: [{
-        ...home,
-        groups: [{
-          ...home.groups[0]!,
-          buttons: home.groups[0]!.buttons.map((button, index) => index === 0 ? ({
-            ...button,
-            id: 'options',
-            label: 'Open options',
-            tap: { type: 'group', menuId: 'child', groupId: 'target', after: 'stay' }
-          }) : button)
-        }]
-      }, base.menus[1]!]
-    }
-    const screen = renderEditor({ config: linked })
-    const preview = within(screen.getByTestId('action-pad-editor-preview'))
-
-    fireEvent.press(preview.getByTestId('action-pad-options'))
-    expect(preview.getByTestId('action-pad-back')).toBeTruthy()
-    fireEvent.press(preview.getByTestId('action-pad-back'))
-    expect(preview.getByTestId('action-pad-options')).toBeTruthy()
-    expect(screen.props.onChange).not.toHaveBeenCalled()
   })
 
   it('passes host paths and file commands to the parent without activating or saving implicitly', async () => {
@@ -1077,6 +1365,11 @@ describe('ActionPadEditor', () => {
     const busy = renderEditor({ busy: true })
     expect(busy.getByTestId('action-pad-editor-save')).toBeDisabled()
     expect(busy.getByLabelText('Button label').props.editable).toBe(false)
+    expect(busy.getByRole('button', { name: 'Run 1 font size: 22' })).toBeDisabled()
+    expect(busy.getByRole('button', { name: 'Run 1 weight: Bold' })).toBeDisabled()
+    expect(busy.getByRole('button', { name: 'Add run' })).toBeDisabled()
+    expect(busy.getByRole('button', { name: 'Preview density: Compact' })).toBeDisabled()
+    expect(busy.getByRole('button', { name: 'Run 1: Insert Nerd Font icon…' })).toBeDisabled()
     expect(busy.getByRole('button', { name: 'Add button' })).toBeDisabled()
     expect(busy.getByRole('button', { name: 'Duplicate button' })).toBeDisabled()
     expect(busy.getByRole('button', { name: 'Cancel' })).toBeDisabled()
@@ -1090,16 +1383,16 @@ describe('ActionPadEditor', () => {
     expect(screen.getByLabelText('Button label').props.value).toBe('Keep this draft')
   })
 
-  it('adapts to tablet rotation without losing selected fields and keeps controls at least 48dp', () => {
+  it('adapts across supported landscape widths without losing selected fields and keeps controls at least 48dp', () => {
     const previousWindow = Dimensions.get('window')
     const previousScreen = Dimensions.get('screen')
-    act(() => { Dimensions.set({ window: { width: 600, height: 1000, scale: 1, fontScale: 1 }, screen: { width: 600, height: 1000, scale: 1, fontScale: 1 } }) })
+    act(() => { Dimensions.set({ window: { width: 800, height: 600, scale: 1, fontScale: 1 }, screen: { width: 800, height: 600, scale: 1, fontScale: 1 } }) })
     const screen = renderEditor()
-    fireEvent.changeText(screen.getByLabelText('Button label'), 'Rotation draft')
+    fireEvent.changeText(screen.getByLabelText('Button label'), 'Landscape resize draft')
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-editor-workspace').props.style).flexDirection).toBeUndefined()
     act(() => { Dimensions.set({ window: { width: 1280, height: 800, scale: 1, fontScale: 1 }, screen: { width: 1280, height: 800, scale: 1, fontScale: 1 } }) })
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-editor-workspace').props.style).flexDirection).toBe('row')
-    expect(screen.getByLabelText('Button label').props.value).toBe('Rotation draft')
+    expect(screen.getByLabelText('Button label').props.value).toBe('Landscape resize draft')
     for (const name of ['Save', 'Add menu', 'Add group', 'Add button', 'Duplicate button', 'Choose menu', 'Choose group', 'Choose button']) {
       const style = StyleSheet.flatten(screen.getByRole('button', { name }).props.style)
       expect(style.minHeight).toBeGreaterThanOrEqual(48)

@@ -14,10 +14,9 @@ import {
 
 import { CODEY_NERD_FONT_FAMILIES, useCodeyNerdFontFaces } from '../fonts'
 import { type NerdFontIcon } from '../fonts/nerd-font-icons'
-import { ActionPad, type ActionPadPlacement } from './ActionPad'
+import { ActionButtonLabel } from './ActionButtonLabel'
 import { NerdFontIconPicker } from './NerdFontIconPicker'
 import {
-  resolveActionPadConfig,
   validateActionPadConfig,
   type ActionPadConfig,
   type ConfigIssue
@@ -33,7 +32,20 @@ import {
   type EditableInteraction,
   type MenuReference
 } from './editing'
-import { type ActionPadButtonTarget } from './types'
+import {
+  ACTION_BUTTON_FONT_SIZES,
+  type ActionButtonFontSize,
+  type ActionButtonLabel as ActionButtonLabelValue,
+  type ActionButtonLabelRun,
+  type ActionButtonSize,
+  type ActionPadButtonTarget
+} from './types'
+import {
+  actionButtonLabelRuns,
+  containsPrivateUseGlyph,
+  plainActionButtonLabel
+} from './label'
+import { insertLabelText, type LabelTextSelection } from './label-selection'
 
 export interface ActionPadEditorProps {
   readonly config: ActionPadConfig
@@ -64,11 +76,6 @@ interface PendingIdEdit {
   readonly message: string
 }
 
-interface TextSelection {
-  readonly start: number
-  readonly end: number
-}
-
 interface ReferenceGuide {
   readonly buttonIdentity: string
   readonly gesture: 'tap' | 'longPress'
@@ -90,11 +97,15 @@ interface CleanupConfirmation {
   readonly buttonCount: number
 }
 
+interface IconInsertionRequest {
+  readonly config: ActionPadConfig
+  readonly buttonIdentity: string
+  readonly insert: (icon: NerdFontIcon) => void
+}
+
 type EditorScrollTarget = 'button' | 'tap' | 'longPress'
 type EditorLayoutPart = 'workspace' | 'details' | EditorScrollTarget
 
-// The preview cannot access a session or the native Neovim input bridge.
-const ignorePreviewInput = () => undefined
 const MENU_REFERENCE_PAGE_SIZE = 25
 
 export function ActionPadEditor({
@@ -153,19 +164,17 @@ export function ActionPadEditor({
   const [pendingIds, setPendingIds] = useState<Readonly<Record<string, PendingIdEdit>>>(() => restorePendingIds(config, initialIdDrafts))
   const [operationError, setOperationError] = useState('')
   const [operationPending, setOperationPending] = useState(false)
-  const [iconPickerOpen, setIconPickerOpen] = useState(false)
-  const [buttonLabelSelection, setButtonLabelSelection] = useState<TextSelection>()
-  const [labelFocusRequest, setLabelFocusRequest] = useState(0)
+  const [iconRequest, setIconRequest] = useState<IconInsertionRequest>()
+  const activeIconRequest = useRef(iconRequest)
+  activeIconRequest.current = iconRequest
+  const [labelEditorRevision, setLabelEditorRevision] = useState(0)
   const [referenceGuide, setReferenceGuide] = useState<ReferenceGuide>()
   const [cleanupConfirmation, setCleanupConfirmation] = useState<CleanupConfirmation>()
-  const buttonLabelInput = useRef<TextInput>(null)
   const operationInFlight = useRef(false)
   const observedConfig = useRef(config)
   const localChangeSignature = useRef<string | null>(null)
   const draftCallbacks = useRef({ onPendingEditsChange, onIdDraftsChange })
   draftCallbacks.current = { onPendingEditsChange, onIdDraftsChange }
-  const [previewOrigin, setPreviewOrigin] = useState('selected')
-  const [previewPlacement, setPreviewPlacement] = useState<ActionPadPlacement>('right')
   const busy = hostBusy || operationPending
   const hasPendingIds = Object.keys(pendingIds).length > 0
   const structuralBusy = busy || hasPendingIds
@@ -175,6 +184,8 @@ export function ActionPadEditor({
   const idDraftsSignature = JSON.stringify(idDrafts)
 
   useEffect(() => { setHostPath(sourcePath) }, [sourcePath])
+
+  useEffect(() => () => { activeIconRequest.current = undefined }, [])
 
   useEffect(() => {
     if (observedConfig.current === config) return
@@ -196,8 +207,8 @@ export function ActionPadEditor({
     setButtonSelection(0)
     setSelectionKind(initialButtonLocation ? 'button' : 'manager')
     setMoveDestination('')
-    setIconPickerOpen(false)
-    setButtonLabelSelection(undefined)
+    dismissIconPicker()
+    setLabelEditorRevision((revision) => revision + 1)
     setReferenceGuide(undefined)
     setCleanupConfirmation(undefined)
     setHostPath(sourcePath)
@@ -239,16 +250,6 @@ export function ActionPadEditor({
   ]
   const valid = displayedIssues.length === 0
   const canWrite = connected && !busy && valid
-  const preview = useMemo(() => {
-    if (issues.length > 0) return null
-    return resolveActionPadConfig({
-      ...config,
-      rootMenuId: previewOrigin === 'selected' ? menu?.id ?? config.rootMenuId : config.rootMenuId
-    })
-  }, [config, issues, menu?.id, previewOrigin])
-  const [lastValidPreview, setLastValidPreview] = useState(preview)
-  useEffect(() => { if (preview) setLastValidPreview(preview) }, [preview])
-  const previewMenu = preview ?? lastValidPreview
   const deletionReason = menu ? menuDeletionReason(config, menuIndex) : undefined
   const groupDeleteReason = group ? groupDeletionReason(config, groupLocation) : undefined
   const destinations = config.menus.flatMap((candidate, candidateMenuIndex) =>
@@ -260,25 +261,13 @@ export function ActionPadEditor({
     )
   )
   const destinationExists = destinations.some((candidate) => candidate.value === moveDestination)
-  const observedButtonIdentity = useRef(buttonIdentity)
 
   useEffect(() => {
-    if (observedButtonIdentity.current === buttonIdentity) return
-    observedButtonIdentity.current = buttonIdentity
-    setIconPickerOpen(false)
-    setButtonLabelSelection(undefined)
-  }, [buttonIdentity])
-
-  useEffect(() => {
-    if (!busy && fontLoaded) return
-    setIconPickerOpen(false)
-  }, [busy, fontLoaded])
-
-  useEffect(() => {
-    if (labelFocusRequest === 0 || iconPickerOpen) return
-    const frame = requestAnimationFrame(() => buttonLabelInput.current?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [iconPickerOpen, labelFocusRequest])
+    if (iconRequest && (busy || !fontLoaded || kind !== 'button' ||
+      iconRequest.config !== config || iconRequest.buttonIdentity !== buttonIdentity)) {
+      dismissIconPicker()
+    }
+  }, [iconRequest, busy, fontLoaded, kind, config, buttonIdentity])
 
   function canApply(edit: ActionPadEdit): boolean {
     const latest = latestEditor.current
@@ -371,20 +360,27 @@ export function ActionPadEditor({
     apply({ type: 'update-button', location: buttonLocation, patch }, path)
   }
 
+  function dismissIconPicker() {
+    activeIconRequest.current = undefined
+    setIconRequest(undefined)
+  }
+
+  function chooseNerdFontIcon(insert: (icon: NerdFontIcon) => void) {
+    if (!button || busy || !fontLoaded || latestEditor.current.config !== config) return
+    const request = { config, buttonIdentity, insert }
+    activeIconRequest.current = request
+    setIconRequest(request)
+  }
+
   function insertNerdFontIcon(icon: NerdFontIcon) {
-    if (!button || busy || !fontLoaded) {
-      setIconPickerOpen(false)
-      return
-    }
-    const fallback = button.label.length
-    const start = Math.max(0, Math.min(buttonLabelSelection?.start ?? fallback, button.label.length))
-    const end = Math.max(start, Math.min(buttonLabelSelection?.end ?? start, button.label.length))
-    const label = `${button.label.slice(0, start)}${icon.glyph}${button.label.slice(end)}`
-    const caret = start + icon.glyph.length
-    updateButton({ label }, `${buttonPath}.label`)
-    setButtonLabelSelection({ start: caret, end: caret })
-    setIconPickerOpen(false)
-    setLabelFocusRequest((request) => request + 1)
+    // Native picker callbacks may arrive after dismissal, another picker, or a
+    // draft replacement. Never apply a captured run/cursor to a newer document.
+    if (!iconRequest || activeIconRequest.current !== iconRequest) return
+    const request = iconRequest
+    dismissIconPicker()
+    if (busy || latestEditor.current.busy || !fontLoaded ||
+      latestEditor.current.config !== request.config || buttonIdentity !== request.buttonIdentity) return
+    request.insert(icon)
   }
 
   function focusIssue(issue: ConfigIssue) {
@@ -799,31 +795,29 @@ export function ActionPadEditor({
                 {referenceGuide?.buttonIdentity === buttonIdentity ? (
                   <Text accessibilityLiveRegion="polite" style={styles.notice}>The exact blocking action is highlighted below. Change its action type or destination to remove the menu reference.</Text>
                 ) : null}
-                <FormField
+                <ActionButtonLabelEditor
+                  key={`${buttonIdentity}:${labelEditorRevision}`}
+                  buttonSize={button.styles.size}
                   disabled={busy}
+                  fontError={fontError}
                   fontLoaded={fontLoaded}
-                  hint="Choose an icon to insert it at the cursor. For icon-only buttons, set an Accessibility label below."
-                  inputRef={buttonLabelInput}
                   issues={displayedIssues}
-                  label="Button label"
-                  multiline
+                  label={button.label}
                   onChange={(label) => updateButton({ label }, `${buttonPath}.label`)}
-                  onSelectionChange={setButtonLabelSelection}
+                  onInsertIcon={chooseNerdFontIcon}
                   path={`${buttonPath}.label`}
-                  selection={buttonLabelSelection}
-                  value={button.label}
-                />
-                <EditorButton
-                  disabled={busy || !fontLoaded}
-                  label={fontLoaded ? 'Choose Nerd Font icon…' : fontError ? 'Nerd Font icons unavailable' : 'Loading Nerd Font icons…'}
-                  onPress={() => setIconPickerOpen(true)}
                 />
                 {fontError ? <Text accessibilityLiveRegion="polite" style={styles.notice}>The bundled Nerd Font could not be loaded, so icon previews are unavailable.</Text> : null}
                 <FormField disabled={busy} fontLoaded={fontLoaded} issues={displayedIssues} label="Button ID" onChange={(id) => applyId({ type: 'update-button', location: buttonLocation, patch: { id } }, `${buttonPath}.id`, id)} onUndo={pendingIds[`${buttonPath}.id`] ? () => undoPendingId(`${buttonPath}.id`) : undefined} path={`${buttonPath}.id`} value={pendingIds[`${buttonPath}.id`]?.value ?? button.id} />
-                <Choices disabled={busy} label="Button size" onChange={(size) => updateButton({ styles: size === 'default' ? undefined : { size: size as '1/2' | '1/4' } }, `${buttonPath}.styles.size`)} options={[{ value: 'default', label: 'Default' }, { value: '1/2', label: 'Half' }, { value: '1/4', label: 'Quarter' }]} value={button.styles?.size ?? 'default'} />
-                <Text style={styles.muted}>Sizes affect the side rail. The bottom pad uses equal widths.</Text>
+                <Choices disabled={busy} label="Button size" onChange={(size) => updateButton({ styles: { size: size as '1/2' | '1/4' } }, `${buttonPath}.styles.size`)} options={[{ value: '1/2', label: 'Half' }, { value: '1/4', label: 'Quarter' }]} value={button.styles.size} />
+                <Text style={styles.muted}>Choose half or quarter width in the Action Pad rail.</Text>
                 <FieldIssues issues={displayedIssues} path={`${buttonPath}.styles.size`} />
                 <FormField disabled={busy} fontLoaded={fontLoaded} hint="Leave blank to use the button label." issues={displayedIssues} label="Accessibility label" onChange={(accessibilityLabel) => updateButton({ accessibilityLabel: accessibilityLabel || undefined }, `${buttonPath}.accessibilityLabel`)} path={`${buttonPath}.accessibilityLabel`} value={button.accessibilityLabel ?? ''} />
+                {!button.accessibilityLabel?.trim() && containsPrivateUseGlyph(button.label) ? (
+                  <Text accessibilityLiveRegion="polite" style={styles.notice} testID="action-pad-label-accessibility-warning">
+                    This label contains a Nerd Font icon. Add a human-readable Accessibility label for screen readers.
+                  </Text>
+                ) : null}
                 <FormField disabled={busy} fontLoaded={fontLoaded} issues={displayedIssues} label="Accessibility hint" multiline onChange={(accessibilityHint) => updateButton({ accessibilityHint: accessibilityHint || undefined }, `${buttonPath}.accessibilityHint`)} path={`${buttonPath}.accessibilityHint`} value={button.accessibilityHint ?? ''} />
                 <InteractionForm
                   action={button.tap}
@@ -873,33 +867,12 @@ export function ActionPadEditor({
                     }} />
                   </View>
                 ) : <Text style={styles.muted}>Add another group to move this button to a different section.</Text>}
-                <EditorButton danger disabled={structuralBusy} label="Delete button" onPress={() => confirmRemoval('Delete button?', `Delete “${button.label}”?`, () => apply({ type: 'delete-button', location: buttonLocation }, buttonPath, () => setButtonSelection(Math.max(0, buttonIndex - 1))))} />
+                <EditorButton danger disabled={structuralBusy} label="Delete button" onPress={() => confirmRemoval('Delete button?', `Delete “${plainActionButtonLabel(button.label)}”?`, () => apply({ type: 'delete-button', location: buttonLocation }, buttonPath, () => setButtonSelection(Math.max(0, buttonIndex - 1))))} />
               </View>
             ) : null}
 
             {!menu ? <Text style={styles.muted}>Add a menu to start building your Action Pad.</Text> : null}
 
-            <View style={styles.card} testID="action-pad-editor-preview">
-              <Text accessibilityRole="header" style={styles.sectionTitle}>Safe preview</Text>
-              <Text style={styles.muted}>Nothing is sent to Neovim. Tap and hold menu links to try navigation; input and keyboard actions do nothing.</Text>
-              <Choices label="Preview starts at" onChange={setPreviewOrigin} options={[{ value: 'selected', label: 'Selected menu' }, { value: 'root', label: 'Root menu' }]} value={previewOrigin} />
-              <Choices label="Preview layout" onChange={(value) => setPreviewPlacement(value as ActionPadPlacement)} options={[{ value: 'right', label: 'Side rail' }, { value: 'below', label: 'Bottom pad' }]} value={previewPlacement} />
-              {previewOrigin === 'selected' ? <Text style={styles.muted}>In this preview, “return to root” returns to the selected start menu. Choose Root menu to check the full pad.</Text> : null}
-              {!valid ? <Text style={styles.notice}>Showing the last valid preview while you complete the fields.</Text> : null}
-              {previewMenu ? (
-                <View style={[styles.previewFrame, previewPlacement === 'right' ? styles.previewRail : styles.previewBottom]}>
-                  <ActionPad
-                    dimensions={previewMenu.label}
-                    enabled
-                    mode="PREVIEW"
-                    onInput={ignorePreviewInput}
-                    onKeyboardPress={ignorePreviewInput}
-                    placement={previewPlacement}
-                    rootMenu={previewMenu}
-                  />
-                </View>
-              ) : <Text style={styles.muted}>Complete a valid configuration to see a preview.</Text>}
-            </View>
           </View>
         </View>
       </ScrollView>
@@ -943,9 +916,9 @@ export function ActionPadEditor({
         </Modal>
       ) : null}
       <NerdFontIconPicker
-        onDismiss={() => setIconPickerOpen(false)}
+        onDismiss={dismissIconPicker}
         onSelect={insertNerdFontIcon}
-        visible={iconPickerOpen && fontLoaded && !busy}
+        visible={!!iconRequest && iconRequest.config === config && iconRequest.buttonIdentity === buttonIdentity && kind === 'button' && fontLoaded && !busy}
       />
     </KeyboardAvoidingView>
   )
@@ -955,8 +928,8 @@ function menuDisplayName(menu: { readonly id: string; readonly label: string }):
   return `${menu.label || 'Unnamed menu'} (${menu.id || 'no ID'})`
 }
 
-function buttonDisplayName(button: { readonly id: string; readonly label: string }): string {
-  return `${button.label || 'Unnamed button'} (${button.id || 'no ID'})`
+function buttonDisplayName(button: { readonly id: string; readonly label: ActionButtonLabelValue }): string {
+  return `${plainActionButtonLabel(button.label) || 'Unnamed button'} (${button.id || 'no ID'})`
 }
 
 function countMenuButtons(menu: ActionPadConfig['menus'][number]): number {
@@ -1160,7 +1133,243 @@ function GroupInteractionDestination({ action, config, disabled, fontLoaded, ges
   )
 }
 
-function EditorButton({ label, onPress, disabled = false, selected = false, primary = false, danger = false, testID }: {
+interface LabelRunInputState {
+  readonly key: number
+  input: TextInput | null
+  selection?: LabelTextSelection
+}
+
+function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, issues, label, onChange, onInsertIcon, path }: {
+  readonly buttonSize: ActionButtonSize
+  readonly disabled: boolean
+  readonly fontError: Error | null
+  readonly fontLoaded: boolean
+  readonly issues: readonly ConfigIssue[]
+  readonly label: ActionButtonLabelValue
+  readonly onChange: (label: ActionButtonLabelValue) => void
+  readonly onInsertIcon: (insert: (icon: NerdFontIcon) => void) => void
+  readonly path: string
+}) {
+  const rich = typeof label !== 'string'
+  const runs = actionButtonLabelRuns(label)
+  // Editor-only keys keep native inputs and remembered selections attached to
+  // their run when reordered. Nothing is added to the persisted label format.
+  const nextRunKey = useRef(0)
+  const runInputs = useRef<LabelRunInputState[]>([])
+  while (runInputs.current.length < runs.length) {
+    runInputs.current.push({ key: nextRunKey.current++, input: null })
+  }
+  runInputs.current.length = runs.length
+  const [focusRun, setFocusRun] = useState<{ readonly key: number }>()
+  const [restoredSelection, setRestoredSelection] = useState<{
+    readonly key: number
+    readonly text: string
+    readonly selection: LabelTextSelection
+  }>()
+  const [compactPreview, setCompactPreview] = useState(false)
+
+  useEffect(() => {
+    if (focusRun === undefined) return
+    if (disabled || !runInputs.current.some((input) => input.key === focusRun.key)) {
+      setFocusRun(undefined)
+      setRestoredSelection(undefined)
+      return
+    }
+    const frame = requestAnimationFrame(() => {
+      runInputs.current.find((input) => input.key === focusRun.key)?.input?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focusRun, disabled])
+
+  function changeRun(index: number, patch: Partial<ActionButtonLabelRun>) {
+    if (disabled) return
+    const run = runs[index]
+    if (!run || (
+      (patch.text === undefined || patch.text === run.text) &&
+      (patch.fontSize === undefined || patch.fontSize === run.fontSize) &&
+      (patch.bold === undefined || patch.bold === run.bold)
+    )) return
+    if (!rich && index === 0 && Object.keys(patch).length === 1 && patch.text !== undefined) {
+      onChange(patch.text)
+      return
+    }
+    onChange(runs.map((run, runIndex) => runIndex === index ? { ...run, ...patch } : { ...run }))
+  }
+
+  function addRun() {
+    if (disabled || runs.length >= 64) return
+    const input = { key: nextRunKey.current++, input: null }
+    runInputs.current.push(input)
+    onChange([...runs.map((run) => ({ ...run })), { text: '', fontSize: 15, bold: false }])
+    setFocusRun({ key: input.key })
+  }
+
+  function moveRun(index: number, direction: -1 | 1) {
+    if (disabled) return
+    const destination = index + direction
+    if (destination < 0 || destination >= runs.length) return
+    const next = runs.map((run) => ({ ...run }))
+    const [moved] = next.splice(index, 1)
+    if (!moved) return
+    next.splice(destination, 0, moved)
+    const [input] = runInputs.current.splice(index, 1)
+    if (input) runInputs.current.splice(destination, 0, input)
+    onChange(next)
+  }
+
+  function deleteRun(index: number) {
+    if (disabled || runs.length === 1) return
+    runInputs.current.splice(index, 1)
+    onChange(runs.filter((_run, runIndex) => runIndex !== index).map((run) => ({ ...run })))
+  }
+
+  function insertIcon(index: number) {
+    const run = runs[index]
+    const input = runInputs.current[index]
+    if (disabled || !fontLoaded || !run || !input) return
+    const selection = input.selection && { ...input.selection }
+    onInsertIcon((icon) => {
+      const inserted = insertLabelText(run.text, icon.glyph, selection)
+      changeRun(index, { text: inserted.text })
+      input.selection = inserted.selection
+      setRestoredSelection({ key: input.key, ...inserted })
+      setFocusRun({ key: input.key })
+    })
+  }
+
+  return (
+    <View style={styles.labelEditor} testID="action-button-label-editor">
+      <View style={styles.section}>
+        <Text style={styles.label}>Button label</Text>
+        <Text style={styles.muted}>Build the label from ordered runs. Each run can mix text and icons at one preset size and weight.</Text>
+      </View>
+
+      {runs.map((run, index) => {
+        const runPath = `${path}[${index}]`
+        const runIssues = issues.filter((issue) => issue.path === runPath || issue.path.startsWith(`${runPath}.`))
+        const textLabel = index === 0 ? 'Button label' : `Button label run ${index + 1}`
+        const input = runInputs.current[index]!
+        const pendingSelection = restoredSelection?.key === input.key && restoredSelection.text === run.text
+          ? restoredSelection.selection : undefined
+        const iconButtonLabel = fontLoaded ? 'Insert Nerd Font icon…' : fontError ? 'Nerd Font icons unavailable' : 'Loading Nerd Font icons…'
+        return (
+          <View key={input.key} style={styles.labelRun} testID={`action-button-label-run-${index}`}>
+            <View style={styles.labelRunHeader}>
+              <Text accessibilityRole="header" style={styles.label}>Run {index + 1}</Text>
+              <Text style={styles.muted}>{run.fontSize} · {run.bold ? 'Bold' : 'Regular'}</Text>
+            </View>
+            <TextInput
+              accessibilityLabel={textLabel}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!disabled}
+              multiline
+              onChangeText={(text) => {
+                if (restoredSelection?.key === input.key) setRestoredSelection(undefined)
+                changeRun(index, { text })
+              }}
+              onSelectionChange={(event) => {
+                const selection = event.nativeEvent.selection
+                // Ignore late native events for the old text until insertion's
+                // requested caret is acknowledged. Normal typing stays native.
+                if (pendingSelection && (selection.start !== pendingSelection.start || selection.end !== pendingSelection.end)) return
+                input.selection = selection
+                if (pendingSelection) setRestoredSelection(undefined)
+              }}
+              placeholder={index === 0 ? 'Button text' : 'Text or spacing'}
+              placeholderTextColor="#65717e"
+              ref={(node) => { input.input = node }}
+              selection={pendingSelection}
+              style={[
+                styles.input,
+                styles.multilineInput,
+                fontLoaded ? run.bold ? styles.nerdFontBold : styles.nerdFont : { fontWeight: run.bold ? '700' : '400' },
+                (issues.some((issue) => issue.path === path) || runIssues.length > 0) && styles.invalidInput
+              ]}
+              textAlignVertical="top"
+              value={run.text}
+            />
+            <FieldIssues issues={issues} path={runPath} />
+            <FieldIssues issues={issues} path={`${runPath}.text`} />
+            <EditorButton
+              accessibilityLabel={`Run ${index + 1}: ${iconButtonLabel}`}
+              disabled={disabled || !fontLoaded}
+              label={iconButtonLabel}
+              onPress={() => insertIcon(index)}
+            />
+            <Choices
+              disabled={disabled}
+              label={`Run ${index + 1} font size`}
+              onChange={(fontSize) => changeRun(index, { fontSize: Number(fontSize) as ActionButtonFontSize })}
+              options={ACTION_BUTTON_FONT_SIZES.map((fontSize) => ({ value: String(fontSize), label: String(fontSize) }))}
+              value={String(run.fontSize)}
+            />
+            <FieldIssues issues={issues} path={`${runPath}.fontSize`} />
+            <Choices
+              disabled={disabled}
+              label={`Run ${index + 1} weight`}
+              onChange={(weight) => changeRun(index, { bold: weight === 'bold' })}
+              options={[{ value: 'regular', label: 'Regular' }, { value: 'bold', label: 'Bold' }]}
+              value={run.bold ? 'bold' : 'regular'}
+            />
+            <FieldIssues issues={issues} path={`${runPath}.bold`} />
+            <View style={styles.actions}>
+              <EditorButton disabled={disabled || index === 0} label={`Move label run ${index + 1} earlier`} onPress={() => moveRun(index, -1)} />
+              <EditorButton disabled={disabled || index === runs.length - 1} label={`Move label run ${index + 1} later`} onPress={() => moveRun(index, 1)} />
+              <EditorButton danger disabled={disabled || runs.length === 1} label={`Delete label run ${index + 1}`} onPress={() => deleteRun(index)} />
+            </View>
+          </View>
+        )
+      })}
+
+      <FieldIssues issues={issues} path={path} />
+      <View style={styles.actions}>
+        <EditorButton disabled={disabled || runs.length >= 64} label="Add run" onPress={addRun} />
+        {rich ? <EditorButton disabled={disabled} label="Remove label formatting" onPress={() => {
+          runInputs.current = [{ key: nextRunKey.current++, input: null }]
+          setRestoredSelection(undefined)
+          setFocusRun(undefined)
+          onChange(plainActionButtonLabel(label))
+        }} /> : null}
+      </View>
+      {runs.length >= 64 ? <Text style={styles.muted}>A label can contain at most 64 runs.</Text> : null}
+
+      <View style={styles.labelPreviewSection}>
+        <Text style={styles.label}>Label preview</Text>
+        <Choices
+          disabled={disabled}
+          label="Preview density"
+          onChange={(density) => setCompactPreview(density === 'compact')}
+          options={[{ value: 'normal', label: 'Normal' }, { value: 'compact', label: 'Compact' }]}
+          value={compactPreview ? 'compact' : 'normal'}
+        />
+        <View
+          accessible={false}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={[styles.labelPreviewStage, compactPreview && styles.compactLabelPreviewStage]}
+          testID="action-button-label-preview"
+        >
+          <View style={[
+            styles.labelPreviewButton,
+            compactPreview && styles.compactLabelPreviewButton,
+            buttonSize === '1/4' && styles.quarterLabelPreviewButton
+          ]} testID="action-button-label-preview-button">
+            <ActionButtonLabel
+              compact={compactPreview}
+              fontFacesLoaded={fontLoaded}
+              label={label}
+              testID="action-button-label-preview-text"
+            />
+          </View>
+        </View>
+      </View>
+    </View>
+  )
+}
+
+function EditorButton({ accessibilityLabel, label, onPress, disabled = false, selected = false, primary = false, danger = false, testID }: {
+  readonly accessibilityLabel?: string
   readonly label: string
   readonly onPress: () => void
   readonly disabled?: boolean
@@ -1171,7 +1380,7 @@ function EditorButton({ label, onPress, disabled = false, selected = false, prim
 }) {
   return (
     <Pressable
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityRole="button"
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
@@ -1184,7 +1393,7 @@ function EditorButton({ label, onPress, disabled = false, selected = false, prim
   )
 }
 
-function FormField({ disabled = false, fontLoaded, hint, inputRef, issues = [], label, multiline = false, onChange, onSelectionChange, onUndo, path = '', placeholder, selection, value }: {
+function FormField({ disabled = false, fontLoaded, hint, inputRef, issues = [], label, multiline = false, onChange, onUndo, path = '', placeholder, value }: {
   readonly disabled?: boolean
   readonly fontLoaded: boolean
   readonly hint?: string
@@ -1193,11 +1402,9 @@ function FormField({ disabled = false, fontLoaded, hint, inputRef, issues = [], 
   readonly label: string
   readonly multiline?: boolean
   readonly onChange: (value: string) => void
-  readonly onSelectionChange?: (selection: TextSelection) => void
   readonly onUndo?: () => void
   readonly path?: string
   readonly placeholder?: string
-  readonly selection?: TextSelection
   readonly value: string
 }) {
   return (
@@ -1211,11 +1418,9 @@ function FormField({ disabled = false, fontLoaded, hint, inputRef, issues = [], 
         editable={!disabled}
         multiline={multiline}
         onChangeText={onChange}
-        onSelectionChange={onSelectionChange ? (event) => onSelectionChange(event.nativeEvent.selection) : undefined}
         placeholder={placeholder}
         placeholderTextColor="#65717e"
         ref={inputRef}
-        selection={selection}
         style={[styles.input, fontLoaded && styles.nerdFont, multiline && styles.multilineInput, issues.some((issue) => issue.path === path) && styles.invalidInput]}
         textAlignVertical={multiline ? 'top' : 'center'}
         value={value}
@@ -1413,6 +1618,7 @@ const styles = StyleSheet.create({
   input: { minHeight: 48, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: '#303946', backgroundColor: '#151b22', color: '#e7edf3', fontFamily: 'monospace', fontSize: 15 },
   nerdFont: { fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontWeight: 'normal' },
   nerdFontSemiBold: { fontFamily: CODEY_NERD_FONT_FAMILIES.semiBold, fontWeight: 'normal' },
+  nerdFontBold: { fontFamily: CODEY_NERD_FONT_FAMILIES.bold, fontWeight: 'normal' },
   multilineInput: { minHeight: 84 },
   invalidInput: { borderColor: '#ff7b72' },
   picker: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#303946', backgroundColor: '#151b22' },
@@ -1421,11 +1627,17 @@ const styles = StyleSheet.create({
   pickerOption: { minHeight: 48, justifyContent: 'center', padding: 12, borderBottomWidth: 1, borderBottomColor: '#27303a' },
   interaction: { paddingTop: 14, borderTopWidth: 1, borderTopColor: '#27303a', gap: 10 },
   guidedInteraction: { marginHorizontal: -8, paddingHorizontal: 8, paddingBottom: 8, borderWidth: 1, borderColor: '#e0af68', borderRadius: 8, backgroundColor: '#2b271f' },
+  labelEditor: { gap: 12 },
+  labelRun: { gap: 10, padding: 12, borderWidth: 1, borderColor: '#303946', borderRadius: 10, backgroundColor: '#151b22' },
+  labelRunHeader: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 },
+  labelPreviewSection: { gap: 10, paddingTop: 4 },
+  labelPreviewStage: { width: 336, maxWidth: '100%', padding: 24, alignSelf: 'center', borderLeftWidth: 2, borderColor: '#10121a', backgroundColor: '#16161e', borderRadius: 12 },
+  compactLabelPreviewStage: { padding: 8 },
+  labelPreviewButton: { width: '48%', height: 52, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'transparent', borderRadius: 12, backgroundColor: '#24283b' },
+  compactLabelPreviewButton: { height: 48, paddingHorizontal: 4, borderRadius: 8 },
+  quarterLabelPreviewButton: { width: '22%' },
   modalBackdrop: { flex: 1, justifyContent: 'center', padding: 20, backgroundColor: 'rgba(0, 0, 0, 0.72)' },
   confirmationCard: { width: '100%', maxWidth: 620, maxHeight: '86%', alignSelf: 'center', gap: 12, padding: 18, borderWidth: 1, borderColor: '#744248', borderRadius: 12, backgroundColor: '#111419' },
   confirmationList: { maxHeight: 280, borderWidth: 1, borderColor: '#303946', borderRadius: 8, backgroundColor: '#151b22' },
-  confirmationRow: { gap: 3, padding: 12, borderBottomWidth: 1, borderBottomColor: '#27303a' },
-  previewFrame: { minWidth: 0, overflow: 'hidden', borderRadius: 12 },
-  previewRail: { height: 360, width: '100%', maxWidth: 340, alignSelf: 'center' },
-  previewBottom: { width: '100%' }
+  confirmationRow: { gap: 3, padding: 12, borderBottomWidth: 1, borderBottomColor: '#27303a' }
 })

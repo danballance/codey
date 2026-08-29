@@ -44,7 +44,7 @@ import {
   type CodeyImeOrderedInputEvent
 } from './native/CodeyIme'
 import { createRuntimeConnection } from './runtime-connection'
-import type { TabletCapability, TabletOrientation } from './tablet'
+import type { TabletCapability } from './tablet'
 
 interface TabletClientProps {
   readonly capability: TabletCapability
@@ -53,11 +53,6 @@ interface TabletClientProps {
 interface CanvasBounds {
   readonly width: number
   readonly height: number
-}
-
-interface ScreenMeasurement {
-  readonly height: number
-  readonly orientation: TabletOrientation
 }
 
 interface PendingActionInput {
@@ -86,7 +81,7 @@ interface NativeInputTiming {
 }
 
 const KEYBOARD_COMPACT_THRESHOLD = 120
-const LANDSCAPE_ACTION_PAD_WIDTH = 336
+const ACTION_PAD_WIDTH = 336
 
 export function TabletClient({ capability }: TabletClientProps) {
   const [controller] = useState(() => new TabletClientController(createRuntimeConnection))
@@ -109,10 +104,7 @@ export function TabletClient({ capability }: TabletClientProps) {
   const [port, setPort] = useState(String(DEFAULT_ENDPOINT.port))
   const [formError, setFormError] = useState('')
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds>({ width: 0, height: 0 })
-  const [screenMeasurement, setScreenMeasurement] = useState<ScreenMeasurement>({
-    height: capability.height,
-    orientation: capability.orientation
-  })
+  const [screenHeight, setScreenHeight] = useState(capability.height)
   const imeRef = useRef<CodeyImeHandle>(null)
   const pendingOrderedInputs = useRef<PendingOrderedInput[]>([])
   const orderedDispatchTail = useRef<Promise<void>>(Promise.resolve())
@@ -170,17 +162,10 @@ export function TabletClient({ capability }: TabletClientProps) {
     [controller]
   )
 
-  const onScreenLayout = useCallback(
-    (event: LayoutChangeEvent) => {
-      const { height } = event.nativeEvent.layout
-      setScreenMeasurement((previous) =>
-        previous.height === height && previous.orientation === capability.orientation
-          ? previous
-          : { height, orientation: capability.orientation }
-      )
-    },
-    [capability.orientation]
-  )
+  const onScreenLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout
+    setScreenHeight((previous) => previous === height ? previous : height)
+  }, [])
 
   const toggleConnection = useCallback(() => {
     setFormError('')
@@ -373,10 +358,7 @@ export function TabletClient({ capability }: TabletClientProps) {
   const connected = client.phase === 'connected'
   const connecting = client.phase === 'connecting'
   const expanded = capability.layout === 'expanded'
-  const landscape = capability.orientation === 'landscape'
-  const compactControls = screenMeasurement.orientation === capability.orientation &&
-    capability.height - screenMeasurement.height >= KEYBOARD_COMPACT_THRESHOLD
-  const compactActionPad = compactControls
+  const compactControls = capability.height - screenHeight >= KEYBOARD_COMPACT_THRESHOLD
   const mode = client.snapshot?.mode.name.toUpperCase() || '—'
 
   useEffect(() => {
@@ -573,8 +555,7 @@ export function TabletClient({ capability }: TabletClientProps) {
         style={[
           styles.workspace,
           expanded ? styles.expandedWorkspace : styles.condensedWorkspace,
-          compactControls && styles.keyboardCompactWorkspace,
-          landscape ? styles.landscapeWorkspace : styles.portraitWorkspace
+          compactControls && styles.keyboardCompactWorkspace
         ]}
         testID="tablet-client-workspace"
       >
@@ -612,23 +593,15 @@ export function TabletClient({ capability }: TabletClientProps) {
           />
         </View>
 
-        <View
-          style={[
-            styles.actionPadContainer,
-            landscape && styles.landscapeActionPadContainer
-          ]}
-          testID="action-pad-container"
-        >
+        <View style={styles.actionPadContainer} testID="action-pad-container">
           <ActionPad
-            compact={compactActionPad}
-            dimensions={`${client.gridSize.columns} × ${client.gridSize.rows} · ${Math.round(capability.width)} × ${Math.round(capability.height)}dp`}
+            compact={compactControls}
             enabled={connected}
             interactionMode={editingActionPad ? 'suspended' : selectingActionPad ? 'selection' : 'normal'}
             mode={mode}
             onEditButton={editActionPadButton}
             onInput={sendOrderedActionInput}
             onKeyboardPress={focusKeyboardIme}
-            placement={landscape ? 'right' : 'below'}
             resetKey={client.phase}
             rootMenu={rootMenu}
           />
@@ -670,7 +643,6 @@ export function TabletClient({ capability }: TabletClientProps) {
       <Modal
         animationType="slide"
         onRequestClose={closeActionPadEditor}
-        supportedOrientations={['portrait', 'landscape']}
         visible={editingActionPad}
       >
         <SafeAreaView style={styles.configScreen}>
@@ -863,12 +835,7 @@ const styles = StyleSheet.create({
   workspace: {
     flex: 1,
     minWidth: 0,
-    minHeight: 0
-  },
-  portraitWorkspace: {
-    flexDirection: 'column'
-  },
-  landscapeWorkspace: {
+    minHeight: 0,
     flexDirection: 'row'
   },
   expandedWorkspace: {
@@ -881,11 +848,9 @@ const styles = StyleSheet.create({
     gap: 4
   },
   actionPadContainer: {
+    width: ACTION_PAD_WIDTH,
     minWidth: 0,
     minHeight: 0
-  },
-  landscapeActionPadContainer: {
-    width: LANDSCAPE_ACTION_PAD_WIDTH
   },
   toolbar: {
     minHeight: 48,

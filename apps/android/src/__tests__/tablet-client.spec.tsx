@@ -289,10 +289,10 @@ describe('tablet client shell', () => {
     expect(screen.getByRole('button', { name: 'Enter' }).props.accessibilityState.disabled).toBe(true)
   })
 
-  it('returns to the selected submenu through editor entry, closing and rotation', async () => {
+  it('returns to the selected submenu through editor entry, closing and a supported landscape resize', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
-    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    const screen = render(<TabletClient capability={tabletCapability(800, 600)} />)
     await act(async () => { fireEvent.press(screen.getByText('Connect')) })
     fireEvent.press(screen.getByTestId('action-pad-leader'))
     fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
@@ -304,7 +304,7 @@ describe('tablet client shell', () => {
     expect(editor.getByLabelText('Tap Neovim input').props.value).toBe(':terminal<CR>')
     expect(pad.getByTestId('action-pad-terminal').props.accessibilityState.disabled).toBe(true)
     fireEvent.press(pad.getByTestId('action-pad-terminal'))
-    screen.rerender(<TabletClient capability={tabletCapability(800, 1_280)} />)
+    screen.rerender(<TabletClient capability={tabletCapability(1_280, 800)} />)
     expect(editor.getByLabelText('Button ID').props.value).toBe('terminal')
     fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
     expect(pad.getByLabelText('Current action path: Leader')).toBeTruthy()
@@ -445,7 +445,10 @@ describe('tablet client shell', () => {
     const endpointRead = new Promise<string>((resolve) => { finishEndpoint = resolve })
     const replacement: ActionPadConfig = {
       version: 1, rootMenuId: 'home', menus: [{ id: 'home', label: 'Home', groups: [{
-        id: 'leading', buttons: [{ id: 'escape', label: 'Recovered escape', tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' } }]
+        id: 'leading', buttons: [{
+          id: 'escape', label: 'Recovered escape', styles: { size: '1/2' },
+          tap: { type: 'input', nvimInput: '<Esc>', after: 'stay' }
+        }]
       }] }]
     }
     getItem.mockImplementation((key) => key === 'codey.android.endpoint.v1' ? endpointRead : Promise.resolve(recoveryRecord(replacement)))
@@ -472,18 +475,17 @@ describe('tablet client shell', () => {
     expect(screen.getByRole('button', { name: 'Edit Action Pad' })).toBeTruthy()
   })
 
-  it('opens the configuration editor offline and isolates every preview action from Neovim', async () => {
+  it('opens the configuration editor offline without changing the saved pad', async () => {
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     await act(async () => { await Promise.resolve() })
     fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
     await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
     const editor = within(screen.getByTestId('action-pad-editor'))
-    const preview = within(screen.getByTestId('action-pad-editor-preview'))
     openManagedButton(editor)
     fireEvent.changeText(editor.getByLabelText('Button label'), 'Escape now')
-    expect(preview.getByText('Escape now')).toBeTruthy()
-    fireEvent.press(preview.getByTestId('action-pad-escape'))
-    fireEvent.press(preview.getByTestId('action-pad-keyboard'))
+    expect(screen.queryByTestId('action-pad-editor-preview')).toBeNull()
+    expect(within(screen.getByTestId('action-pad-container')).getByText('Esc')).toBeTruthy()
+    expect(within(screen.getByTestId('action-pad-container')).queryByText('Escape now')).toBeNull()
     const nativeIme = jest.requireMock('../native/CodeyIme') as { __sendOrderedInput: jest.Mock; __focus: jest.Mock }
     expect(nativeIme.__sendOrderedInput).not.toHaveBeenCalled()
     expect(nativeIme.__focus).not.toHaveBeenCalled()
@@ -545,7 +547,8 @@ describe('tablet client shell', () => {
     const editor = within(screen.getByTestId('action-pad-editor'))
     openManagedButton(editor)
     fireEvent.changeText(editor.getByLabelText('Tap Neovim input'), ':write<CR>')
-    fireEvent.press(within(screen.getByTestId('action-pad-editor-preview')).getByTestId('action-pad-escape'))
+    // The saved pad remains mounted beneath the editor, but is suspended.
+    fireEvent.press(within(screen.getByTestId('action-pad-container')).getByTestId('action-pad-escape'))
     // Even a delayed native callback is ignored while ordinary form fields own focus.
     fireEvent(screen.getByTestId('mock-codey-ime'), 'committedText', 'form text')
     expect(double.session.input).toHaveBeenCalledTimes(inputCount)
@@ -561,12 +564,18 @@ describe('tablet client shell', () => {
       version: 1, rootMenuId: 'home', menus: [
         {
           id: 'home', label: 'Home', groups: [{
-            id: 'main', buttons: [{ id: 'escape', label: 'Esc', tap: { type: 'input', nvimInput: '<Esc>', after: 'root' } }]
+            id: 'main', buttons: [{
+              id: 'escape', label: 'Esc', styles: { size: '1/2' },
+              tap: { type: 'input', nvimInput: '<Esc>', after: 'root' }
+            }]
           }]
         },
         {
           id: 'unused', label: 'Unused', groups: [{
-            id: 'tools', buttons: [{ id: 'noop', label: 'No-op', tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' } }]
+            id: 'tools', buttons: [{
+              id: 'noop', label: 'No-op', styles: { size: '1/2' },
+              tap: { type: 'input', nvimInput: '<Nop>', after: 'stay' }
+            }]
           }]
         }
       ]
@@ -585,7 +594,7 @@ describe('tablet client shell', () => {
       return document
     })
     mockedConnectionFactory.mockReturnValue(double)
-    const screen = render(<TabletClient capability={tabletCapability(800, 1_280)} />)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     await act(async () => { await Promise.resolve() })
     await act(async () => { fireEvent.press(screen.getByText('Connect')) })
     await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
@@ -626,31 +635,10 @@ describe('tablet client shell', () => {
     expect(double.session.close).not.toHaveBeenCalled()
   })
 
-  it('keeps portrait and square workspaces stacked while grouping the landscape rail', async () => {
-    const portrait = render(
-      <TabletClient capability={tabletCapability(800, 1_280)} />
-    )
+  it('uses the same fixed right rail in condensed and expanded landscape layouts', async () => {
+    const landscape = render(<TabletClient capability={tabletCapability(800, 600)} />)
     await act(async () => { await Promise.resolve() })
-    expect(StyleSheet.flatten(portrait.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(8)
-    expect(StyleSheet.flatten(portrait.getByTestId('tablet-client-workspace').props.style)).toMatchObject({
-      flexDirection: 'column'
-    })
-    expect(StyleSheet.flatten(portrait.getByTestId('action-pad-container').props.style).width).toBeUndefined()
-    expect(StyleSheet.flatten(portrait.getByTestId('action-pad').props.style).minHeight).toBe(213)
-    portrait.unmount()
-
-    const square = render(
-      <TabletClient capability={tabletCapability(840, 840)} />
-    )
-    await act(async () => { await Promise.resolve() })
-    expect(StyleSheet.flatten(square.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(16)
-    expect(StyleSheet.flatten(square.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('column')
-    square.unmount()
-
-    const landscape = render(
-      <TabletClient capability={tabletCapability(1_280, 800)} />
-    )
-    await act(async () => { await Promise.resolve() })
+    expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(8)
     expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-workspace').props.style)).toMatchObject({
       flexDirection: 'row'
     })
@@ -659,9 +647,9 @@ describe('tablet client shell', () => {
       flex: 1,
       minHeight: 0,
       padding: 24,
-      borderTopWidth: 0,
       borderLeftWidth: 2
     })
+    expect(landscape.queryByTestId('action-pad-horizontal-scroll')).toBeNull()
     expect(StyleSheet.flatten(landscape.getByTestId('action-pad-flow-scroll').props.contentContainerStyle)).toMatchObject({
       flexGrow: 1,
       justifyContent: 'space-between'
@@ -676,31 +664,12 @@ describe('tablet client shell', () => {
       height: 52
     })
     expect(landscape.getByTestId('action-pad-flow-scroll')).toBeTruthy()
+
+    landscape.rerender(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(16)
+    expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('row')
+    expect(StyleSheet.flatten(landscape.getByTestId('action-pad-container').props.style).width).toBe(336)
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
-  })
-
-  it('preserves two usable action rows when the software keyboard reduces portrait height', async () => {
-    const screen = render(
-      <TabletClient capability={tabletCapability(800, 1_280)} />
-    )
-
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(213)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-horizontal-scroll').props.style).height).toBe(110)
-    fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
-      persist: jest.fn(),
-      nativeEvent: { layout: { width: 800, height: 1_160, x: 0, y: 0 } }
-    })
-
-    await waitFor(() => {
-      expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(4)
-      expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
-    })
-    expect(StyleSheet.flatten(screen.getByTestId('editor-frame').props.style).minHeight).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-horizontal-scroll').props.style).height).toBe(102)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-core-row-2').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-navigation-row-1').props.style).height).toBe(48)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-navigation-row-2').props.style).height).toBe(48)
   })
 
   it('applies keyboard compaction to the landscape shell while retaining rail controls', async () => {
@@ -728,41 +697,10 @@ describe('tablet client shell', () => {
     })
   })
 
-  it('does not reuse a stale keyboard height measurement after orientation changes', async () => {
-    const screen = render(
-      <TabletClient capability={tabletCapability(1_280, 800)} />
-    )
-    fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
-      persist: jest.fn(),
-      nativeEvent: { layout: { width: 1_280, height: 500, x: 0, y: 0 } }
-    })
-    await waitFor(() => {
-      expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(4)
-    })
-
-    screen.rerender(
-      <TabletClient capability={tabletCapability(800, 1_280)} />
-    )
-
-    expect(StyleSheet.flatten(screen.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('column')
-    expect(StyleSheet.flatten(screen.getByTestId('tablet-client-screen').props.style).gap).toBe(5)
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(213)
-
-    fireEvent(screen.getByTestId('tablet-client-screen'), 'layout', {
-      persist: jest.fn(),
-      nativeEvent: { layout: { width: 800, height: 1_160, x: 0, y: 0 } }
-    })
-    await waitFor(() => {
-      expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style).minHeight).toBe(144)
-    })
-  })
-
-  it('preserves the session, menu, and endpoint state while resizing the editor after rotation', async () => {
+  it('preserves the session, menu, and endpoint state across supported landscape tiers', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
-    const screen = render(
-      <TabletClient capability={tabletCapability(800, 1_280)} />
-    )
+    const screen = render(<TabletClient capability={tabletCapability(800, 600)} />)
 
     await act(async () => {
       await Promise.resolve()
@@ -818,7 +756,7 @@ describe('tablet client shell', () => {
     fireEvent(screen.getByTestId('mock-editor-canvas'), 'layout', {
       nativeEvent: { layout: { width: 1_000, height: 440, x: 0, y: 0 } }
     })
-    expect(screen.getByText('100 × 20 · 1280 × 800dp')).toBeTruthy()
+    expect(screen.queryByText('100 × 20 · 1280 × 800dp')).toBeNull()
 
     fireEvent.press(screen.getByText('Connect'))
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())

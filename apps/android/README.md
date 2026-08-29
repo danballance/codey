@@ -15,7 +15,8 @@ Skia + Android IME
 
 ## Supported screen contract
 
-- Portrait, landscape, and square tablet windows are supported.
+- Only landscape tablet windows are supported: the active width must be greater
+  than the active height.
 - The shortest active window side must be at least `600dp`.
 - Windows from `600dp` through `839dp` wide use the condensed tablet shell.
 - Windows at least `840dp` wide use the large-tablet shell; approximately
@@ -24,17 +25,17 @@ Skia + Android IME
   connect an editor session.
 
 If multi-window resizing takes a connected editor below the minimum, the app
-disconnects safely before showing the unsupported-device explanation. The app
-does not request a fixed orientation, so rotating or resizing a supported tablet
-reflows the existing editor session instead of reconstructing it.
+disconnects safely before showing the unsupported-device explanation. Portrait
+and square bounds are unsupported in the same way. Expo requests landscape at
+the platform level, while the runtime gate remains authoritative on devices
+that do not honor fixed-orientation requests. Returning to supported landscape
+bounds starts a fresh disconnected client.
 
-## Adaptive workspace and dynamic action pad
+## Landscape workspace and dynamic action pad
 
-In portrait and square windows, the command area remains below the editor. In
-landscape, the editor uses the available vertical space while the action pad
-moves into a fixed `336dp` rail to its right. The full-width connection toolbar
-stays above both. The same action pad remains mounted across rotations, so its
-active page, transient cluster, and input state survive the layout change.
+The editor uses the available vertical space while the action pad occupies a
+fixed `336dp` rail to its right. The full-width connection toolbar stays above
+both.
 
 Each menu contains an ordered array of arbitrarily named button groups. A
 `group` interaction can temporarily replace only the invoking group's slot with
@@ -43,22 +44,14 @@ opening one from a different slot restores the previous slot first, and nested
 group actions continue to use the original host slot. Full-menu actions still
 replace the whole page. Group names have no built-in layout meaning.
 
-Every base-page group reserves a fixed capacity envelope large enough for all
-group-action targets reachable from its slot. In portrait and square windows,
-a variant reserves `max(1, ceil(buttonCount / 2))` columns across two rows. The
-largest reachable variant determines the slot width, using 48dp minimum cells
-and 6dp internal and inter-group gaps; available surplus is shared
-proportionally. Oversized custom pads remain horizontally scrollable, and a
-cluster swap does not change the content width, scroll position, sibling group
-positions, or scroll-view instance.
-
-In the landscape rail, a button may set the semantic `styles.size` value to
-`"1/4"` or `"1/2"`; an omitted value defaults to `"1/2"`. Default and half
-buttons consume two units, quarter buttons one unit, and each row holds four
-units. A base slot reserves the maximum exact row height of its reachable
-variants. Groups remain in one shared vertical overflow container, so cluster
-swaps keep its extent and offset stable. `styles` is a small action-pad contract,
-not an unrestricted React Native style passthrough.
+Every base-page group reserves a fixed rail-capacity envelope large enough for
+all group-action targets reachable from its slot. Every button must explicitly
+set the semantic `styles.size` value to `"1/2"` or `"1/4"`. Half buttons consume
+two units, quarter buttons one unit, and each row holds four units. A base slot
+reserves the maximum exact row height of its reachable variants. Groups remain
+in one shared vertical overflow container, so cluster swaps keep its extent and
+offset stable. `styles` is a small action-pad contract, not an unrestricted
+React Native style passthrough.
 
 Buttons configure generic `tap` and `longPress` interaction slots, with at least
 one interaction present. An interaction may send direct Neovim input, open a
@@ -73,16 +66,17 @@ The header shows the full-page breadcrumb separately from the active cluster,
 for example `› Leader / Search · Delete`, and exposes that distinction to
 accessibility services. Opening a full menu first clears the cluster and then
 pushes a page. Back first clears a cluster and pops one page; on Home it only
-clears the cluster. Input or keyboard interactions with `after: stay`, rotation,
-keyboard compaction, selection mode, and app suspension retain it. Any
+clears the cluster. Input or keyboard interactions with `after: stay`, supported
+landscape resizing, keyboard compaction, selection mode, and app suspension
+retain it. Any
 `after: root`, disconnect/reset, or activated configuration replacement restores
 the complete root pad.
 
 Every input interaction dispatches its complete Neovim notation in one ordered
 operation, after any active Android IME composition has been committed. Inputs
 inside navigation clusters use `after: stay` for repeated movement, while
-one-off commands can use `after: root`. All placements retain 48dp touch targets
-and the same long-press release-suppression guarantees.
+one-off commands can use `after: root`. The rail retains 48dp touch targets and
+the same long-press release-suppression guarantees.
 
 When the software keyboard reduces the window height by at least `120dp`, the
 pad switches to its compact treatment while preserving those targets and any
@@ -141,8 +135,8 @@ Removing a visible launcher button, group, or interaction does not implicitly
 delete its destination menu definition. The destination therefore remains in
 menu and destination dropdowns until it is deleted explicitly. After an
 individual deletion in a valid draft, the manager, dropdowns, move destinations,
-preview, and status counts update immediately. While another field is invalid,
-the preview continues to identify and show its last valid snapshot.
+and status counts update immediately. Field validation is shown directly in the
+form and prevents Save until the draft is valid.
 
 When one or more menus are Unused, **Remove unused menus** offers a confirmation
 that lists the affected definitions and their aggregate group/button counts. A
@@ -152,12 +146,11 @@ Reachable menu. Cleanup is unavailable while the draft is invalid or another
 edit is pending.
 
 The general editor also includes groups, buttons, duplication, ordering/move
-controls, all button properties, and a preview. **Group** appears alongside the
-other interaction types, followed by destination-menu and destination-group
-pickers; changing the menu clears the group selection. Menu and group renames
-update links. The preview can navigate pages and substitute groups but never
-sends commands or opens the Neovim keyboard. The existing Neovim session
-remains mounted while ordinary form inputs own keyboard focus.
+controls, and all button properties. **Group** appears alongside the other
+interaction types, followed by destination-menu and destination-group pickers;
+changing the menu clears the group selection. Menu and group renames update
+links. The existing Neovim session remains mounted while ordinary form inputs
+own keyboard focus, but the active pad stays suspended until the editor closes.
 
 The primary YAML file lives on the connected Neovim host, not on Android.
 Choose an absolute host path or a path beginning with `~/`. The suggested path
@@ -181,10 +174,10 @@ permission is needed.
   Neither closing nor discarding writes a host file.
 
 Menu deletions and unused-menu cleanup follow the same draft lifecycle as every
-other edit. They disappear from editor pickers and previews immediately, but the
-live Action Pad and host YAML keep the last activated configuration until a
-successful **Save**. **Keep draft & close** preserves the cleanup locally without
-activating it; discarding the draft restores the last saved definitions.
+other edit. They disappear from editor pickers immediately, but the live Action
+Pad and host YAML keep the last activated configuration until a successful
+**Save**. **Keep draft & close** preserves the cleanup locally without activating
+it; discarding the draft restores the last saved definitions.
 
 The app keeps the last valid configuration and incomplete drafts in local
 recovery storage. Editing works offline; host operations require a connection.
@@ -215,6 +208,8 @@ menus:
         buttons:
           - id: escape
             label: Esc
+            styles:
+              size: '1/2'
             tap:
               type: input
               nvimInput: '<Esc>'
@@ -236,35 +231,78 @@ the document, group IDs within each menu, and button IDs within each group.
 Menu interactions use `menuId`; group interactions require both `menuId` and
 `groupId`. Both destination definitions must exist. Same-menu group links and
 cycles composed of menu and group links are rejected. A button needs `tap`,
-`longPress`, or both. Optional button fields are `accessibilityLabel`,
-`accessibilityHint`, and `styles: { size: '1/4' }` or
-`styles: { size: '1/2' }`. Each interaction has an explicit `after: root` or
+`longPress`, or both, and must declare `styles: { size: '1/2' }` or
+`styles: { size: '1/4' }`. Optional button fields are `accessibilityLabel` and
+`accessibilityHint`. Each interaction has an explicit `after: root` or
 `after: stay`. Quote numeric labels and whitespace-sensitive inputs: inputs are
 preserved exactly, not trimmed. Only a single YAML 1.2 document is supported,
 up to 1 MiB; custom tags, anchors/aliases, unknown fields, and unsupported
 versions are rejected.
 
-This prototype adds group interactions directly to schema version 1. It does
-not provide backward compatibility with older Codey builds that only understand
-the earlier version-1 interaction set.
+Button labels may remain scalar strings, which use the regular
+size-15 treatment (size 13 while the pad is compact), or use an ordered list of
+typography runs. Every run declares `text`, a `fontSize` of `10`, `12`, `15`,
+`18`, or `22`, and `bold: true` or `false`. Unbold runs use the bundled
+regular face; bold runs use its bold face. Existing scalar labels and non-bold
+runs now render in regular rather than semibold, without changing their stored
+values. If fonts are unavailable, system weights 400 and 700 are used.
+Compact mode maps those sizes to
+`9`, `10`, `13`, `16`, and `19` respectively. A run may contain one character,
+so per-letter styling does not require offsets into Unicode text:
+
+```yaml
+label:
+  - text: ' '
+    fontSize: 22
+    bold: false
+  - text: 'Save'
+    fontSize: 15
+    bold: true
+  - text: ' all'
+    fontSize: 15
+    bold: false
+```
+
+Rich labels contain between 1 and 64 runs. Their combined text must not be
+blank, although whitespace-only separator runs are allowed. The renderer keeps
+the existing fixed 52dp/48dp button heights and two-line limit, so use the
+editor's Normal/Compact label preview to check large or multi-line treatments.
+Colour, italics, custom font families, and per-run vertical positioning are not
+part of this format.
+
+This prototype evolves schema version 1 in place. It provides no migration or
+implicit size for older YAML: a button without `styles.size` is invalid and must
+be updated explicitly before it can be loaded. Older Codey builds reject
+version-1 documents that use rich button labels; builds predating group
+interactions reject those interactions as well.
 
 **Load only configurations you trust.** Input strings are passed directly to
 Neovim and can contain commands, including commands that affect host files or
-run programs. Loading, editing, and previewing a configuration never executes
-those strings; pressing an active input button does. Configuration authors own
-group density, fit, identifiers, and navigation placement. The root menu's
+run programs. Loading or editing a configuration never executes those strings;
+pressing an active input button does. Configuration authors own
+group density, fit, identifiers, and button ordering. The root menu's
 Keyboard interaction focuses the Android IME without sending editor input.
 
 Android bundles JetBrainsMono Nerd Font Mono for editor glyphs and all
 action-pad text, including Nerd Font private-use characters. The editor and pad
 load it independently. The pad retains system typography while its faces are
-pending or unavailable; the editor waits for its four faces and uses system
-monospace if that load fails.
+pending or unavailable; the editor waits for the three upright faces it uses
+and falls back to system monospace if that load fails.
 
-Button settings include a searchable Nerd Font icon picker. Choosing an icon
-inserts its glyph at the current label cursor or replaces the selected label
-text; the YAML format remains unchanged because the glyph is stored directly
-in `label`. Set an explicit accessibility label when a button is icon-only.
+Button settings include a run editor and searchable Nerd Font icon picker.
+Use **Add run** to append an empty regular size-15 run. Each run has an
+**Insert Nerd Font icon…** control: pick an icon to insert it at that run's
+remembered cursor position, replacing selected text, or appending if no cursor
+position has been recorded. Focus returns to the run with the caret after the
+icon. Icons inherit the run's size and Regular/Bold weight, so text and icons
+can share one run. For an icon-only run, add an empty run, insert an icon and
+choose any preset size (such as 22). Inserting an icon never adds a run and is
+still available at the 64-run limit. Text-only edits, including icon insertion,
+keep scalar labels as strings; size/weight changes or adding runs enable rich
+formatting. **Remove label formatting** joins all text back into one string.
+The editor warns without blocking Save when
+private-use glyphs lack an explicit accessibility label; set a human-readable
+label so a screen reader never has to interpret a Nerd Font code point.
 
 ## Touch cursor and software keyboard
 
@@ -382,7 +420,7 @@ The native tests and debug assembly require a generated `android/` tree, so run
 the clean prebuild first when invoking those commands independently. No Android
 Studio, emulator, or system image is required or included in the Nix shell.
 
-The Android suite includes frozen migration baselines for all 12 starter menus,
+The Android suite includes frozen baselines for all 12 starter menus,
 YAML validation/round trips, editing operations, recovery and conflict cases,
 input isolation, and the complete Load → Edit → Save → Reload → Export UI flow.
 The shared host-document suite launches isolated `nvim --embed --headless`
@@ -409,7 +447,7 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
    but its destination definition remains in Manage menus and relevant pickers.
    Delete an unreferenced non-root menu individually and confirm it disappears
    immediately from menu selectors, Tap/Hold destination pickers, Group
-   destination pickers, move destinations, and preview navigation.
+   destination pickers, and move destinations.
 4. Attempt to delete a referenced menu. Confirm deletion is disabled and every
    incoming reference identifies the source menu/group/button, Tap or Hold, and
    Menu or Group action. Select each kind of reference and confirm the editor
@@ -422,17 +460,24 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
 6. Before saving menu deletions, close with **Keep draft & close** and confirm the
    live pad and host YAML still use the previous definitions while the editor
    recovers the cleaned draft. Save, reload, and reopen the app; confirm deleted
-   menus remain absent from the YAML, manager, all pickers, preview, and live
-   Action Pad.
-7. Load the starter, change a label/input/size, create and move a button, then
-   Save. Confirm the host file changed and the active pad returns to its root.
+   menus remain absent from the YAML, manager, all pickers, and live Action Pad.
+7. Load the starter and build a mixed label with a size-22 icon plus bold and
+   regular text runs. Insert an icon at a cursor and over selected text in an
+   existing run; check that its size/weight are preserved and the caret returns
+   after it. Add an empty run and insert an icon to make an icon-only run.
+   Reorder a run; check both Normal and Compact previews;
+   switch the button between Half and Quarter; then Save and reload. Confirm the
+   YAML retains every run and the active pad renders the same treatment without
+   clipping in ordinary and selection modes.
 8. Reload, then Export to a different path. Confirm the source stays linked;
    exporting a later unsaved edit must not activate it or clear its dirty state.
 9. Change the source outside Codey and try Save. Confirm the app offers Reload
    or Export without overwriting the external change.
 10. Disconnect, edit, and choose **Keep draft & close**. Reopen/restart and
    reconnect; the draft must remain local until an explicit Save.
-11. Repeat in portrait and landscape, including the smallest supported tablet
-   window with the keyboard visible. Confirm forms remain reachable and
-   typing or previewing never changes the Neovim buffer. After leaving the
-   editor, check the pad's tap/hold behavior and the normal Neovim IME.
+11. Repeat at the `800x600dp` condensed and `1280x800dp` expanded landscape
+   baselines, including the software keyboard. Confirm forms remain reachable
+   and typing in them never changes the Neovim buffer. After leaving the editor,
+   check the pad's tap/hold behavior and the normal Neovim IME. Rotate to
+   portrait and confirm the unsupported screen replaces and disconnects the
+   client; rotate back and confirm a fresh disconnected client appears.

@@ -1,8 +1,10 @@
 import { isAlias, isNode, parseDocument, stringify, visit } from 'yaml'
 
+import { ACTION_BUTTON_FONT_SIZES } from './types'
 import type {
   ActionAfter,
   ActionButton,
+  ActionButtonLabel,
   ActionButtonStyles,
   ActionInteraction,
   ActionMenu
@@ -13,6 +15,7 @@ export const ACTION_PAD_CONFIG_MAX_BYTES = 1_048_576
 const MAX_MENUS = 128
 const MAX_GROUPS_PER_MENU = 128
 const MAX_BUTTONS_PER_GROUP = 1024
+const MAX_LABEL_RUNS = 64
 const MAX_ITEMS = 10_000
 const MAX_ISSUES = 100
 const MAX_YAML_DEPTH = 24
@@ -26,10 +29,10 @@ export type ActionMenuDefinitionInteraction =
 
 export interface ActionMenuDefinitionButton {
   readonly id: string
-  readonly label: string
+  readonly label: ActionButtonLabel
   readonly accessibilityLabel?: string
   readonly accessibilityHint?: string
-  readonly styles?: ActionButtonStyles
+  readonly styles: ActionButtonStyles
   readonly tap?: ActionMenuDefinitionInteraction
   readonly longPress?: ActionMenuDefinitionInteraction
 }
@@ -125,7 +128,7 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
       return false
     }
     if (itemCount > MAX_ITEMS) {
-      issue(path, `Configuration must contain at most ${MAX_ITEMS} menus, groups and buttons in total.`)
+      issue(path, `Configuration must contain at most ${MAX_ITEMS} menus, groups, buttons and label runs in total.`)
       return false
     }
     return true
@@ -135,6 +138,48 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
     if (!string(candidate, path, 'text')) return
     if (semantic && identifiers.has(candidate)) issue(path, `Duplicate identifier: ${candidate}`)
     identifiers.add(candidate)
+  }
+
+  function buttonLabel(candidate: unknown, path: string) {
+    if (typeof candidate === 'string') {
+      string(candidate, path, 'text')
+      return
+    }
+    if (!array(candidate, path, MAX_LABEL_RUNS)) return
+    if (candidate.length === 0) {
+      issue(path, 'Must contain at least 1 run.')
+      return
+    }
+
+    let combinedText = ''
+    let allTextValid = true
+    let hasEmptyRun = false
+    candidate.forEach((run, runIndex) => {
+      const runPath = `${path}[${runIndex}]`
+      if (!object(run, runPath, ['text', 'fontSize', 'bold'])) {
+        allTextValid = false
+        return
+      }
+      if (string(run.text, `${runPath}.text`)) {
+        combinedText += run.text
+        if (semantic && run.text.length === 0) {
+          hasEmptyRun = true
+          issue(`${runPath}.text`, 'Must not be empty.')
+        }
+      } else {
+        allTextValid = false
+      }
+      if (
+        typeof run.fontSize !== 'number' ||
+        !ACTION_BUTTON_FONT_SIZES.some((fontSize) => fontSize === run.fontSize)
+      ) {
+        issue(`${runPath}.fontSize`, `Expected one of ${ACTION_BUTTON_FONT_SIZES.join(', ')}.`)
+      }
+      if (typeof run.bold !== 'boolean') issue(`${runPath}.bold`, 'Expected a Boolean.')
+    })
+    if (semantic && allTextValid && !hasEmptyRun && combinedText.trim().length === 0) {
+      issue(path, 'Must contain visible text.')
+    }
   }
 
   function interaction(candidate: unknown, path: string) {
@@ -196,13 +241,13 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
           'id', 'label', 'accessibilityLabel', 'accessibilityHint', 'styles', 'tap', 'longPress'
         ])) return
         identifier(button.id, `${buttonPath}.id`, buttonIds)
-        string(button.label, `${buttonPath}.label`, 'text')
+        buttonLabel(button.label, `${buttonPath}.label`)
         for (const key of ['accessibilityLabel', 'accessibilityHint'] as const) {
           if (button[key] !== undefined) string(button[key], `${buttonPath}.${key}`)
         }
-        if (button.styles !== undefined && object(button.styles, `${buttonPath}.styles`, ['size'])) {
+        if (object(button.styles, `${buttonPath}.styles`, ['size'])) {
           const size = button.styles.size
-          if (size !== undefined && size !== '1/4' && size !== '1/2') {
+          if (size !== '1/4' && size !== '1/2') {
             issue(`${buttonPath}.styles.size`, 'Expected "1/4" or "1/2".')
           }
         }
@@ -388,16 +433,21 @@ function normalizeConfig(config: ActionPadConfig): ActionPadConfig {
         id: group.id,
         buttons: group.buttons.map((button) => ({
           id: button.id,
-          label: button.label,
+          label: normalizeButtonLabel(button.label),
           ...(button.accessibilityLabel === undefined ? {} : { accessibilityLabel: button.accessibilityLabel }),
           ...(button.accessibilityHint === undefined ? {} : { accessibilityHint: button.accessibilityHint }),
-          ...(button.styles === undefined ? {} : { styles: button.styles.size === undefined ? {} : { size: button.styles.size } }),
+          styles: { size: button.styles.size },
           ...(button.tap === undefined ? {} : { tap: normalizeInteraction(button.tap) }),
           ...(button.longPress === undefined ? {} : { longPress: normalizeInteraction(button.longPress) })
         }))
       }))
     }))
   }
+}
+
+function normalizeButtonLabel(label: ActionButtonLabel): ActionButtonLabel {
+  if (typeof label === 'string') return label
+  return label.map((run) => ({ text: run.text, fontSize: run.fontSize, bold: run.bold }))
 }
 
 export function resolveActionPadConfig(config: ActionPadConfig): ActionMenu {

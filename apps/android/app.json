@@ -4,7 +4,7 @@
     "slug": "codey-android",
     "version": "0.1.0",
     "platforms": ["android"],
-    "orientation": "default",
+    "orientation": "landscape",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#090b10",
     "scheme": "codey",

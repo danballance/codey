@@ -18,9 +18,7 @@ export default function App() {
       <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.safeArea}>
         <TabletCapabilityGate
           capability={capability}
-          renderSupported={() => (
-            <TabletClient key="supported-tablet-client" capability={capability} />
-          )}
+          renderSupported={() => <TabletClient capability={capability} />}
         />
       </SafeAreaView>
     </SafeAreaProvider>

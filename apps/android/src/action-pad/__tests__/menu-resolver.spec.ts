@@ -20,6 +20,7 @@ function definition(
         buttons: interactions.map((tap, index) => ({
           id: `action-${index}`,
           label: `Action ${index}`,
+          styles: { size: '1/2' },
           tap
         }))
       }

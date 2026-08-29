@@ -80,13 +80,23 @@ describe('bundled action pad', () => {
     }
 
     expect(['delete-num-2', 'delete-num-3', 'delete-num-4', 'delete-num-5'].map((buttonId) => (
-      button('delete', buttonId).styles?.size
+      button('delete', buttonId).styles.size
     ))).toEqual(['1/4', '1/4', '1/4', '1/4'])
     expect(['five-lines-up', 'ten-lines-up'].map((buttonId) => (
-      button('up-navigation', buttonId).styles?.size
+      button('up-navigation', buttonId).styles.size
     ))).toEqual(['1/4', '1/4'])
     expect(['five-lines-down', 'ten-lines-down'].map((buttonId) => (
-      button('down-navigation', buttonId).styles?.size
+      button('down-navigation', buttonId).styles.size
     ))).toEqual(['1/4', '1/4'])
+  })
+
+  it('declares an explicit supported size for every starter button', () => {
+    const sizes = DEFAULT_ACTION_PAD_CONFIG.menus.flatMap((candidate) =>
+      candidate.groups.flatMap((group) => group.buttons.map((candidateButton) => candidateButton.styles.size))
+    )
+
+    expect(sizes).toHaveLength(86)
+    expect(sizes.filter((size) => size === '1/2')).toHaveLength(78)
+    expect(sizes.filter((size) => size === '1/4')).toHaveLength(8)
   })
 })

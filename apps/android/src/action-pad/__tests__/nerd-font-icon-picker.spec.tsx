@@ -54,12 +54,15 @@ const mockNerdFontIcons = mockGetNerdFontIcons()
 const mockFilterNerdFontIcons = filterNerdFontIcons as jest.MockedFunction<typeof filterNerdFontIcons>
 
 beforeEach(() => {
+  jest.useFakeTimers()
   mockGetNerdFontIcons.mockClear()
   mockFilterNerdFontIcons.mockClear()
 })
 
 afterEach(() => {
   cleanup()
+  act(() => { jest.runOnlyPendingTimers() })
+  jest.useRealTimers()
 })
 
 function renderPicker(overrides: Partial<React.ComponentProps<typeof NerdFontIconPicker>> = {}) {
