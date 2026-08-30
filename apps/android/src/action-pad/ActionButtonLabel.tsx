@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { StyleSheet, Text } from 'react-native'
 
 import { CODEY_NERD_FONT_FAMILIES } from '../fonts'
+import { CodeyActionButtonLabel } from '../native/CodeyActionButtonLabel'
 import {
   compactActionButtonFontSize
 } from './label'
@@ -27,21 +28,25 @@ export const ActionButtonLabel = memo(function ActionButtonLabel({
   label,
   testID
 }: ActionButtonLabelProps) {
-  const content = typeof label === 'string'
-    ? label
-    : label.map((run, index) => (
-        <Text
-          key={index}
-          style={[
-            { fontSize: compact ? compactActionButtonFontSize(run.fontSize) : run.fontSize },
-            fontFacesLoaded
-              ? run.bold ? styles.nerdFontBold : styles.nerdFontRegular
-              : run.bold ? styles.systemBold : styles.systemRegular
-          ]}
-        >
-          {run.text}
-        </Text>
-      ))
+  if (typeof label !== 'string') {
+    return (
+      <CodeyActionButtonLabel
+        color="#c0caf5"
+        defaultFontFamily={fontFacesLoaded ? CODEY_NERD_FONT_FAMILIES.regular : undefined}
+        defaultFontSize={compact ? 13 : 15}
+        runs={label.map((run) => ({
+          text: run.text,
+          fontSize: compact ? compactActionButtonFontSize(run.fontSize) : run.fontSize,
+          fontFamily: fontFacesLoaded
+            ? run.bold ? CODEY_NERD_FONT_FAMILIES.bold : CODEY_NERD_FONT_FAMILIES.regular
+            : undefined,
+          fontWeight: run.bold ? 700 : 400
+        }))}
+        style={styles.nativeLabel}
+        testID={testID}
+      />
+    )
+  }
 
   return (
     <Text
@@ -53,12 +58,16 @@ export const ActionButtonLabel = memo(function ActionButtonLabel({
       ]}
       testID={testID}
     >
-      {content}
+      {label}
     </Text>
   )
 })
 
 const styles = StyleSheet.create({
+  nativeLabel: {
+    alignSelf: 'stretch',
+    flex: 1
+  },
   buttonText: {
     color: '#c0caf5',
     fontSize: 15,
@@ -71,15 +80,5 @@ const styles = StyleSheet.create({
   nerdFontRegular: {
     fontFamily: CODEY_NERD_FONT_FAMILIES.regular,
     fontWeight: 'normal'
-  },
-  nerdFontBold: {
-    fontFamily: CODEY_NERD_FONT_FAMILIES.bold,
-    fontWeight: 'normal'
-  },
-  systemRegular: {
-    fontWeight: '400'
-  },
-  systemBold: {
-    fontWeight: '700'
   }
 })

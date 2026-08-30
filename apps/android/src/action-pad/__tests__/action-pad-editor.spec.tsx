@@ -3,8 +3,9 @@ import { Alert, Dimensions, ScrollView, StyleSheet, TextInput } from 'react-nati
 import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react-native'
 
 import { ActionPadEditor, type ActionPadEditorProps } from '../ActionPadEditor'
+import { ActionPad } from '../ActionPad'
 import { NerdFontIconPicker } from '../NerdFontIconPicker'
-import { type ActionPadConfig } from '../document'
+import { resolveActionPadConfig, type ActionPadConfig } from '../document'
 import { type ActionButtonLabel } from '../types'
 
 const mockUseCodeyNerdFontFaces = jest.fn((): [boolean, Error | null] => [true, null])
@@ -721,13 +722,55 @@ describe('ActionPadEditor', () => {
     }
     for (const compact of [false, true]) {
       if (compact) fireEvent.press(screen.getByRole('button', { name: 'Preview density: Compact' }))
-      for (const [text, family, weight, size] of [
-        ['regular content', 'CodeyNerdFont-Regular', '400', compact ? 10 : 12],
-        ['bold content', 'CodeyNerdFont-Bold', '700', compact ? 19 : 22]
-      ] as const) {
-        const style = StyleSheet.flatten(screen.getByText(text, { includeHiddenElements: true }).props.style)
-        expect(style).toMatchObject({ fontSize: size, fontWeight: loaded ? 'normal' : weight })
-        expect(style.fontFamily).toBe(loaded ? family : undefined)
+      const preview = screen.getByTestId('action-button-label-preview-text', { includeHiddenElements: true })
+      expect(preview.props.runs).toEqual([
+        {
+          text: 'regular content', fontFamily: loaded ? 'CodeyNerdFont-Regular' : undefined,
+          fontWeight: 400, fontSize: compact ? 10 : 12
+        },
+        {
+          text: 'bold content', fontFamily: loaded ? 'CodeyNerdFont-Bold' : undefined,
+          fontWeight: 700, fontSize: compact ? 19 : 22
+        }
+      ])
+      expect(preview.props.defaultFontSize).toBe(compact ? 13 : 15)
+      expect(preview.props.defaultFontFamily).toBe(loaded ? 'CodeyNerdFont-Regular' : undefined)
+    }
+  })
+
+  it.each([true, false])('matches native production inputs and preview dimensions (fonts loaded: %s)', (loaded) => {
+    mockUseCodeyNerdFontFaces.mockReturnValue([loaded, loaded ? null : new Error('font failed')])
+    const initial = props({ config: configWithLabel([
+      { text: `${mockAstralIcon.glyph} `, fontSize: 22, bold: false },
+      { text: 'Save all\nfiles', fontSize: 12, bold: true }
+    ]) })
+    const onInput = jest.fn()
+    const onKeyboardPress = jest.fn()
+    function Harness({ compact }: { readonly compact: boolean }) {
+      const [draft, setDraft] = useState(initial.config)
+      return <>
+        <ActionPadEditor {...initial} config={draft} onChange={setDraft} />
+        <ActionPad compact={compact} enabled mode="NORMAL" onInput={onInput} onKeyboardPress={onKeyboardPress} rootMenu={resolveActionPadConfig(draft)} />
+      </>
+    }
+    const screen = render(<Harness compact={false} />)
+
+    for (const compact of [false, true]) {
+      screen.rerender(<Harness compact={compact} />)
+      for (const size of ['Half', 'Quarter']) {
+        fireEvent.press(screen.getByRole('button', { name: `Button size: ${size}` }))
+        fireEvent.press(screen.getByRole('button', { name: `Preview density: ${compact ? 'Compact' : 'Normal'}` }))
+        const preview = screen.getByTestId('action-button-label-preview-text', { includeHiddenElements: true })
+        const native = screen.getByTestId('action-pad-input-label', { includeHiddenElements: true })
+        for (const prop of ['runs', 'defaultFontSize', 'defaultFontFamily', 'color', 'style']) {
+          expect(preview.props[prop]).toEqual(native.props[prop])
+        }
+        const previewStyle = StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style)
+        const buttonStyle = StyleSheet.flatten(screen.getByTestId('action-pad-input').props.style)
+        for (const prop of ['width', 'height', 'paddingHorizontal', 'borderWidth']) {
+          expect(previewStyle[prop]).toEqual(buttonStyle[prop])
+        }
+        expect(screen.queryByTestId('action-button-label-preview-text')).toBeNull()
       }
     }
   })

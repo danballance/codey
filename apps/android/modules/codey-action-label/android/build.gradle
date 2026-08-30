@@ -1,0 +1,43 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.codey'
+version = '0.1.0'
+
+android {
+  namespace 'dev.codey.actionlabel'
+  buildToolsVersion rootProject.ext.buildToolsVersion
+  compileSdk rootProject.ext.compileSdkVersion
+
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+
+  testOptions {
+    unitTests.includeAndroidResources = true
+    unitTests.all {
+      // Exercise the same unmodified fonts shipped through Metro, without
+      // packaging a second production copy in this Android library.
+      def fontsDir = file('../../../src/fonts/assets')
+      def fixturesDir = layout.buildDirectory.dir('reports/label-fixtures').get().asFile
+      systemProperty 'codey.label.fontsDir', fontsDir.absolutePath
+      systemProperty 'codey.label.fixturesDir', fixturesDir.absolutePath
+      inputs.dir(fontsDir).withPathSensitivity(PathSensitivity.RELATIVE)
+      outputs.dir(fixturesDir)
+      testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat 'full'
+      }
+    }
+  }
+}
+
+dependencies {
+  // Expo Font registers its concrete faces here; do not load duplicate assets.
+  implementation 'com.facebook.react:react-android'
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.robolectric:robolectric:4.16.1'
+}

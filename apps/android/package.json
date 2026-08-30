@@ -18,7 +18,7 @@
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit",
-    "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-tcp:testDebugUnitTest",
+    "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-tcp:testDebugUnitTest :codey-action-label:testDebugUnitTest",
     "assemble:debug": "NODE_ENV=development ./android/gradlew -p android assembleDebug",
     "assemble:release": "NODE_ENV=production ./android/gradlew -p android assembleRelease"
   },

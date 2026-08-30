@@ -1,5 +1,5 @@
-import { StyleSheet } from 'react-native'
-import { cleanup, render } from '@testing-library/react-native'
+import { StyleSheet, Text } from 'react-native'
+import { cleanup, fireEvent, render } from '@testing-library/react-native'
 
 import { CODEY_NERD_FONT_FAMILIES } from '../../fonts'
 import { ActionButtonLabel } from '../ActionButtonLabel'
@@ -54,29 +54,26 @@ describe('ActionButtonLabel', () => {
     expect(StyleSheet.flatten(screen.getByTestId('label').props.style).fontFamily).toBeUndefined()
   })
 
-  it('renders ordered runs with independent font sizes and concrete faces', () => {
+  it('passes ordered runs with independent font sizes and concrete faces to Android', () => {
     const screen = render(
       <ActionButtonLabel fontFacesLoaded label={mixedLabel} testID="label" />
     )
 
-    expect(StyleSheet.flatten(screen.getByText('').props.style)).toMatchObject({
-      fontFamily: CODEY_NERD_FONT_FAMILIES.regular,
-      fontSize: 22,
-      fontWeight: 'normal'
+    const native = screen.getByTestId('label', { includeHiddenElements: true })
+    expect(native.props.runs).toEqual([
+      { text: ' ', fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontSize: 22, fontWeight: 400 },
+      { text: 'Save', fontFamily: CODEY_NERD_FONT_FAMILIES.bold, fontSize: 15, fontWeight: 700 },
+      { text: ' all', fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontSize: 12, fontWeight: 400 }
+    ])
+    expect(native.props).toMatchObject({
+      color: '#c0caf5',
+      defaultFontSize: 15,
+      defaultFontFamily: CODEY_NERD_FONT_FAMILIES.regular
     })
-    expect(StyleSheet.flatten(screen.getByText('Save').props.style)).toMatchObject({
-      fontFamily: CODEY_NERD_FONT_FAMILIES.bold,
-      fontSize: 15,
-      fontWeight: 'normal'
-    })
-    expect(StyleSheet.flatten(screen.getByText('all').props.style)).toMatchObject({
-      fontFamily: CODEY_NERD_FONT_FAMILIES.regular,
-      fontSize: 12,
-      fontWeight: 'normal'
-    })
+    expect(StyleSheet.flatten(native.props.style)).toEqual({ flex: 1, alignSelf: 'stretch' })
   })
 
-  it('uses every fixed compact size and system-weight fallback', () => {
+  it.each([false, true])('resolves all preset sizes and system fallbacks (compact: %s)', (compact) => {
     const label: ActionButtonLabelValue = [
       { text: 'a', fontSize: 10, bold: false },
       { text: 'b', fontSize: 12, bold: true },
@@ -85,20 +82,113 @@ describe('ActionButtonLabel', () => {
       { text: 'e', fontSize: 22, bold: false }
     ]
     const screen = render(
-      <ActionButtonLabel compact fontFacesLoaded={false} label={label} />
+      <ActionButtonLabel compact={compact} fontFacesLoaded={false} label={label} testID="label" />
     )
 
-    for (const [text, fontSize, fontWeight] of [
-      ['a', 9, '400'],
-      ['b', 10, '700'],
-      ['c', 13, '400'],
-      ['d', 16, '700'],
-      ['e', 19, '400']
-    ] as const) {
-      const style = StyleSheet.flatten(screen.getByText(text).props.style)
-      expect(style).toMatchObject({ fontSize, fontWeight })
-      expect(style.fontFamily).toBeUndefined()
+    const native = screen.getByTestId('label', { includeHiddenElements: true })
+    expect(native.props.runs).toEqual([
+      { text: 'a', fontSize: compact ? 9 : 10, fontWeight: 400 },
+      { text: 'b', fontSize: compact ? 10 : 12, fontWeight: 700 },
+      { text: 'c', fontSize: compact ? 13 : 15, fontWeight: 400 },
+      { text: 'd', fontSize: compact ? 16 : 18, fontWeight: 700 },
+      { text: 'e', fontSize: compact ? 19 : 22, fontWeight: 400 }
+    ])
+    expect(native.props.defaultFontFamily).toBeUndefined()
+    expect(native.props.defaultFontSize).toBe(compact ? 13 : 15)
+  })
+
+  it('uses native rendering for single and empty draft runs, but keeps scalars on Text', () => {
+    const screen = render(
+      <ActionButtonLabel fontFacesLoaded label="Legacy" testID="label" />
+    )
+    expect(screen.UNSAFE_getAllByType(Text)).toHaveLength(1)
+    expect(screen.getByTestId('label').props.numberOfLines).toBe(2)
+
+    screen.rerender(
+      <ActionButtonLabel fontFacesLoaded label={[{ text: 'Legacy', fontSize: 15, bold: false }]} testID="label" />
+    )
+    const native = () => screen.getByTestId('label', { includeHiddenElements: true })
+    expect(native().props.runs).toEqual([
+      { text: 'Legacy', fontSize: 15, fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontWeight: 400 }
+    ])
+    expect(native().props.numberOfLines).toBeUndefined()
+    screen.rerender(
+      <ActionButtonLabel fontFacesLoaded label={[{ text: '', fontSize: 15, bold: false }]} testID="label" />
+    )
+    expect(native().props.runs[0].text).toBe('')
+  })
+
+  it('refreshes native fonts after loading or failure without changing run text or order', () => {
+    const screen = render(
+      <ActionButtonLabel fontFacesLoaded={false} label={mixedLabel} testID="label" />
+    )
+    const native = () => screen.getByTestId('label', { includeHiddenElements: true })
+    expect(native().props.runs.map((run: { fontFamily?: string }) => run.fontFamily)).toEqual([
+      undefined, undefined, undefined
+    ])
+    screen.rerender(<ActionButtonLabel fontFacesLoaded label={mixedLabel} testID="label" />)
+    expect(native().props.runs.map((run: { fontFamily?: string }) => run.fontFamily)).toEqual([
+      CODEY_NERD_FONT_FAMILIES.regular, CODEY_NERD_FONT_FAMILIES.bold, CODEY_NERD_FONT_FAMILIES.regular
+    ])
+    screen.rerender(<ActionButtonLabel fontFacesLoaded={false} label={mixedLabel} testID="label" />)
+    expect(native().props.runs.map((run: { fontFamily?: string }) => run.fontFamily)).toEqual([
+      undefined, undefined, undefined
+    ])
+    expect(native().props.runs.map((run: { text: string }) => run.text)).toEqual([' ', 'Save', ' all'])
+  })
+
+  it.each([false, true])('fills Half/Quarter buttons without changing gestures or selection metrics (compact: %s)', (compact) => {
+    const rootMenu: ActionMenu = {
+      id: 'home', label: 'Home', groups: [{
+        id: 'actions', buttons: [
+          {
+            id: 'half', label: mixedLabel, accessibilityLabel: 'Half', styles: { size: '1/2' },
+            tap: { type: 'input', nvimInput: 'tap-half', after: 'stay' },
+            longPress: { type: 'input', nvimInput: 'hold-half', after: 'stay' }
+          },
+          {
+            id: 'quarter', label: mixedLabel, accessibilityLabel: 'Quarter', styles: { size: '1/4' },
+            tap: { type: 'input', nvimInput: 'tap-quarter', after: 'stay' },
+            longPress: { type: 'input', nvimInput: 'hold-quarter', after: 'stay' }
+          }
+        ]
+      }]
     }
+    const onInput = jest.fn()
+    const onEditButton = jest.fn()
+    const padProps = { rootMenu, compact, enabled: true, mode: 'NORMAL', onInput, onEditButton, onKeyboardPress: jest.fn() }
+    const screen = render(<ActionPad {...padProps} />)
+
+    for (const [id, name, width] of [['half', 'Half', '48%'], ['quarter', 'Quarter', '22%']] as const) {
+      const button = screen.getByRole('button', { name })
+      expect(StyleSheet.flatten(button.props.style)).toMatchObject({ width, height: compact ? 48 : 52 })
+      const label = screen.getByTestId(`action-pad-${id}-label`, { includeHiddenElements: true })
+      expect(StyleSheet.flatten(label.props.style)).toEqual({ flex: 1, alignSelf: 'stretch' })
+      expect(label.props.runs[0].fontSize).toBe(compact ? 19 : 22)
+      fireEvent(button, 'pressIn')
+      fireEvent.press(button)
+      fireEvent(button, 'pressIn')
+      fireEvent(button, 'longPress')
+      fireEvent.press(button)
+    }
+    expect(onInput.mock.calls).toEqual([['tap-half'], ['hold-half'], ['tap-quarter'], ['hold-quarter']])
+
+    screen.rerender(<ActionPad {...padProps} interactionMode="selection" />)
+    for (const [id, name, width] of [['half', 'Half', '48%'], ['quarter', 'Quarter', '22%']] as const) {
+      const button = screen.getByRole('button', { name: `Edit ${name}` })
+      expect(StyleSheet.flatten(button.props.style)).toMatchObject({ width, height: compact ? 48 : 52 })
+      const label = screen.getByTestId(`action-pad-${id}-label`, { includeHiddenElements: true })
+      expect(StyleSheet.flatten(label.props.style)).toEqual({ flex: 1, alignSelf: 'stretch' })
+      const indicator = screen.getByTestId(`action-pad-${id}-edit-indicator`, { includeHiddenElements: true })
+      expect(StyleSheet.flatten(indicator.props.style).position).toBe('absolute')
+      fireEvent(button, 'pressIn')
+      fireEvent.press(button)
+    }
+    expect(onInput).toHaveBeenCalledTimes(4)
+    expect(onEditButton.mock.calls).toEqual([
+      [{ menuId: 'home', groupId: 'actions', buttonId: 'half' }],
+      [{ menuId: 'home', groupId: 'actions', buttonId: 'quarter' }]
+    ])
   })
 
   it('uses the concatenated visible text as the button accessibility fallback', () => {
@@ -137,10 +227,17 @@ describe('ActionButtonLabel', () => {
       />
     )
     expect(screen.getByRole('button', { name: 'Edit  Save all' })).toBeTruthy()
-    const label = screen.getByTestId('action-pad-save-label')
+    const label = screen.getByTestId('action-pad-save-label', { includeHiddenElements: true })
     const style = StyleSheet.flatten(label.props.style)
     expect(style.marginTop).toBeUndefined()
     expect(style.lineHeight).toBeUndefined()
+    expect(screen.getAllByRole('button', { name: 'Edit  Save all' })).toHaveLength(1)
+    expect(label.props).toMatchObject({
+      accessible: false,
+      accessibilityElementsHidden: true,
+      importantForAccessibility: 'no-hide-descendants',
+      pointerEvents: 'none'
+    })
   })
 
   it('treats blank explicit accessibility labels as absent but preserves nonblank precedence', () => {

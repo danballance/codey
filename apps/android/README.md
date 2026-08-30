@@ -264,11 +264,27 @@ label:
 ```
 
 Rich labels contain between 1 and 64 runs. Their combined text must not be
-blank, although whitespace-only separator runs are allowed. The renderer keeps
-the existing fixed 52dp/48dp button heights and two-line limit, so use the
-editor's Normal/Compact label preview to check large or multi-line treatments.
-Colour, italics, custom font families, and per-run vertical positioning are not
-part of this format.
+blank, although whitespace-only separator runs are allowed. On Android, rich
+labels use a native text renderer that automatically aligns each run's
+font-box centre, including mixed text and Nerd Font icons. Alignment uses the
+font's ascent/descent metrics, not each word or icon's visible outline; an
+unusually shaped icon can still look optically different. Text remains one
+continuous string with native word wrapping, explicit newlines, Unicode
+shaping, and bidirectional layout. Splitting a combining or joined emoji
+sequence across differently styled runs retains Android's usual shaping
+limitations. Scalar string labels retain the existing React Native renderer.
+
+Buttons remain fixed at 52dp normally or 48dp compact. Rich labels display at
+most two complete lines, with native tail ellipsis for omitted text. If two
+lines cannot fit, the renderer uses one; it never shrinks the selected run
+sizes. At extreme accessibility font scaling, if even one line cannot fit,
+only a regular default-size ellipsis (15 normally, 13 compact) is shown if it
+fits. If that cannot fit either, the visual label is empty. The full button
+accessibility label remains available in every case. Use the editor's shared
+Normal/Compact preview to check large or multi-line treatments at either button
+width. Colour, italics, custom font families, manual vertical offsets, and
+per-run alignment controls are not part of this format. This rendering change
+does not change YAML fields, version numbers, or recovery storage.
 
 This prototype evolves schema version 1 in place. It provides no migration or
 implicit size for older YAML: a button without `styles.size` is invalid and must
@@ -368,18 +384,29 @@ plain unauthenticated TCP and must only be used on a trusted private network.
 ## Native regeneration and APKs
 
 Expo Continuous Native Generation produces `apps/android/android/`; that folder
-is ignored and can be recreated. Kotlin source for the TCP and IME modules is
-tracked under `modules/`.
+is ignored and can be recreated. Kotlin source for the TCP, IME, and rich action
+label modules is tracked under `modules/`.
 
 After changing Expo native configuration (including supported orientations),
-native module registration, or the Kotlin IME bridge, run a clean prebuild and
-reinstall the development client. An existing APK will retain its generated
-manifest until it is rebuilt and reinstalled:
+native module registration, or Kotlin code, run a clean prebuild and reinstall
+the development client. The native rich-label renderer requires a rebuilt
+client; refreshing Metro cannot add it to an old APK. An existing APK will
+retain its generated manifest until it is rebuilt and reinstalled:
 
 ```sh
 pnpm android:prebuild
 pnpm android:install
 ```
+
+`pnpm android:test:native` includes the rich-label module's font-metric and
+layout tests. Its Robolectric native-graphics tests explicitly use Android API
+35, which works with the flake's JDK 17, and read the same font assets shipped
+by Metro. Bitmap fixtures are written under
+`modules/codey-action-label/android/build/reports/label-fixtures/` for visual
+inspection. API 24 compatibility tests check API usage and control flow, not
+old-platform raster fidelity: Robolectric's older graphics shadows are not a
+substitute for an API 24 device. Device-specific visual gaps must be reported
+separately from successful JavaScript and native unit tests.
 
 The development profile in `eas.json` produces an installable Android APK. EAS
 CLI is supplied by the flake. A local debug APK can be assembled directly with:
@@ -467,8 +494,13 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
    after it. Add an empty run and insert an icon to make an icon-only run.
    Reorder a run; check both Normal and Compact previews;
    switch the button between Half and Quarter; then Save and reload. Confirm the
-   YAML retains every run and the active pad renders the same treatment without
-   clipping in ordinary and selection modes.
+   YAML retains every run and the active pad renders the same treatment in
+   ordinary and selection modes. Check a size-22 icon beside size-10/12/15 text
+   in both orders: their font-box centres should align. Check word wrapping
+   across runs, explicit newlines, and height-aware ellipsis without partial
+   second lines or shrunken text. Increase Android font scaling, test fallback
+   fonts, and check that TalkBack announces the complete button label exactly
+   once even when the visible label is shortened.
 8. Reload, then Export to a different path. Confirm the source stays linked;
    exporting a later unsaved edit must not activate it or clear its dirty state.
 9. Change the source outside Codey and try Save. Confirm the app offers Reload

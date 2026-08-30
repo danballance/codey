@@ -193,6 +193,35 @@ of 400 and 700. Each editor run can contain both text and icons. Its icon picker
 inserts at the remembered selection without changing typography or run count;
 run identities and UTF-16 cursor state are editor-only and never persisted.
 Pending insertion is discarded when its document or target changes.
+
+Scalar button labels keep their React Native `Text` renderer. Rich labels use
+the local `codey-action-label` Expo view, shared by production and preview. The
+private bridge receives ordered text runs, resolved compact/normal sizes,
+concrete font-family names or system weights, and the existing colour/default
+typography; none of these bridge details add persisted fields. The native view
+fills the button's existing padded content bounds and does not handle input or
+accessibility. Its parent Pressable retains the full accessible name.
+
+Native rich text is one joined string with original UTF-16 run ranges. A
+metric-affecting span sets each run's face, size, and absolute baseline offset
+so its primary-font ascent/descent box is centred on the line baseline. An
+unshifted `StaticLayout` discovers native line breaks and ellipsis; a second
+layout applies centred spans and explicit per-visible-line metrics. This
+separates stable alignment from fallback-glyph clipping protection and avoids
+making runs into indivisible blocks or introducing new shaping boundaries at
+line breaks. Elided text does not inflate the visible line's metrics. Font
+faces come from the same `ReactFontManager` cache populated by Expo Font, with
+system regular/bold while bundled faces are unavailable.
+
+The renderer tries two complete lines, then one with tail ellipsis, within the
+fixed 52dp/48dp button content area. It never shrinks configured text. If even
+one line exceeds the available height, a default-size regular ellipsis is used
+if it fits; otherwise it draws no ink while leaving the full accessibility
+name intact. Layout is cached until content, typography, dimensions, or Android
+configuration changes. There is no JavaScript measurement feedback loop and
+no per-run alignment setting. Native registration requires rebuilding the
+Android client; Metro refresh alone is insufficient.
+
 Strict semantic validation
 requires those fields and both destinations, rejects malformed or blank rich
 labels, rejects same-menu references and cycles mixed across menu/group links,
