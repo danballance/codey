@@ -7,6 +7,10 @@ import {
   compactActionButtonFontSize
 } from './label'
 import {
+  DEFAULT_ACTION_BUTTON_LABEL_COLOR,
+  resolveActionButtonLabelColor
+} from './style'
+import {
   type ActionButtonLabel as ActionButtonLabelValue
 } from './types'
 
@@ -31,11 +35,12 @@ export const ActionButtonLabel = memo(function ActionButtonLabel({
   if (typeof label !== 'string') {
     return (
       <CodeyActionButtonLabel
-        color="#c0caf5"
+        color={DEFAULT_ACTION_BUTTON_LABEL_COLOR}
         defaultFontFamily={fontFacesLoaded ? CODEY_NERD_FONT_FAMILIES.regular : undefined}
         defaultFontSize={compact ? 13 : 15}
         runs={label.map((run) => ({
           text: run.text,
+          color: resolveActionButtonLabelColor(run.color),
           fontSize: compact ? compactActionButtonFontSize(run.fontSize) : run.fontSize,
           fontFamily: fontFacesLoaded
             ? run.bold ? CODEY_NERD_FONT_FAMILIES.bold : CODEY_NERD_FONT_FAMILIES.regular
@@ -69,7 +74,7 @@ const styles = StyleSheet.create({
     flex: 1
   },
   buttonText: {
-    color: '#c0caf5',
+    color: DEFAULT_ACTION_BUTTON_LABEL_COLOR,
     fontSize: 15,
     fontWeight: '400',
     textAlign: 'center'

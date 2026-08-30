@@ -137,15 +137,33 @@ describe('ActionPadConfigStore', () => {
     }))
   })
 
-  it('recovers, saves, and reloads rich button-label runs without flattening them', async () => {
+  it('recovers, saves, and reloads rich run colours and button styling without flattening them', async () => {
     const test = setup()
     await test.connect()
     const richLabel = [
-      { text: '\uf07c ', fontSize: 22 as const, bold: false },
-      { text: 'Open', fontSize: 15 as const, bold: true },
+      { text: '\uf07c ', fontSize: 22 as const, bold: false, color: '#9ece6a' },
+      { text: 'Open', fontSize: 15 as const, bold: true, color: '#E0AF68' },
       { text: ' file', fontSize: 12 as const, bold: false }
     ]
-    const draft = editButtonLabel(fixture, richLabel)
+    const labelled = editButtonLabel(fixture, richLabel)
+    const firstMenu = labelled.menus[0]!
+    const firstGroup = firstMenu.groups[0]!
+    const draft: ActionPadConfig = {
+      ...labelled,
+      menus: [{
+        ...firstMenu,
+        groups: [{
+          ...firstGroup,
+          buttons: firstGroup.buttons.map((button, index) => index === 0 ? {
+            ...button,
+            styles: {
+              size: '1/5', appearance: 'outline',
+              backgroundColor: 'transparent', outlineColor: '#73daca'
+            }
+          } : button)
+        }]
+      }]
+    }
     test.store.setDraft(draft)
     await test.store.flushRecovery()
 
@@ -157,6 +175,9 @@ describe('ActionPadConfigStore', () => {
 
     const saved = parseActionPadConfig(test.files.get(sourcePath)!.text!)
     expect(saved.menus[0]!.groups[0]!.buttons[0]!.label).toEqual(richLabel)
+    expect(saved.menus[0]!.groups[0]!.buttons[0]!.styles).toEqual({
+      size: '1/5', appearance: 'outline', backgroundColor: 'transparent', outlineColor: '#73daca'
+    })
     expect(restored.getState()).toMatchObject({ activeConfig: draft, draft, dirty: false })
   })
 
@@ -218,7 +239,20 @@ describe('ActionPadConfigStore', () => {
   it('rejects invalid drafts before file I/O and restores incomplete drafts safely', async () => {
     const test = setup()
     await test.connect()
-    const draft = editLabel(fixture, '')
+    const firstMenu = fixture.menus[0]!
+    const firstGroup = firstMenu.groups[0]!
+    const draft: ActionPadConfig = {
+      ...fixture,
+      menus: [{
+        ...firstMenu,
+        groups: [{
+          ...firstGroup,
+          buttons: firstGroup.buttons.map((button, index) => index === 0
+            ? { ...button, styles: { ...button.styles, backgroundColor: '#' } }
+            : button)
+        }]
+      }]
+    }
     test.store.setDraft(draft)
     test.documents.readHostDocument.mockClear()
     await test.store.save(sourcePath)

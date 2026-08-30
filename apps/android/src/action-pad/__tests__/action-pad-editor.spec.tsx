@@ -477,6 +477,59 @@ describe('ActionPadEditor', () => {
     expect(screen.props.onLoad).not.toHaveBeenCalled()
   })
 
+  it('edits every size plus appearance and colour overrides without discarding sibling styles', () => {
+    const screen = renderEditor()
+    for (const size of ['Whole', 'Half', 'Third', 'Quarter', 'Fifth']) {
+      expect(screen.getByRole('button', { name: `Button size: ${size}` })).toBeTruthy()
+    }
+
+    fireEvent.press(screen.getByRole('button', { name: 'Button size: Third' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Button appearance: Outline' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Button background color: Green' }))
+    fireEvent.changeText(screen.getByLabelText('Button outline color custom hex'), '#ABCDEF')
+
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.styles).toEqual({
+      size: '1/3', appearance: 'outline', backgroundColor: '#9ece6a', outlineColor: '#ABCDEF'
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style)).toMatchObject({
+      width: '30.6667%', backgroundColor: '#9ece6a', borderColor: '#ABCDEF'
+    })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Button size: Whole' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.styles).toEqual({
+      size: '1/1', appearance: 'outline', backgroundColor: '#9ece6a', outlineColor: '#ABCDEF'
+    })
+    fireEvent.press(screen.getByRole('button', { name: 'Button background color: Default' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Button appearance: Filled' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.styles).toEqual({
+      size: '1/1', outlineColor: '#ABCDEF'
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style)).toMatchObject({
+      width: '100%', backgroundColor: '#24283b', borderColor: '#ABCDEF'
+    })
+  })
+
+  it('keeps incomplete button colours recoverable, blocks save and previews appearance defaults', () => {
+    const screen = renderEditor()
+    fireEvent.press(screen.getByRole('button', { name: 'Button appearance: Outline' }))
+    fireEvent.changeText(screen.getByLabelText('Button background color custom hex'), '#12')
+
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.styles).toEqual({
+      size: '1/2', appearance: 'outline', backgroundColor: '#12'
+    })
+    expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
+    expect(StyleSheet.flatten(screen.getByLabelText('Button background color custom hex').props.style).borderColor).toBe('#ff7b72')
+    expect(StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style)).toMatchObject({
+      backgroundColor: 'transparent', borderColor: '#353b52'
+    })
+
+    fireEvent.changeText(screen.getByLabelText('Button background color custom hex'), '#123456')
+    expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
+    expect(StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style).backgroundColor).toBe('#123456')
+    fireEvent.press(screen.getByRole('button', { name: 'Button background color: Transparent' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.styles.backgroundColor).toBe('transparent')
+  })
+
   it.each([true, false])('renders configurable editor labels with the Nerd Font when loaded (%s)', (loaded) => {
     mockUseCodeyNerdFontFaces.mockReturnValue([loaded, null])
     const original = config()
@@ -561,6 +614,35 @@ describe('ActionPadEditor', () => {
     fireEvent.press(screen.getByRole('button', { name: 'Remove label formatting' }))
     expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe('Edited legacy')
     expect(screen.queryByRole('button', { name: 'Remove label formatting' })).toBeNull()
+  })
+
+  it('promotes scalar labels for colour, validates custom hex and resets colour independently', () => {
+    const screen = renderEditor()
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1 font color: Green' }))
+
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: 'Run input', fontSize: 15, bold: false, color: '#9ece6a' }
+    ])
+    expect(StyleSheet.flatten(screen.getByLabelText('Button label').props.style).color).toBe('#9ece6a')
+    expect(screen.getByTestId('action-button-label-preview-text', { includeHiddenElements: true }).props.runs[0].color).toBe('#9ece6a')
+
+    fireEvent.changeText(screen.getByLabelText('Run 1 font color custom hex'), '#9e')
+    expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
+    expect(StyleSheet.flatten(screen.getByLabelText('Button label').props.style).color).toBe('#c0caf5')
+    expect(screen.getByTestId('action-button-label-preview-text', { includeHiddenElements: true }).props.runs[0].color).toBe('#c0caf5')
+    expect(StyleSheet.flatten(screen.getByLabelText('Run 1 font color custom hex').props.style).borderColor).toBe('#ff7b72')
+
+    fireEvent.changeText(screen.getByLabelText('Run 1 font color custom hex'), '#E0AF68')
+    expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: 'Run input', fontSize: 15, bold: false, color: '#E0AF68' }
+    ])
+    fireEvent.press(screen.getByRole('button', { name: 'Run 1 font color: Default' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toEqual([
+      { text: 'Run input', fontSize: 15, bold: false }
+    ])
+    fireEvent.press(screen.getByRole('button', { name: 'Remove label formatting' }))
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.label).toBe('Run input')
   })
 
   it('previews the selected button width at normal and compact density with production metrics', () => {
@@ -725,11 +807,11 @@ describe('ActionPadEditor', () => {
       const preview = screen.getByTestId('action-button-label-preview-text', { includeHiddenElements: true })
       expect(preview.props.runs).toEqual([
         {
-          text: 'regular content', fontFamily: loaded ? 'CodeyNerdFont-Regular' : undefined,
+          text: 'regular content', color: '#c0caf5', fontFamily: loaded ? 'CodeyNerdFont-Regular' : undefined,
           fontWeight: 400, fontSize: compact ? 10 : 12
         },
         {
-          text: 'bold content', fontFamily: loaded ? 'CodeyNerdFont-Bold' : undefined,
+          text: 'bold content', color: '#c0caf5', fontFamily: loaded ? 'CodeyNerdFont-Bold' : undefined,
           fontWeight: 700, fontSize: compact ? 19 : 22
         }
       ])
@@ -757,7 +839,10 @@ describe('ActionPadEditor', () => {
 
     for (const compact of [false, true]) {
       screen.rerender(<Harness compact={compact} />)
-      for (const size of ['Half', 'Quarter']) {
+      fireEvent.press(screen.getByRole('button', { name: 'Button appearance: Outline' }))
+      fireEvent.press(screen.getByRole('button', { name: 'Button background color: Yellow' }))
+      fireEvent.changeText(screen.getByLabelText('Button outline color custom hex'), '#123456')
+      for (const size of ['Whole', 'Half', 'Third', 'Quarter', 'Fifth']) {
         fireEvent.press(screen.getByRole('button', { name: `Button size: ${size}` }))
         fireEvent.press(screen.getByRole('button', { name: `Preview density: ${compact ? 'Compact' : 'Normal'}` }))
         const preview = screen.getByTestId('action-button-label-preview-text', { includeHiddenElements: true })
@@ -767,7 +852,7 @@ describe('ActionPadEditor', () => {
         }
         const previewStyle = StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style)
         const buttonStyle = StyleSheet.flatten(screen.getByTestId('action-pad-input').props.style)
-        for (const prop of ['width', 'height', 'paddingHorizontal', 'borderWidth']) {
+        for (const prop of ['width', 'height', 'paddingHorizontal', 'borderWidth', 'backgroundColor', 'borderColor']) {
           expect(previewStyle[prop]).toEqual(buttonStyle[prop])
         }
         expect(screen.queryByTestId('action-button-label-preview-text')).toBeNull()

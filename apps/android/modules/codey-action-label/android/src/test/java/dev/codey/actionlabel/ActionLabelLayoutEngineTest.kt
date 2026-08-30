@@ -13,6 +13,7 @@ import android.text.StaticLayout
 import android.text.TextDirectionHeuristics
 import android.text.TextPaint
 import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.abs
@@ -78,6 +79,38 @@ class ActionLabelLayoutEngineTest {
     assertEquals(listOf(0 to 2, 2 to 6, 6 to result.sourceText.length), spans.map { text.getSpanStart(it) to text.getSpanEnd(it) })
     assertInkFits(result, 500, 120, horizontal = true)
     fixture("normal-half-mixed", runs, 119, 50)
+  }
+
+  @Test
+  fun independentRunColoursAreDrawOnlyAndFollowNativeEllipsisRanges() {
+    val runs = listOf(
+      run("A\n", 22f, bold, GREEN),
+      run("a long yellow second line which must be ellipsized", 10f, regular, YELLOW),
+    )
+    val coloured = layout(runs, width = 58)
+    val defaultColour = layout(runs.map { it.copy(color = LABEL_COLOR) }, width = 58)
+
+    assertEquals(defaultColour.sourceText, coloured.sourceText)
+    assertEquals(defaultColour.layout.height, coloured.layout.height)
+    assertEquals(defaultColour.layout.ellipsizedWidth, coloured.layout.ellipsizedWidth)
+    assertEquals(defaultColour.lines, coloured.lines)
+
+    val text = coloured.layout.text as Spanned
+    val spans = text.getSpans(0, text.length, ForegroundColorSpan::class.java)
+      .sortedBy(text::getSpanStart)
+    assertEquals(listOf(0 to 2, 2 to text.length), spans.map { text.getSpanStart(it) to text.getSpanEnd(it) })
+    assertEquals(listOf(GREEN, YELLOW), spans.map { it.foregroundColor })
+
+    val lastLine = coloured.lines.last()
+    assertTrue(lastLine.ellipsisCount > 0)
+    val ellipsisColours = text.getSpans(
+      lastLine.ellipsisStart,
+      lastLine.ellipsisStart + 1,
+      ForegroundColorSpan::class.java,
+    )
+    assertEquals(listOf(YELLOW), ellipsisColours.map { it.foregroundColor })
+    assertMeasuredLineMetrics(coloured)
+    assertInkFits(coloured, 58, 120)
   }
 
   @Test
@@ -425,7 +458,12 @@ class ActionLabelLayoutEngineTest {
       .build()
   }
 
-  private fun run(text: String, size: Float = 15f, face: Typeface = regular) = ResolvedLabelRun(text, size, face)
+  private fun run(
+    text: String,
+    size: Float = 15f,
+    face: Typeface = regular,
+    color: Int = LABEL_COLOR,
+  ) = ResolvedLabelRun(text, size, face, color)
 
   companion object {
     private val fontsDirectory: File by lazy {
@@ -434,5 +472,7 @@ class ActionLabelLayoutEngineTest {
     private val regular: Typeface by lazy { Typeface.createFromFile(File(fontsDirectory, "JetBrainsMonoNerdFontMono-Regular.ttf")) }
     private val bold: Typeface by lazy { Typeface.createFromFile(File(fontsDirectory, "JetBrainsMonoNerdFontMono-Bold.ttf")) }
     private val LABEL_COLOR = Color.rgb(192, 202, 245)
+    private val GREEN = Color.rgb(158, 206, 106)
+    private val YELLOW = Color.rgb(224, 175, 104)
   }
 }

@@ -629,7 +629,12 @@ export function TabletClient({ capability }: TabletClientProps) {
               setActionPadSelection(!selectingActionPadRef.current)
             }}
             onPressIn={() => { editControlLongPressTriggered.current = false }}
-            style={({ pressed }) => [styles.editActionPadButton, selectingActionPad && styles.editActionPadSelected, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.actionPadControlButton,
+              styles.editActionPadButton,
+              selectingActionPad && styles.editActionPadSelected,
+              pressed && styles.pressed
+            ]}
           >
             <Text style={styles.editActionPadText}>{selectingActionPad ? 'Done editing' : 'Edit Action Pad'}{actionPadState.dirty ? ' · unsaved' : ''}</Text>
           </Pressable>
@@ -656,7 +661,7 @@ export function TabletClient({ capability }: TabletClientProps) {
                 accessibilityLabel="Connect configuration host"
                 disabled={connecting}
                 onPress={connectActionPadHost}
-                style={[styles.editActionPadButton, connecting && styles.disabled]}
+                style={[styles.actionPadControlButton, styles.connectActionPadButton, connecting && styles.disabled]}
               >
                 <Text style={styles.editActionPadText}>{connecting ? 'Connecting…' : 'Connect host'}</Text>
               </Pressable>
@@ -789,7 +794,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingRight: 12
   },
-  editActionPadButton: {
+  actionPadControlButton: {
     minHeight: 48,
     paddingHorizontal: 14,
     paddingVertical: 10,
@@ -797,7 +802,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#353b52',
-    borderRadius: 8,
+    borderRadius: 8
+  },
+  editActionPadButton: {
+    backgroundColor: 'transparent'
+  },
+  connectActionPadButton: {
     backgroundColor: '#1b2030'
   },
   editActionPadText: {

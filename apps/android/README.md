@@ -46,12 +46,14 @@ replace the whole page. Group names have no built-in layout meaning.
 
 Every base-page group reserves a fixed rail-capacity envelope large enough for
 all group-action targets reachable from its slot. Every button must explicitly
-set the semantic `styles.size` value to `"1/2"` or `"1/4"`. Half buttons consume
-two units, quarter buttons one unit, and each row holds four units. A base slot
-reserves the maximum exact row height of its reachable variants. Groups remain
-in one shared vertical overflow container, so cluster swaps keep its extent and
-offset stable. `styles` is a small action-pad contract, not an unrestricted
-React Native style passthrough.
+set the semantic `styles.size` value to `"1/1"`, `"1/2"`, `"1/3"`, `"1/4"`, or
+`"1/5"`. Rows use 60 packing units: those sizes consume 60, 30, 20, 15, and 12
+units respectively. Sequential packing therefore wraps mixed fractions exactly,
+while the rendered widths leave the existing 4% gaps between buttons. A base
+slot reserves the maximum exact row height of its reachable variants. Groups
+remain in one shared vertical overflow container, so cluster swaps keep its
+extent and offset stable. `styles` is a small action-pad contract, not an
+unrestricted React Native style passthrough.
 
 Buttons configure generic `tap` and `longPress` interaction slots, with at least
 one interaction present. An interaction may send direct Neovim input, open a
@@ -152,6 +154,18 @@ changing the menu clears the group selection. Menu and group renames update
 links. The existing Neovim session remains mounted while ordinary form inputs
 own keyboard focus, but the active pad stays suspended until the editor closes.
 
+Button settings offer Whole, Half, Third, Quarter, and Fifth widths. They also
+offer Filled and Outline appearances plus optional background and outline colour
+overrides. The palette includes Default, Green, Yellow, Cyan, and Red; button
+colours additionally support Transparent, and a custom value accepts exactly
+`#RRGGBB` (case-insensitive). Default removes the override so the appearance
+controls the colour. Filled buttons default to `#24283b` with no visible outline;
+Outline buttons default to a transparent background with a `#353b52` outline.
+An incomplete custom value is retained in the recoverable draft and shown as a
+field error, but Save and Export remain disabled until it is valid. The external
+idle **Edit Action Pad** control uses the same set-back transparent treatment;
+**Done editing** remains cyan/tinted and **Connect host** remains filled.
+
 The primary YAML file lives on the connected Neovim host, not on Android.
 Choose an absolute host path or a path beginning with `~/`. The suggested path
 is `stdpath("config")/codey/action-pad.yaml`; use a file in your dotfiles or Git
@@ -210,6 +224,8 @@ menus:
             label: Esc
             styles:
               size: '1/2'
+              appearance: outline
+              outlineColor: '#73daca'
             tap:
               type: input
               nvimInput: '<Esc>'
@@ -231,8 +247,12 @@ the document, group IDs within each menu, and button IDs within each group.
 Menu interactions use `menuId`; group interactions require both `menuId` and
 `groupId`. Both destination definitions must exist. Same-menu group links and
 cycles composed of menu and group links are rejected. A button needs `tap`,
-`longPress`, or both, and must declare `styles: { size: '1/2' }` or
-`styles: { size: '1/4' }`. Optional button fields are `accessibilityLabel` and
+`longPress`, or both, and must declare one of the five supported `styles.size`
+fractions: `'1/1'`, `'1/2'`, `'1/3'`, `'1/4'`, or `'1/5'`. `styles.appearance`
+may be `filled` or `outline`; `backgroundColor` and `outlineColor` may be a
+case-insensitive `#RRGGBB`, and those two button fields also accept
+`transparent`. Shorthand hex, alpha hex, named colours, and `rgb(...)` are
+rejected. Optional button fields are `accessibilityLabel` and
 `accessibilityHint`. Each interaction has an explicit `after: root` or
 `after: stay`. Quote numeric labels and whitespace-sensitive inputs: inputs are
 preserved exactly, not trimmed. Only a single YAML 1.2 document is supported,
@@ -242,10 +262,11 @@ versions are rejected.
 Button labels may remain scalar strings, which use the regular
 size-15 treatment (size 13 while the pad is compact), or use an ordered list of
 typography runs. Every run declares `text`, a `fontSize` of `10`, `12`, `15`,
-`18`, or `22`, and `bold: true` or `false`. Unbold runs use the bundled
-regular face; bold runs use its bold face. Existing scalar labels and non-bold
-runs now render in regular rather than semibold, without changing their stored
-values. If fonts are unavailable, system weights 400 and 700 are used.
+`18`, or `22`, and `bold: true` or `false`; an optional `color: '#RRGGBB'`
+overrides the default `#c0caf5` for that run. Unbold runs use the bundled regular
+face; bold runs use its bold face. Existing scalar labels and non-bold runs
+render in regular rather than semibold, without changing their stored values.
+If fonts are unavailable, system weights 400 and 700 are used.
 Compact mode maps those sizes to
 `9`, `10`, `13`, `16`, and `19` respectively. A run may contain one character,
 so per-letter styling does not require offsets into Unicode text:
@@ -258,6 +279,7 @@ label:
   - text: 'Save'
     fontSize: 15
     bold: true
+    color: '#9ece6a'
   - text: ' all'
     fontSize: 15
     bold: false
@@ -489,13 +511,17 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
    recovers the cleaned draft. Save, reload, and reopen the app; confirm deleted
    menus remain absent from the YAML, manager, all pickers, and live Action Pad.
 7. Load the starter and build a mixed label with a size-22 icon plus bold and
-   regular text runs. Insert an icon at a cursor and over selected text in an
+   regular text runs, giving individual runs Green and Yellow font colours.
+   Insert an icon at a cursor and over selected text in an
    existing run; check that its size/weight are preserved and the caret returns
    after it. Add an empty run and insert an icon to make an icon-only run.
    Reorder a run; check both Normal and Compact previews;
-   switch the button between Half and Quarter; then Save and reload. Confirm the
-   YAML retains every run and the active pad renders the same treatment in
-   ordinary and selection modes. Check a size-22 icon beside size-10/12/15 text
+   exercise Whole, Half, Third, Quarter, and Fifth widths; compare Filled and
+   Outline appearances and custom/transparent button colours; then Save and
+   reload. Confirm the YAML retains every run and the active pad renders the
+   same treatment in ordinary and selection modes. Confirm invalid custom hex
+   remains recoverable but blocks Save/Export. Check a size-22 icon beside
+   size-10/12/15 text
    in both orders: their font-box centres should align. Check word wrapping
    across runs, explicit newlines, and height-aware ellipsis without partial
    second lines or shrunken text. Increase Android font scaling, test fallback

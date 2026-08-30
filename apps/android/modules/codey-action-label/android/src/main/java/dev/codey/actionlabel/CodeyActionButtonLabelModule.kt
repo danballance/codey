@@ -11,6 +11,7 @@ class ActionLabelRunRecord : Record {
   @Field var fontSize: Double = 15.0
   @Field var fontFamily: String? = null
   @Field var fontWeight: Int = 400
+  @Field var color: String? = null
 }
 
 class CodeyActionButtonLabelModule : Module() {
@@ -19,7 +20,9 @@ class CodeyActionButtonLabelModule : Module() {
 
     View(CodeyActionButtonLabelView::class) {
       Prop("runs") { view: CodeyActionButtonLabelView, runs: List<ActionLabelRunRecord> ->
-        view.setRuns(runs.map { ActionLabelRunSpec(it.text, it.fontSize, it.fontFamily, it.fontWeight) })
+        view.setRuns(runs.map {
+          ActionLabelRunSpec(it.text, it.fontSize, it.fontFamily, it.fontWeight, it.color)
+        })
       }
       Prop("defaultFontSize") { view: CodeyActionButtonLabelView, size: Double ->
         view.setDefaultFontSize(size)

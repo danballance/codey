@@ -12,14 +12,17 @@ internal data class ActionLabelRunSpec(
   val text: String,
   val fontSize: Double,
   val fontFamily: String?,
-  val fontWeight: Int
+  val fontWeight: Int,
+  val color: String? = null,
 )
+
+internal val DEFAULT_ACTION_LABEL_COLOR: Int = Color.rgb(192, 202, 245)
 
 internal data class ActionLabelContent(
   val runs: List<ActionLabelRunSpec> = emptyList(),
   val defaultFontSize: Double = 15.0,
   val defaultFontFamily: String? = null,
-  val color: Int = Color.rgb(192, 202, 245)
+  val color: Int = DEFAULT_ACTION_LABEL_COLOR,
 )
 
 /** Keeps Expo/Yoga lifecycle concerns out of the native text-layout engine. */
@@ -72,7 +75,8 @@ internal class ActionLabelViewState(
       ResolvedLabelRun(
         run.text,
         pixels(run.fontSize),
-        typefaceResolver(run.fontFamily, run.fontWeight, context.assets)
+        typefaceResolver(run.fontFamily, run.fontWeight, context.assets),
+        resolveActionLabelColor(run.color, content.color),
       )
     }
     cachedLayout = engine.layout(runs, defaultStyle, content.color, width, height)
@@ -91,6 +95,14 @@ internal class ActionLabelViewState(
     val layoutDirection: Int
   )
 }
+
+/** The document contract only permits opaque #RRGGBB run colours. */
+internal fun resolveActionLabelColor(value: String?, fallback: Int): Int {
+  if (value == null || !ACTION_LABEL_COLOR_PATTERN.matches(value)) return fallback
+  return (0xff000000L or value.substring(1).toLong(16)).toInt()
+}
+
+private val ACTION_LABEL_COLOR_PATTERN = Regex("^#[0-9A-Fa-f]{6}$")
 
 /** Expo Font registers each concrete face in this cache as Typeface.NORMAL. */
 internal fun resolveActionLabelTypeface(family: String?, weight: Int, assets: AssetManager): Typeface =

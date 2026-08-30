@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.os.LocaleList
 import android.text.Spanned
 import android.text.TextPaint
+import android.text.style.ForegroundColorSpan
 import android.util.DisplayMetrics
 import android.util.TypedValue
 import com.facebook.react.common.assets.ReactFontManager
@@ -199,6 +200,7 @@ class ActionLabelViewStateTest {
       "run size" to original.copy(runs = listOf(original.runs.single().copy(fontSize = 22.0))),
       "run family" to original.copy(runs = listOf(original.runs.single().copy(fontFamily = BOLD_FAMILY))),
       "run weight" to original.copy(runs = listOf(original.runs.single().copy(fontWeight = 700))),
+      "run colour" to original.copy(runs = listOf(original.runs.single().copy(color = "#9ece6a"))),
       "default size" to original.copy(defaultFontSize = 13.0),
       "default family" to original.copy(defaultFontFamily = BOLD_FAMILY),
       "colour" to original.copy(color = Color.RED),
@@ -326,6 +328,34 @@ class ActionLabelViewStateTest {
     }
   }
 
+  @Test
+  fun `run colours resolve independently while absent and invalid drafts inherit the label colour`() {
+    val state = ActionLabelViewState()
+    state.update(content(listOf(
+      run("Green", color = "#9ece6a"),
+      run(" Yellow", color = "#E0AF68"),
+      run(" inherited"),
+      run(" invalid", color = "#73da"),
+    )).copy(color = Color.BLUE))
+
+    val result = layout(state)
+    assertEquals(Color.BLUE, result.layout.paint.color)
+    assertEquals(Color.rgb(158, 206, 106), runColor(result, 0))
+    assertEquals(Color.rgb(224, 175, 104), runColor(result, "Green".length))
+    assertEquals(Color.BLUE, runColor(result, "Green Yellow".length))
+    assertEquals(Color.BLUE, runColor(result, "Green Yellow inherited".length))
+  }
+
+  @Test
+  fun `private bridge colour parsing accepts only opaque six digit hex`() {
+    val fallback = Color.MAGENTA
+    assertEquals(Color.rgb(115, 218, 202), resolveActionLabelColor("#73daca", fallback))
+    assertEquals(Color.rgb(255, 123, 114), resolveActionLabelColor("#FF7B72", fallback))
+    for (invalid in listOf(null, "", "#fff", "#12345678", "red", "transparent", "rgb(1,2,3)", "#gggggg")) {
+      assertEquals("invalid=$invalid", fallback, resolveActionLabelColor(invalid, fallback))
+    }
+  }
+
   private fun layout(
     state: ActionLabelViewState,
     width: Int = 1200,
@@ -341,12 +371,20 @@ class ActionLabelViewStateTest {
     return TextPaint(result.layout.paint).apply { span.updateMeasureState(this) }
   }
 
+  private fun runColor(result: ActionLabelLayoutResult, offset: Int): Int {
+    val text = result.layout.text as Spanned
+    return text.getSpans(offset, offset + 1, ForegroundColorSpan::class.java)
+      .single()
+      .foregroundColor
+  }
+
   private fun run(
     text: String,
     size: Double = 15.0,
     family: String? = REGULAR_FAMILY,
     weight: Int = 400,
-  ) = ActionLabelRunSpec(text, size, family, weight)
+    color: String? = null,
+  ) = ActionLabelRunSpec(text, size, family, weight, color)
 
   private fun content(runs: List<ActionLabelRunSpec>) = ActionLabelContent(
     runs = runs,

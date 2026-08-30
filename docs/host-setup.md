@@ -85,6 +85,9 @@ formatting and discard YAML comments.
 
 Configuration inputs can execute Neovim commands. Only load files you trust;
 loading or editing the document never sends its inputs to the host. Every button
-must explicitly declare `styles: { size: '1/2' }` or
-`styles: { size: '1/4' }`; older YAML without a size has no automatic migration
-and is rejected until updated.
+must explicitly declare `styles.size` as `'1/1'`, `'1/2'`, `'1/3'`, `'1/4'`, or
+`'1/5'`; older YAML without a size has no automatic migration and is rejected
+until updated. Optional `styles.appearance` is `filled` or `outline`, and
+`backgroundColor`/`outlineColor` accept `#RRGGBB` or `transparent`. A rich label
+run may set `color: '#RRGGBB'`; omitted style and run-colour fields preserve the
+existing filled-button and label defaults.

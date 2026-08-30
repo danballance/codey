@@ -1,5 +1,11 @@
 import { isAlias, isNode, parseDocument, stringify, visit } from 'yaml'
 
+import {
+  isActionButtonAppearance,
+  isActionButtonLabelColor,
+  isActionButtonSize,
+  isActionButtonStyleColor
+} from './style'
 import { ACTION_BUTTON_FONT_SIZES } from './types'
 import type {
   ActionAfter,
@@ -134,6 +140,17 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
     return true
   }
 
+  function color(candidate: unknown, path: string, transparent: boolean): candidate is string {
+    if (!string(candidate, path)) return false
+    if (semantic && !(transparent ? isActionButtonStyleColor(candidate) : isActionButtonLabelColor(candidate))) {
+      issue(path, transparent
+        ? 'Expected "transparent" or a color in "#RRGGBB" format.'
+        : 'Expected a color in "#RRGGBB" format.')
+      return false
+    }
+    return true
+  }
+
   function identifier(candidate: unknown, path: string, identifiers: Set<string>) {
     if (!string(candidate, path, 'text')) return
     if (semantic && identifiers.has(candidate)) issue(path, `Duplicate identifier: ${candidate}`)
@@ -156,7 +173,7 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
     let hasEmptyRun = false
     candidate.forEach((run, runIndex) => {
       const runPath = `${path}[${runIndex}]`
-      if (!object(run, runPath, ['text', 'fontSize', 'bold'])) {
+      if (!object(run, runPath, ['text', 'fontSize', 'bold', 'color'])) {
         allTextValid = false
         return
       }
@@ -176,6 +193,7 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
         issue(`${runPath}.fontSize`, `Expected one of ${ACTION_BUTTON_FONT_SIZES.join(', ')}.`)
       }
       if (typeof run.bold !== 'boolean') issue(`${runPath}.bold`, 'Expected a Boolean.')
+      if (run.color !== undefined) color(run.color, `${runPath}.color`, false)
     })
     if (semantic && allTextValid && !hasEmptyRun && combinedText.trim().length === 0) {
       issue(path, 'Must contain visible text.')
@@ -245,10 +263,19 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
         for (const key of ['accessibilityLabel', 'accessibilityHint'] as const) {
           if (button[key] !== undefined) string(button[key], `${buttonPath}.${key}`)
         }
-        if (object(button.styles, `${buttonPath}.styles`, ['size'])) {
+        if (object(button.styles, `${buttonPath}.styles`, ['size', 'appearance', 'backgroundColor', 'outlineColor'])) {
           const size = button.styles.size
-          if (size !== '1/4' && size !== '1/2') {
-            issue(`${buttonPath}.styles.size`, 'Expected "1/4" or "1/2".')
+          if (!isActionButtonSize(size)) {
+            issue(`${buttonPath}.styles.size`, 'Expected "1/1", "1/2", "1/3", "1/4" or "1/5".')
+          }
+          if (button.styles.appearance !== undefined && !isActionButtonAppearance(button.styles.appearance)) {
+            issue(`${buttonPath}.styles.appearance`, 'Expected "filled" or "outline".')
+          }
+          if (button.styles.backgroundColor !== undefined) {
+            color(button.styles.backgroundColor, `${buttonPath}.styles.backgroundColor`, true)
+          }
+          if (button.styles.outlineColor !== undefined) {
+            color(button.styles.outlineColor, `${buttonPath}.styles.outlineColor`, true)
           }
         }
         if (semantic && button.tap === undefined && button.longPress === undefined) {
@@ -436,7 +463,12 @@ function normalizeConfig(config: ActionPadConfig): ActionPadConfig {
           label: normalizeButtonLabel(button.label),
           ...(button.accessibilityLabel === undefined ? {} : { accessibilityLabel: button.accessibilityLabel }),
           ...(button.accessibilityHint === undefined ? {} : { accessibilityHint: button.accessibilityHint }),
-          styles: { size: button.styles.size },
+          styles: {
+            size: button.styles.size,
+            ...(button.styles.appearance === undefined ? {} : { appearance: button.styles.appearance }),
+            ...(button.styles.backgroundColor === undefined ? {} : { backgroundColor: button.styles.backgroundColor }),
+            ...(button.styles.outlineColor === undefined ? {} : { outlineColor: button.styles.outlineColor })
+          },
           ...(button.tap === undefined ? {} : { tap: normalizeInteraction(button.tap) }),
           ...(button.longPress === undefined ? {} : { longPress: normalizeInteraction(button.longPress) })
         }))
@@ -447,7 +479,12 @@ function normalizeConfig(config: ActionPadConfig): ActionPadConfig {
 
 function normalizeButtonLabel(label: ActionButtonLabel): ActionButtonLabel {
   if (typeof label === 'string') return label
-  return label.map((run) => ({ text: run.text, fontSize: run.fontSize, bold: run.bold }))
+  return label.map((run) => ({
+    text: run.text,
+    fontSize: run.fontSize,
+    bold: run.bold,
+    ...(run.color === undefined ? {} : { color: run.color })
+  }))
 }
 
 export function resolveActionPadConfig(config: ActionPadConfig): ActionMenu {

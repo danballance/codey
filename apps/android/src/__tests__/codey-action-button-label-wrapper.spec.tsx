@@ -22,10 +22,10 @@ afterEach(cleanup)
 
 it('registers the exact Expo view and forwards ordered resolved runs without transforming text', () => {
   const runs: readonly CodeyActionButtonLabelRun[] = [
-    { text: '\u{f01c9} ', fontSize: 22, fontFamily: 'CodeyNerdFont-Regular', fontWeight: 400 },
-    { text: 'Save', fontSize: 15, fontFamily: 'CodeyNerdFont-Bold', fontWeight: 700 },
-    { text: '\n all 😀', fontSize: 12, fontFamily: 'CodeyNerdFont-Regular', fontWeight: 400 },
-    { text: '', fontSize: 10, fontFamily: 'CodeyNerdFont-Regular', fontWeight: 400 }
+    { text: '\u{f01c9} ', color: '#c0caf5', fontSize: 22, fontFamily: 'CodeyNerdFont-Regular', fontWeight: 400 },
+    { text: 'Save', color: '#9ece6a', fontSize: 15, fontFamily: 'CodeyNerdFont-Bold', fontWeight: 700 },
+    { text: '\n all 😀', color: '#E0AF68', fontSize: 12, fontFamily: 'CodeyNerdFont-Regular', fontWeight: 400 },
+    { text: '', color: '#c0caf5', fontSize: 10, fontFamily: 'CodeyNerdFont-Regular', fontWeight: 400 }
   ]
   const screen = render(
     <CodeyActionButtonLabel
@@ -50,6 +50,9 @@ it('registers the exact Expo view and forwards ordered resolved runs without tra
     pointerEvents: 'none'
   })
   expect(view.props.runs).toBe(runs)
+  expect(view.props.runs.map((run: CodeyActionButtonLabelRun) => run.color)).toEqual([
+    '#c0caf5', '#9ece6a', '#E0AF68', '#c0caf5'
+  ])
   expect(StyleSheet.flatten(view.props.style)).toEqual({ flex: 1, alignSelf: 'stretch' })
   expect(screen.queryByTestId('native-label')).toBeNull()
   expect(view.props.onPress).toBeUndefined()
@@ -67,8 +70,8 @@ it('passes system fallback weights, empty drafts and typography changes through 
   expect(view().props.defaultFontSize).toBe(13)
 
   const fallbackRuns: readonly CodeyActionButtonLabelRun[] = [
-    { text: 'Regular ', fontSize: 9, fontWeight: 400 },
-    { text: 'Bold', fontSize: 19, fontFamily: null, fontWeight: 700 }
+    { text: 'Regular ', color: '#c0caf5', fontSize: 9, fontWeight: 400 },
+    { text: 'Bold', color: '#ff7b72', fontSize: 19, fontFamily: null, fontWeight: 700 }
   ]
   screen.rerender(
     <CodeyActionButtonLabel

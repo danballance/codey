@@ -289,6 +289,30 @@ describe('tablet client shell', () => {
     expect(screen.getByRole('button', { name: 'Enter' }).props.accessibilityState.disabled).toBe(true)
   })
 
+  it('outlines the idle edit control without changing selected or host-connect styling', async () => {
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await act(async () => { await Promise.resolve() })
+
+    const edit = screen.getByRole('button', { name: 'Edit Action Pad' })
+    expect(StyleSheet.flatten(edit.props.style)).toMatchObject({
+      backgroundColor: 'transparent',
+      borderColor: '#353b52'
+    })
+
+    fireEvent.press(edit)
+    expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Done editing' }).props.style)).toMatchObject({
+      backgroundColor: '#20343d',
+      borderColor: '#73daca'
+    })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Done editing' }))
+    await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
+    expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Connect configuration host' }).props.style)).toMatchObject({
+      backgroundColor: '#1b2030',
+      borderColor: '#353b52'
+    })
+  })
+
   it('returns to the selected submenu through editor entry, closing and a supported landscape resize', async () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)

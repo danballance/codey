@@ -99,4 +99,10 @@ describe('bundled action pad', () => {
     expect(sizes.filter((size) => size === '1/2')).toHaveLength(78)
     expect(sizes.filter((size) => size === '1/4')).toHaveLength(8)
   })
+
+  it('uses the outline appearance for the five full-page Back controls', () => {
+    expect(['command', 'leader', 'search', 'window', 'code'].map((menuId) => (
+      button(menuId, 'back').styles
+    ))).toEqual(Array.from({ length: 5 }, () => ({ size: '1/2', appearance: 'outline' })))
+  })
 })

@@ -28,7 +28,7 @@ import {
   menuDeletionReason,
   type ActionPadEdit,
   type ButtonLocation,
-  type EditableButton,
+  type EditableButtonPatch,
   type EditableInteraction,
   type MenuReference
 } from './editing'
@@ -37,7 +37,7 @@ import {
   type ActionButtonFontSize,
   type ActionButtonLabel as ActionButtonLabelValue,
   type ActionButtonLabelRun,
-  type ActionButtonSize,
+  type ActionButtonStyles,
   type ActionPadButtonTarget
 } from './types'
 import {
@@ -46,6 +46,11 @@ import {
   plainActionButtonLabel
 } from './label'
 import { insertLabelText, type LabelTextSelection } from './label-selection'
+import {
+  ACTION_BUTTON_SIZE_OPTIONS,
+  resolveActionButtonLabelColor,
+  resolveActionButtonStyles
+} from './style'
 
 export interface ActionPadEditorProps {
   readonly config: ActionPadConfig
@@ -107,6 +112,12 @@ type EditorScrollTarget = 'button' | 'tap' | 'longPress'
 type EditorLayoutPart = 'workspace' | 'details' | EditorScrollTarget
 
 const MENU_REFERENCE_PAGE_SIZE = 25
+const ACTION_BUTTON_COLOR_OPTIONS = [
+  { value: '#9ece6a', label: 'Green' },
+  { value: '#e0af68', label: 'Yellow' },
+  { value: '#73daca', label: 'Cyan' },
+  { value: '#ff7b72', label: 'Red' }
+] as const
 
 export function ActionPadEditor({
   config,
@@ -356,8 +367,12 @@ export function ActionPadEditor({
     setReferenceGuide(undefined)
   }
 
-  function updateButton(patch: Partial<EditableButton>, path: string) {
+  function updateButton(patch: EditableButtonPatch, path: string) {
     apply({ type: 'update-button', location: buttonLocation, patch }, path)
+  }
+
+  function updateButtonStyles(patch: Partial<ActionButtonStyles>, path: string) {
+    updateButton({ styles: patch }, path)
   }
 
   function dismissIconPicker() {
@@ -797,7 +812,7 @@ export function ActionPadEditor({
                 ) : null}
                 <ActionButtonLabelEditor
                   key={`${buttonIdentity}:${labelEditorRevision}`}
-                  buttonSize={button.styles.size}
+                  buttonStyles={button.styles}
                   disabled={busy}
                   fontError={fontError}
                   fontLoaded={fontLoaded}
@@ -809,9 +824,36 @@ export function ActionPadEditor({
                 />
                 {fontError ? <Text accessibilityLiveRegion="polite" style={styles.notice}>The bundled Nerd Font could not be loaded, so icon previews are unavailable.</Text> : null}
                 <FormField disabled={busy} fontLoaded={fontLoaded} issues={displayedIssues} label="Button ID" onChange={(id) => applyId({ type: 'update-button', location: buttonLocation, patch: { id } }, `${buttonPath}.id`, id)} onUndo={pendingIds[`${buttonPath}.id`] ? () => undoPendingId(`${buttonPath}.id`) : undefined} path={`${buttonPath}.id`} value={pendingIds[`${buttonPath}.id`]?.value ?? button.id} />
-                <Choices disabled={busy} label="Button size" onChange={(size) => updateButton({ styles: { size: size as '1/2' | '1/4' } }, `${buttonPath}.styles.size`)} options={[{ value: '1/2', label: 'Half' }, { value: '1/4', label: 'Quarter' }]} value={button.styles.size} />
-                <Text style={styles.muted}>Choose half or quarter width in the Action Pad rail.</Text>
+                <Choices disabled={busy} label="Button size" onChange={(size) => updateButtonStyles({ size: size as ActionButtonStyles['size'] }, `${buttonPath}.styles.size`)} options={ACTION_BUTTON_SIZE_OPTIONS} value={button.styles.size} />
+                <Text style={styles.muted}>Choose whole, half, third, quarter, or fifth width in the Action Pad rail.</Text>
                 <FieldIssues issues={displayedIssues} path={`${buttonPath}.styles.size`} />
+                <Choices
+                  disabled={busy}
+                  label="Button appearance"
+                  onChange={(appearance) => updateButtonStyles({ appearance: appearance === 'filled' ? undefined : 'outline' }, `${buttonPath}.styles.appearance`)}
+                  options={[{ value: 'filled', label: 'Filled' }, { value: 'outline', label: 'Outline' }]}
+                  value={button.styles.appearance ?? 'filled'}
+                />
+                <Text style={styles.muted}>Outline uses a transparent background and the same thin muted border as Edit Action Pad.</Text>
+                <FieldIssues issues={displayedIssues} path={`${buttonPath}.styles.appearance`} />
+                <ColorControl
+                  allowTransparent
+                  disabled={busy}
+                  issues={displayedIssues}
+                  label="Button background color"
+                  onChange={(backgroundColor) => updateButtonStyles({ backgroundColor }, `${buttonPath}.styles.backgroundColor`)}
+                  path={`${buttonPath}.styles.backgroundColor`}
+                  value={button.styles.backgroundColor}
+                />
+                <ColorControl
+                  allowTransparent
+                  disabled={busy}
+                  issues={displayedIssues}
+                  label="Button outline color"
+                  onChange={(outlineColor) => updateButtonStyles({ outlineColor }, `${buttonPath}.styles.outlineColor`)}
+                  path={`${buttonPath}.styles.outlineColor`}
+                  value={button.styles.outlineColor}
+                />
                 <FormField disabled={busy} fontLoaded={fontLoaded} hint="Leave blank to use the button label." issues={displayedIssues} label="Accessibility label" onChange={(accessibilityLabel) => updateButton({ accessibilityLabel: accessibilityLabel || undefined }, `${buttonPath}.accessibilityLabel`)} path={`${buttonPath}.accessibilityLabel`} value={button.accessibilityLabel ?? ''} />
                 {!button.accessibilityLabel?.trim() && containsPrivateUseGlyph(button.label) ? (
                   <Text accessibilityLiveRegion="polite" style={styles.notice} testID="action-pad-label-accessibility-warning">
@@ -1139,8 +1181,8 @@ interface LabelRunInputState {
   selection?: LabelTextSelection
 }
 
-function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, issues, label, onChange, onInsertIcon, path }: {
-  readonly buttonSize: ActionButtonSize
+function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded, issues, label, onChange, onInsertIcon, path }: {
+  readonly buttonStyles: ActionButtonStyles
   readonly disabled: boolean
   readonly fontError: Error | null
   readonly fontLoaded: boolean
@@ -1167,6 +1209,7 @@ function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, 
     readonly selection: LabelTextSelection
   }>()
   const [compactPreview, setCompactPreview] = useState(false)
+  const previewStyles = resolveActionButtonStyles(buttonStyles)
 
   useEffect(() => {
     if (focusRun === undefined) return
@@ -1184,16 +1227,24 @@ function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, 
   function changeRun(index: number, patch: Partial<ActionButtonLabelRun>) {
     if (disabled) return
     const run = runs[index]
+    const changesColor = Object.prototype.hasOwnProperty.call(patch, 'color') && patch.color !== run?.color
     if (!run || (
       (patch.text === undefined || patch.text === run.text) &&
       (patch.fontSize === undefined || patch.fontSize === run.fontSize) &&
-      (patch.bold === undefined || patch.bold === run.bold)
+      (patch.bold === undefined || patch.bold === run.bold) &&
+      !changesColor
     )) return
     if (!rich && index === 0 && Object.keys(patch).length === 1 && patch.text !== undefined) {
       onChange(patch.text)
       return
     }
-    onChange(runs.map((run, runIndex) => runIndex === index ? { ...run, ...patch } : { ...run }))
+    onChange(runs.map((run, runIndex) => {
+      const next = runIndex === index ? { ...run, ...patch } : { ...run }
+      if (runIndex === index && Object.prototype.hasOwnProperty.call(patch, 'color') && patch.color === undefined) {
+        delete next.color
+      }
+      return next
+    }))
   }
 
   function addRun() {
@@ -1256,7 +1307,7 @@ function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, 
           <View key={input.key} style={styles.labelRun} testID={`action-button-label-run-${index}`}>
             <View style={styles.labelRunHeader}>
               <Text accessibilityRole="header" style={styles.label}>Run {index + 1}</Text>
-              <Text style={styles.muted}>{run.fontSize} · {run.bold ? 'Bold' : 'Regular'}</Text>
+              <Text style={styles.muted}>{run.fontSize} · {run.bold ? 'Bold' : 'Regular'} · {run.color ?? 'Default color'}</Text>
             </View>
             <TextInput
               accessibilityLabel={textLabel}
@@ -1284,6 +1335,7 @@ function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, 
                 styles.input,
                 styles.multilineInput,
                 fontLoaded ? run.bold ? styles.nerdFontBold : styles.nerdFont : { fontWeight: run.bold ? '700' : '400' },
+                { color: resolveActionButtonLabelColor(run.color) },
                 (issues.some((issue) => issue.path === path) || runIssues.length > 0) && styles.invalidInput
               ]}
               textAlignVertical="top"
@@ -1313,6 +1365,14 @@ function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, 
               value={run.bold ? 'bold' : 'regular'}
             />
             <FieldIssues issues={issues} path={`${runPath}.bold`} />
+            <ColorControl
+              disabled={disabled}
+              issues={issues}
+              label={`Run ${index + 1} font color`}
+              onChange={(color) => changeRun(index, { color })}
+              path={`${runPath}.color`}
+              value={run.color}
+            />
             <View style={styles.actions}>
               <EditorButton disabled={disabled || index === 0} label={`Move label run ${index + 1} earlier`} onPress={() => moveRun(index, -1)} />
               <EditorButton disabled={disabled || index === runs.length - 1} label={`Move label run ${index + 1} later`} onPress={() => moveRun(index, 1)} />
@@ -1353,7 +1413,11 @@ function ActionButtonLabelEditor({ buttonSize, disabled, fontError, fontLoaded, 
           <View style={[
             styles.labelPreviewButton,
             compactPreview && styles.compactLabelPreviewButton,
-            buttonSize === '1/4' && styles.quarterLabelPreviewButton
+            {
+              width: previewStyles.width,
+              backgroundColor: previewStyles.backgroundColor,
+              borderColor: previewStyles.outlineColor
+            }
           ]} testID="action-button-label-preview-button">
             <ActionButtonLabel
               compact={compactPreview}
@@ -1466,6 +1530,74 @@ function Choices({ disabled = false, label, onChange, options, value }: {
           </Pressable>
         ))}
       </View>
+    </View>
+  )
+}
+
+function ColorControl({ allowTransparent = false, disabled = false, issues, label, onChange, path, value }: {
+  readonly allowTransparent?: boolean
+  readonly disabled?: boolean
+  readonly issues: readonly ConfigIssue[]
+  readonly label: string
+  readonly onChange: (value: string | undefined) => void
+  readonly path: string
+  readonly value?: string
+}) {
+  const normalized = value?.toLowerCase()
+  const presets = allowTransparent
+    ? [...ACTION_BUTTON_COLOR_OPTIONS, { value: 'transparent', label: 'Transparent' }] as const
+    : ACTION_BUTTON_COLOR_OPTIONS
+  const invalid = issues.some((issue) => issue.path === path)
+
+  return (
+    <View style={styles.section}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.actions}>
+        <Pressable
+          accessibilityLabel={`${label}: Default`}
+          accessibilityRole="button"
+          accessibilityState={{ disabled, selected: value === undefined }}
+          disabled={disabled}
+          onPress={() => onChange(undefined)}
+          style={({ pressed }) => [styles.button, value === undefined && styles.selectedButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]}
+        >
+          <Text style={styles.buttonText}>Default</Text>
+        </Pressable>
+        {presets.map((preset) => (
+          <Pressable
+            accessibilityLabel={`${label}: ${preset.label}`}
+            accessibilityRole="button"
+            accessibilityState={{ disabled, selected: normalized === preset.value }}
+            disabled={disabled}
+            key={preset.value}
+            onPress={() => onChange(preset.value)}
+            style={({ pressed }) => [styles.button, normalized === preset.value && styles.selectedButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]}
+          >
+            <View style={styles.colorChoiceContent}>
+              <View style={[
+                styles.colorSwatch,
+                preset.value === 'transparent'
+                  ? styles.transparentSwatch
+                  : { backgroundColor: preset.value }
+              ]} />
+              <Text style={styles.buttonText}>{preset.label}</Text>
+            </View>
+          </Pressable>
+        ))}
+      </View>
+      <TextInput
+        accessibilityLabel={`${label} custom hex`}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!disabled}
+        onChangeText={(next) => onChange(next === '' ? undefined : next)}
+        placeholder="#RRGGBB"
+        placeholderTextColor="#65717e"
+        style={[styles.input, invalid && styles.invalidInput]}
+        value={value ?? ''}
+      />
+      <Text style={styles.muted}>Choose a palette color or enter #RRGGBB{allowTransparent ? '; Transparent removes the paint.' : '.'}</Text>
+      <FieldIssues issues={issues} path={path} />
     </View>
   )
 }
@@ -1635,7 +1767,9 @@ const styles = StyleSheet.create({
   compactLabelPreviewStage: { padding: 8 },
   labelPreviewButton: { width: '48%', height: 52, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'transparent', borderRadius: 12, backgroundColor: '#24283b' },
   compactLabelPreviewButton: { height: 48, paddingHorizontal: 4, borderRadius: 8 },
-  quarterLabelPreviewButton: { width: '22%' },
+  colorChoiceContent: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  colorSwatch: { width: 18, height: 18, borderRadius: 4, borderWidth: 1, borderColor: '#65717e' },
+  transparentSwatch: { backgroundColor: 'transparent', borderColor: '#c0caf5' },
   modalBackdrop: { flex: 1, justifyContent: 'center', padding: 20, backgroundColor: 'rgba(0, 0, 0, 0.72)' },
   confirmationCard: { width: '100%', maxWidth: 620, maxHeight: '86%', alignSelf: 'center', gap: 12, padding: 18, borderWidth: 1, borderColor: '#744248', borderRadius: 12, backgroundColor: '#111419' },
   confirmationList: { maxHeight: 280, borderWidth: 1, borderColor: '#303946', borderRadius: 8, backgroundColor: '#151b22' },

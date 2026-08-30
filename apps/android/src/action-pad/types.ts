@@ -2,7 +2,9 @@ export const ACTION_PAD_LONG_PRESS_MS = 450
 
 export type ActionAfter = 'root' | 'stay'
 
-export type ActionButtonSize = '1/4' | '1/2'
+export type ActionButtonSize = '1/1' | '1/2' | '1/3' | '1/4' | '1/5'
+
+export type ActionButtonAppearance = 'filled' | 'outline'
 
 export const ACTION_BUTTON_FONT_SIZES = [10, 12, 15, 18, 22] as const
 
@@ -12,12 +14,16 @@ export interface ActionButtonLabelRun {
   readonly text: string
   readonly fontSize: ActionButtonFontSize
   readonly bold: boolean
+  readonly color?: string
 }
 
 export type ActionButtonLabel = string | readonly ActionButtonLabelRun[]
 
 export interface ActionButtonStyles {
   readonly size: ActionButtonSize
+  readonly appearance?: ActionButtonAppearance
+  readonly backgroundColor?: string
+  readonly outlineColor?: string
 }
 
 export type ActionInteraction =

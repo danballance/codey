@@ -417,6 +417,23 @@ describe('Action Pad edits', () => {
     expect(validateActionPadConfig(next)).toContainEqual({ path: 'menus[0].groups[0].buttons[0].tap', message: 'A button must define tap or longPress.' })
   })
 
+  it('merges style controls atomically without discarding sibling fields', () => {
+    const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
+    let next = editActionPad(config(), {
+      type: 'update-button', location,
+      patch: { styles: { appearance: 'outline', backgroundColor: '#123456', outlineColor: '#654321' } }
+    })
+    next = editActionPad(next, { type: 'update-button', location, patch: { styles: { size: '1/5' } } })
+    expect(next.menus[0]?.groups[0]?.buttons[0]?.styles).toEqual({
+      size: '1/5', appearance: 'outline', backgroundColor: '#123456', outlineColor: '#654321'
+    })
+    next = editActionPad(next, {
+      type: 'update-button', location,
+      patch: { styles: { appearance: undefined, backgroundColor: undefined, outlineColor: undefined } }
+    })
+    expect(next.menus[0]?.groups[0]?.buttons[0]?.styles).toEqual({ size: '1/5' })
+  })
+
   it('duplicates every button field independently immediately after the source', () => {
     const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
     const original = editActionPad(config(), {
@@ -476,6 +493,17 @@ describe('Action Pad edits', () => {
     const added = editActionPad(boldEnding, { type: 'duplicate-button', location })
     expect(added.menus[0]!.groups[0]!.buttons[1]!.label).toEqual([
       { text: 'Open', fontSize: 18, bold: true },
+      { text: ' copy', fontSize: 15, bold: false }
+    ])
+
+    const colouredEnding = editActionPad(config(), {
+      type: 'update-button',
+      location,
+      patch: { label: [{ text: 'Open', fontSize: 15, bold: false, color: '#9ece6a' }] }
+    })
+    const uncolouredSuffix = editActionPad(colouredEnding, { type: 'duplicate-button', location })
+    expect(uncolouredSuffix.menus[0]!.groups[0]!.buttons[1]!.label).toEqual([
+      { text: 'Open', fontSize: 15, bold: false, color: '#9ece6a' },
       { text: ' copy', fontSize: 15, bold: false }
     ])
   })

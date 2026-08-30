@@ -74,15 +74,15 @@ describe('action pad YAML document', () => {
       createHash('sha256').update(JSON.stringify(canonicalValue(menu)), 'utf8').digest('hex')
     ])).toEqual([
       ['home', 'ffe1e7af5487b51ac855182339cce696bc819e8dd12db72fa9c74e036c035c6d'],
-      ['command', '088c69aaec2e8adabcf6530536a4c3eb0bdf7a03e98f8abefdb89cca4c68488f'],
-      ['leader', 'c095b776be6f03a1a6ed187f3abe1497dec161134253ff69278cea0e3c77ac6f'],
+      ['command', '8a4ba1d167a6a77b46b2f43afced7806f72ad0e96cef8999752be6f436dda8ef'],
+      ['leader', 'e5bfc04f3305e6a1b51e47133adb07c2f458eb6a63fca9b816aab6725cf7dc87'],
       ['motions', '45b4cebeae35790fb2118839fc5ad2f4ef465eb8e382cf564d2ea29fb2ab19f0'],
       ['text-objects', '92e25dab00be6afddeebc5d03c9bc76b7697de8df23c4f431b8e768f6c4f8ca3'],
       ['up-navigation', '27e5424635e74175666eef165ff0043afd4fe60c8a79690cc243d1f0fe202708'],
       ['down-navigation', '25cd67a174db8cb412a7793f21ae32b16b3a2d4bf8ca985647a32a6341c65e57'],
-      ['search', '820267b08b06976288f272a6cb6f810df2aa5994f0633efdc35ddc2272072b7e'],
-      ['window', '2a9e2eade404e674b30892d501e382483dff737797b7364baaae935b9ed07b5b'],
-      ['code', 'fc18e26bde5d6504635e65a05fe63318150296ae87fb56453d8dc94b8848a06a'],
+      ['search', '0170c59a3f5a4eb9406b25f8692b1132637459d5a8560e4e3138e675b5082e46'],
+      ['window', 'bcf20a092c04d28f4618814eeaff75f46a5d8bad521963952e98cff64259f0af'],
+      ['code', 'b3b3fcadbee7daf4e7c4aec090076b622c41f2fee5fee685cd8bbd9cc8296167'],
       ['yank', '6cc2db7425c8978a7fde6405aa964d30882a0dfe0fa7458b767849792ed2ca05'],
       ['delete', '97b27baf8be48c272ae1bf114d6938a098ba882fa2cb7c9b95df2a7b60e3b056']
     ])
@@ -108,8 +108,8 @@ describe('action pad YAML document', () => {
 
   it('round trips styled label runs without merging boundaries or changing typography', () => {
     const label = [
-      { text: '\uf07c ', fontSize: 22, bold: false },
-      { text: 'Save', fontSize: 15, bold: true },
+      { text: '\uf07c ', fontSize: 22, bold: false, color: '#9ece6a' },
+      { text: 'Save', fontSize: 15, bold: true, color: '#E0AF68' },
       { text: ' ', fontSize: 10, bold: false },
       { text: 'all 😀 \u{f01c9}', fontSize: 12, bold: false },
       { text: '!', fontSize: 18, bold: true }
@@ -121,10 +121,28 @@ describe('action pad YAML document', () => {
     const resolved = resolveActionPadConfig(parsed)
 
     expect(source).toContain('fontSize: 22')
+    expect(source).toContain("color: '#9ece6a'")
     expect(parsed).toEqual(value)
     expect(parsed.menus[0]?.groups[0]?.buttons[0]?.label).toEqual(label)
     expect(resolved.groups[0]?.buttons[0]?.label).toEqual(label)
     expect(serializeActionPadConfig(parsed)).toBe(source)
+  })
+
+  it('round trips every button size, appearances and optional colour overrides', () => {
+    const sizes = ['1/1', '1/2', '1/3', '1/4', '1/5'] as const
+    const value = config(sizes.map((size, index) => ({
+      ...inputButton,
+      id: `button-${index}`,
+      styles: index === 0
+        ? { size, appearance: 'outline' as const, backgroundColor: 'transparent', outlineColor: '#ABCDEF' }
+        : { size }
+    })))
+
+    const source = serializeActionPadConfig(value)
+    expect(parseActionPadConfig(source)).toEqual(value)
+    expect(source).toContain("appearance: 'outline'")
+    expect(source).toContain("backgroundColor: 'transparent'")
+    expect(source).toContain("outlineColor: '#ABCDEF'")
   })
 
   it('keeps legacy labels as scalar strings when normalizing and serializing', () => {
@@ -210,7 +228,7 @@ describe('action pad document validation', () => {
     [{ id: 'missing-styles', label: 'Missing styles', tap: inputButton.tap }, 'styles'],
     [{ ...inputButton, styles: {} }, 'styles.size'],
     [{ ...inputButton, styles: { color: 'red' } }, 'styles.color'],
-    [{ ...inputButton, styles: { size: '1/3' } }, 'styles.size'],
+    [{ ...inputButton, styles: { size: '2/3' } }, 'styles.size'],
     [{ ...inputButton, tap: { type: 'input', nvimInput: 2, after: 'root' } }, 'tap.nvimInput'],
     [{ ...inputButton, tap: { type: 'input', nvimInput: '', after: 'root' } }, 'tap.nvimInput'],
     [{ ...inputButton, tap: { type: 'input', nvimInput: 'x', after: 'back' } }, 'tap.after'],
@@ -247,6 +265,21 @@ describe('action pad document validation', () => {
       expect.objectContaining({ path: `menus[0].groups[0].buttons[0].${suffix}` })
     ]))
     expect(() => parseActionPadConfig(JSON.stringify(value))).toThrow(ActionPadConfigError)
+  })
+
+  it.each([
+    [{ ...inputButton, styles: { size: '1/2', appearance: 'raised' } }, 'styles.appearance'],
+    [{ ...inputButton, styles: { size: '1/2', backgroundColor: '#fff' } }, 'styles.backgroundColor'],
+    [{ ...inputButton, styles: { size: '1/2', outlineColor: '#12345678' } }, 'styles.outlineColor'],
+    [{ ...inputButton, styles: { size: '1/2', backgroundColor: 'red' } }, 'styles.backgroundColor'],
+    [{ ...inputButton, label: [{ text: 'Text', fontSize: 15, bold: false, color: 'transparent' }] }, 'label[0].color'],
+    [{ ...inputButton, label: [{ text: 'Text', fontSize: 15, bold: false, color: '#abc' }] }, 'label[0].color']
+  ])('rejects invalid appearance and colour values at %s', (button, suffix) => {
+    const value = candidateWithButton(button)
+    expect(validateActionPadConfig(value)).toContainEqual(expect.objectContaining({
+      path: `menus[0].groups[0].buttons[0].${suffix}`
+    }))
+    expect(() => serializeActionPadConfig(value as ActionPadConfig)).toThrow(ActionPadConfigError)
   })
 
   it('allows whitespace separator runs when the combined rich label has visible text', () => {
@@ -401,8 +434,13 @@ describe('action pad document validation', () => {
       ...inputButton,
       label: [{ text: '', fontSize: 15, bold: false }]
     }])
+    const incompleteColorDrafts = [
+      config([{ ...inputButton, styles: { size: '1/2', backgroundColor: '#' } }]),
+      config([{ ...inputButton, styles: { size: '1/2', outlineColor: '#123' } }]),
+      config([{ ...inputButton, label: [{ text: 'Text', fontSize: 15, bold: false, color: '' }] }])
+    ]
 
-    for (const value of [draft, brokenReference, cycle, incompleteGroup, emptyRunDraft]) {
+    for (const value of [draft, brokenReference, cycle, incompleteGroup, emptyRunDraft, ...incompleteColorDrafts]) {
       expect(isActionPadConfigShape(value)).toBe(true)
       expect(validateActionPadConfig(value).length).toBeGreaterThan(0)
     }

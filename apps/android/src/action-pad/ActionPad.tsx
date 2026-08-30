@@ -8,6 +8,11 @@ import {
 import { ActionButtonLabel } from './ActionButtonLabel'
 import { plainActionButtonLabel } from './label'
 import {
+  ACTION_BUTTON_LAYOUT_UNITS,
+  actionButtonSizeMetadata,
+  resolveActionButtonStyles
+} from './style'
+import {
   ACTION_PAD_LONG_PRESS_MS,
   type ActionButton,
   type ActionGroup,
@@ -402,6 +407,7 @@ const ActionButtonView = memo(function ActionButtonView({
 }) {
   const selecting = interactionMode === 'selection'
   const available = selecting || (interactionMode === 'normal' && enabled)
+  const resolvedStyles = resolveActionButtonStyles(button.styles)
   const latest = useRef({
     activationContext,
     button,
@@ -485,7 +491,11 @@ const ActionButtonView = memo(function ActionButtonView({
         styles.button,
         compact && styles.compactButton,
         styles.railButton,
-        button.styles.size === '1/4' && styles.quarterRailButton,
+        {
+          width: resolvedStyles.width,
+          backgroundColor: resolvedStyles.backgroundColor,
+          borderColor: resolvedStyles.outlineColor
+        },
         !available && styles.disabled,
         pressed && available && styles.pressed
       ]}
@@ -682,13 +692,13 @@ function packedRailRows(buttons: readonly ActionButton[]): number {
   let rows = 0
   let usedUnits = 0
   for (const button of buttons) {
-    const units = button.styles.size === '1/4' ? 1 : 2
-    if (usedUnits + units > 4) {
+    const units = actionButtonSizeMetadata(button.styles.size).units
+    if (usedUnits + units > ACTION_BUTTON_LAYOUT_UNITS) {
       rows += 1
       usedUnits = 0
     }
     usedUnits += units
-    if (usedUnits === 4) {
+    if (usedUnits === ACTION_BUTTON_LAYOUT_UNITS) {
       rows += 1
       usedUnits = 0
     }
@@ -810,11 +820,7 @@ const styles = StyleSheet.create({
     borderRadius: 8
   },
   railButton: {
-    width: '48%',
     flex: 0
-  },
-  quarterRailButton: {
-    width: '22%'
   },
   editIndicator: {
     position: 'absolute',

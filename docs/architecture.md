@@ -155,7 +155,8 @@ and suspension preserve it.
 The bundled Up/Down buttons send `<Up>` or `<Down>` on tap and substitute their
 navigation choices on long press. Yank, Delete, Motions, and TextObjects use the
 same transient mechanism on tap. Their consolidated `options` groups contain no
-Back button; configured Back remains an ordinary button on full pages. Special
+Back button; configured Back remains an ordinary interaction on full pages and
+the five bundled Back controls use the set-back Outline appearance. Special
 and modified keys are complete trusted `nvim_input` strings such as `<Esc>` and
 `<C-w>h`. Navigation and Back transitions are local, so Neovim receives nothing
 for either. Inputs can retain a cluster for repetition or return the complete
@@ -169,12 +170,22 @@ positions, the scroll-view instance, its content extent, or its scroll offset.
 
 Each base-page slot has a fixed rail-capacity envelope computed by following
 only group-action targets reachable from that slot. Every button explicitly
-declares `styles.size` as `"1/2"` or `"1/4"`: half buttons consume two units and
-quarter buttons consume one unit in four-unit rows. A slot reserves the maximum
-exact row height across its reachable variants using the normal or compact
-button height and existing gaps. The shared vertical overflow container keeps
-the same geometry through a substitution while preserving the existing press
-ownership, long-press, release, and stale-activation guards.
+declares `styles.size` as `"1/1"`, `"1/2"`, `"1/3"`, `"1/4"`, or `"1/5"`.
+Sequential packing uses 60-unit rows, with those fractions consuming 60, 30, 20,
+15, and 12 units. Their rendered widths are 100%, 48%, 30.6667%, 22%, and 16.8%
+to preserve the 4% gaps. A slot reserves the maximum exact row height across its
+reachable variants using the normal or compact button height and existing gaps.
+The shared vertical overflow container keeps the same geometry through a
+substitution while preserving the existing press ownership, long-press,
+release, and stale-activation guards.
+
+Button presentation is resolved from a small semantic style contract. Omitted
+or `filled` appearance uses a `#24283b` background and transparent outline;
+`outline` uses a transparent background and the existing 1dp `#353b52` outline.
+Optional background and outline colours override those defaults. Persisted
+colours are strict `#RRGGBB` strings, with `transparent` additionally accepted
+for button background and outline fields. The editor preview and live pad share
+the same width and appearance resolution.
 
 The current Neovim mode, full-page breadcrumb, and active-cluster label are
 projections in the action-pad header, not a second Neovim state machine. The
@@ -205,6 +216,8 @@ accessibility. Its parent Pressable retains the full accessible name.
 Native rich text is one joined string with original UTF-16 run ranges. A
 metric-affecting span sets each run's face, size, and absolute baseline offset
 so its primary-font ascent/descent box is centred on the line baseline. An
+independent `ForegroundColorSpan` applies each run's resolved colour without
+changing measurement or line breaking. An
 unshifted `StaticLayout` discovers native line breaks and ellipsis; a second
 layout applies centred spans and explicit per-visible-line metrics. This
 separates stable alignment from fallback-glyph clipping protection and avoids
@@ -224,14 +237,15 @@ Android client; Metro refresh alone is insufficient.
 
 Strict semantic validation
 requires those fields and both destinations, rejects malformed or blank rich
-labels, rejects same-menu references and cycles mixed across menu/group links,
-and the resolver preserves destination object identity. The bundled starter
-and user-selected host files use the same parser. The renderer sees only a
+labels and colour values, rejects same-menu references and cycles mixed across
+menu/group links, and the resolver preserves destination object identity. The
+bundled starter and user-selected host files use the same parser. The renderer sees only a
 validated graph, whose identity changes after a successful Load/Save rather
 than on each form edit or editor redraw; replacement resets navigation to root.
 This prototype deliberately evolves schema version 1 in place. It provides no
-migration or implicit size for older documents, and older builds reject rich
-labels even though legacy strings remain valid.
+migration or implicit size for older documents, and older builds reject the new
+size values, style/colour fields, and rich labels even though legacy strings
+remain valid.
 
 The configuration store owns the active document, editable draft, host-file
 identity/revision, and endpoint-specific recovery cache. The separate editor
@@ -240,7 +254,9 @@ production text renderer in a noninteractive Normal/Compact preview. Entering
 the editor settles the prior IME composition, blurs the Neovim input target,
 and suspends active pad input; ordinary form text cannot enter the session.
 Editor access sits outside user configuration so an empty or unusable pad can
-always be repaired.
+always be repaired. Recoverable editor drafts may temporarily retain incomplete
+custom colour text, but validation blocks Save and Export and preview resolution
+falls back to the selected appearance default until the value is valid.
 
 Host document operations are typed `nvim-session` methods implemented by fixed
 `nvim_exec_lua` chunks with paths/content passed as RPC arguments. Reads do not

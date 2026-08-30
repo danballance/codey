@@ -13,6 +13,7 @@ import android.text.StaticLayout
 import android.text.TextDirectionHeuristics
 import android.text.TextPaint
 import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
 import android.text.style.LineHeightSpan
 import android.text.style.MetricAffectingSpan
 import kotlin.math.ceil
@@ -22,7 +23,12 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Resolved native inputs. Sizes and all layout dimensions are physical pixels. */
-data class ResolvedLabelRun(val text: String, val textSize: Float, val typeface: Typeface)
+data class ResolvedLabelRun(
+  val text: String,
+  val textSize: Float,
+  val typeface: Typeface,
+  val color: Int = DEFAULT_ACTION_LABEL_COLOR,
+)
 
 data class LabelTextStyle(val textSize: Float, val typeface: Typeface)
 
@@ -99,7 +105,7 @@ class ActionLabelLayoutEngine(private val apiLevel: Int = Build.VERSION.SDK_INT)
     // A complete line at the selected sizes cannot fit. The indicator uses the existing base
     // style; no content run is ever scaled down to fit its button.
     val indicator = prepare(
-      listOf(ResolvedLabelRun(ELLIPSIS, defaultStyle.textSize, defaultStyle.typeface)),
+      listOf(ResolvedLabelRun(ELLIPSIS, defaultStyle.textSize, defaultStyle.typeface, color)),
       defaultStyle,
       color,
     )
@@ -134,7 +140,7 @@ class ActionLabelLayoutEngine(private val apiLevel: Int = Build.VERSION.SDK_INT)
       val start = text.length
       text.append(run.text)
       if (start == text.length) null else RunRange(
-        index, start, text.length, resolve(LabelTextStyle(run.textSize, run.typeface)),
+        index, start, text.length, resolve(LabelTextStyle(run.textSize, run.typeface)), run.color,
       )
     }
     return Source(text.toString(), ranges, resolve(defaultStyle))
@@ -349,6 +355,10 @@ class ActionLabelLayoutEngine(private val apiLevel: Int = Build.VERSION.SDK_INT)
         CentredLabelRunSpan(run.paint.paint.textSize, run.paint.paint.typeface, if (centred) run.paint.shift else 0),
         run.start, run.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
       )
+      text.setSpan(
+        ForegroundColorSpan(run.color),
+        run.start, run.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+      )
     }
     if (lines != null) {
       text.setSpan(VisibleLineHeightSpan(lines), 0, text.length, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
@@ -379,7 +389,13 @@ class ActionLabelLayoutEngine(private val apiLevel: Int = Build.VERSION.SDK_INT)
 
   private data class Source(val text: String, val runs: List<RunRange>, val base: RunPaint)
   private data class Discovery(val layout: StaticLayout, val ellipsizedWidth: Int)
-  private data class RunRange(val index: Int, val start: Int, val end: Int, val paint: RunPaint)
+  private data class RunRange(
+    val index: Int,
+    val start: Int,
+    val end: Int,
+    val paint: RunPaint,
+    val color: Int,
+  )
   private data class RunPaint(val paint: TextPaint, val metrics: Envelope, val shift: Int)
   private data class MeasuredFragment(
     val runIndex: Int,

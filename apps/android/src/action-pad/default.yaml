@@ -213,6 +213,7 @@ menus:
             label: 'Back'
             styles:
               size: '1/2'
+              appearance: 'outline'
             tap:
               type: 'back'
               after: 'stay'
@@ -305,6 +306,7 @@ menus:
             label: 'Back'
             styles:
               size: '1/2'
+              appearance: 'outline'
             tap:
               type: 'back'
               after: 'stay'
@@ -549,6 +551,7 @@ menus:
             label: 'Back'
             styles:
               size: '1/2'
+              appearance: 'outline'
             tap:
               type: 'back'
               after: 'stay'
@@ -639,6 +642,7 @@ menus:
             label: 'Back'
             styles:
               size: '1/2'
+              appearance: 'outline'
             tap:
               type: 'back'
               after: 'stay'
@@ -729,6 +733,7 @@ menus:
             label: 'Back'
             styles:
               size: '1/2'
+              appearance: 'outline'
             tap:
               type: 'back'
               after: 'stay'

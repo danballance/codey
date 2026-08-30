@@ -24,8 +24,8 @@ afterEach(cleanup)
 
 const mixedLabel: ActionButtonLabelValue = [
   { text: ' ', fontSize: 22, bold: false },
-  { text: 'Save', fontSize: 15, bold: true },
-  { text: ' all', fontSize: 12, bold: false }
+  { text: 'Save', fontSize: 15, bold: true, color: '#9ece6a' },
+  { text: ' all', fontSize: 12, bold: false, color: '#e0af' }
 ]
 
 describe('ActionButtonLabel', () => {
@@ -61,9 +61,9 @@ describe('ActionButtonLabel', () => {
 
     const native = screen.getByTestId('label', { includeHiddenElements: true })
     expect(native.props.runs).toEqual([
-      { text: ' ', fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontSize: 22, fontWeight: 400 },
-      { text: 'Save', fontFamily: CODEY_NERD_FONT_FAMILIES.bold, fontSize: 15, fontWeight: 700 },
-      { text: ' all', fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontSize: 12, fontWeight: 400 }
+      { text: ' ', color: '#c0caf5', fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontSize: 22, fontWeight: 400 },
+      { text: 'Save', color: '#9ece6a', fontFamily: CODEY_NERD_FONT_FAMILIES.bold, fontSize: 15, fontWeight: 700 },
+      { text: ' all', color: '#c0caf5', fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontSize: 12, fontWeight: 400 }
     ])
     expect(native.props).toMatchObject({
       color: '#c0caf5',
@@ -87,11 +87,11 @@ describe('ActionButtonLabel', () => {
 
     const native = screen.getByTestId('label', { includeHiddenElements: true })
     expect(native.props.runs).toEqual([
-      { text: 'a', fontSize: compact ? 9 : 10, fontWeight: 400 },
-      { text: 'b', fontSize: compact ? 10 : 12, fontWeight: 700 },
-      { text: 'c', fontSize: compact ? 13 : 15, fontWeight: 400 },
-      { text: 'd', fontSize: compact ? 16 : 18, fontWeight: 700 },
-      { text: 'e', fontSize: compact ? 19 : 22, fontWeight: 400 }
+      { text: 'a', color: '#c0caf5', fontSize: compact ? 9 : 10, fontWeight: 400 },
+      { text: 'b', color: '#c0caf5', fontSize: compact ? 10 : 12, fontWeight: 700 },
+      { text: 'c', color: '#c0caf5', fontSize: compact ? 13 : 15, fontWeight: 400 },
+      { text: 'd', color: '#c0caf5', fontSize: compact ? 16 : 18, fontWeight: 700 },
+      { text: 'e', color: '#c0caf5', fontSize: compact ? 19 : 22, fontWeight: 400 }
     ])
     expect(native.props.defaultFontFamily).toBeUndefined()
     expect(native.props.defaultFontSize).toBe(compact ? 13 : 15)
@@ -109,7 +109,7 @@ describe('ActionButtonLabel', () => {
     )
     const native = () => screen.getByTestId('label', { includeHiddenElements: true })
     expect(native().props.runs).toEqual([
-      { text: 'Legacy', fontSize: 15, fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontWeight: 400 }
+      { text: 'Legacy', color: '#c0caf5', fontSize: 15, fontFamily: CODEY_NERD_FONT_FAMILIES.regular, fontWeight: 400 }
     ])
     expect(native().props.numberOfLines).toBeUndefined()
     screen.rerender(

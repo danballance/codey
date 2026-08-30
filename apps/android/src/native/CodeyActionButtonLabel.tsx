@@ -1,9 +1,10 @@
 import { requireNativeView } from 'expo'
 import type { StyleProp, ViewProps, ViewStyle } from 'react-native'
 
-/** Private rendering inputs; persisted label runs remain unchanged. */
+/** Private rendering inputs after document values have been resolved for native drawing. */
 export interface CodeyActionButtonLabelRun {
   readonly text: string
+  readonly color: string
   readonly fontSize: number
   readonly fontFamily?: string | null
   readonly fontWeight: 400 | 700

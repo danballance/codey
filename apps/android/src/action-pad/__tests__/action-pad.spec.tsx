@@ -405,27 +405,21 @@ describe('ActionPad', () => {
     })
   })
 
-  it('applies explicit quarter and half sizes in the rail', () => {
+  it('applies all five explicit fractional sizes in the rail', () => {
+    const sizedButtons = [
+      { id: 'whole', label: 'Whole', styles: { size: '1/1' as const }, tap: input('1') },
+      { id: 'half', label: 'Half', styles: { size: '1/2' as const }, tap: input('2') },
+      { id: 'third', label: 'Third', styles: { size: '1/3' as const }, tap: input('3') },
+      { id: 'quarter', label: 'Quarter', styles: { size: '1/4' as const }, tap: input('4') },
+      { id: 'fifth', label: 'Fifth', styles: { size: '1/5' as const }, tap: input('5') }
+    ]
     const rootMenu = {
       id: 'home',
       label: 'Home',
       groups: [
         {
           id: 'sized',
-          buttons: [
-            {
-              id: 'explicit-half',
-              label: 'Half',
-              styles: { size: '1/2' },
-              tap: input('h')
-            },
-            {
-              id: 'quarter',
-              label: 'Quarter',
-              styles: { size: '1/4' },
-              tap: input('q')
-            }
-          ]
+          buttons: sizedButtons
         }
       ]
     } satisfies MenuFixture
@@ -435,39 +429,35 @@ describe('ActionPad', () => {
       justifyContent: 'flex-start',
       columnGap: '4%'
     })
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-explicit-half').props.style)).toMatchObject({
-      width: '48%',
-      flex: 0
-    })
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-quarter').props.style)).toMatchObject({
-      minWidth: 48,
-      width: '22%',
-      height: 52,
-      flex: 0
-    })
-    expect(screen.getAllByRole('button').map((button) => button.props.testID)).toEqual([
-      'action-pad-explicit-half',
-      'action-pad-quarter'
-    ])
+    for (const [id, width] of [
+      ['whole', '100%'],
+      ['half', '48%'],
+      ['third', '30.6667%'],
+      ['quarter', '22%'],
+      ['fifth', '16.8%']
+    ] as const) {
+      expect(StyleSheet.flatten(screen.getByTestId(`action-pad-${id}`).props.style)).toMatchObject({
+        minWidth: 48, width, height: 52, flex: 0
+      })
+    }
+    expect(screen.getAllByRole('button').map((button) => button.props.testID))
+      .toEqual(sizedButtons.map((button) => `action-pad-${button.id}`))
     screen.unmount()
 
     const compact = render(
       <ActionPad {...actionPadProps({ compact: true, rootMenu })} />
     )
-    expect(StyleSheet.flatten(compact.getByTestId('action-pad-quarter').props.style)).toMatchObject({
-      minWidth: 48,
-      width: '22%',
-      height: 48,
-      flex: 0
+    expect(StyleSheet.flatten(compact.getByTestId('action-pad-fifth').props.style)).toMatchObject({
+      minWidth: 48, width: '16.8%', height: 48, flex: 0
     })
     compact.unmount()
   })
 
-  it('packs four-quarter and mixed fractional rows in declaration order', () => {
-    const quarter = (id: string) => ({
+  it('packs thirds, quarters, fifths and mixed fractions on a 60-unit row', () => {
+    const sized = (id: string, size: '1/2' | '1/3' | '1/4' | '1/5') => ({
       id,
       label: id,
-      styles: { size: '1/4' as const },
+      styles: { size },
       tap: input(id)
     })
     const rootMenu = {
@@ -476,36 +466,68 @@ describe('ActionPad', () => {
       groups: [
         {
           id: 'quarters',
-          buttons: [quarter('q1'), quarter('q2'), quarter('q3'), quarter('q4')]
+          buttons: [sized('q1', '1/4'), sized('q2', '1/4'), sized('q3', '1/4'), sized('q4', '1/4')]
         },
         {
-          id: 'mixed',
-          buttons: [
-            { id: 'half', label: 'half', styles: { size: '1/2' }, tap: input('h') },
-            quarter('q5'),
-            quarter('q6')
-          ]
+          id: 'thirds',
+          buttons: [sized('t1', '1/3'), sized('t2', '1/3'), sized('t3', '1/3')]
+        },
+        {
+          id: 'fifths',
+          buttons: [sized('f1', '1/5'), sized('f2', '1/5'), sized('f3', '1/5'), sized('f4', '1/5'), sized('f5', '1/5')]
+        },
+        {
+          id: 'mixed-fit',
+          buttons: [sized('fit-half', '1/2'), sized('fit-quarter', '1/4'), sized('fit-fifth', '1/5')]
+        },
+        {
+          id: 'mixed-wrap',
+          buttons: [sized('wrap-half', '1/2'), sized('wrap-third', '1/3'), sized('wrap-fifth', '1/5')]
         }
       ]
     } satisfies MenuFixture
 
     const screen = render(<ActionPad {...actionPadProps({ rootMenu })} />)
 
-    for (const id of ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']) {
+    for (const id of ['q1', 'q2', 'q3', 'q4', 'fit-quarter']) {
       expect(StyleSheet.flatten(screen.getByTestId(`action-pad-${id}`).props.style).width)
         .toBe('22%')
     }
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-half').props.style).width)
-      .toBe('48%')
-    expect(screen.getAllByRole('button').map((button) => button.props.testID)).toEqual([
-      'action-pad-q1',
-      'action-pad-q2',
-      'action-pad-q3',
-      'action-pad-q4',
-      'action-pad-half',
-      'action-pad-q5',
-      'action-pad-q6'
-    ])
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-t1').props.style).width).toBe('30.6667%')
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-f1').props.style).width).toBe('16.8%')
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-mixed-fit-group').props.style).height).toBe(52)
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-mixed-wrap-group').props.style).height).toBe(116)
+  })
+
+  it('resolves filled, outline and custom appearance colours without changing geometry', () => {
+    const rootMenu = {
+      id: 'home', label: 'Home', groups: [{ id: 'styles', buttons: [
+        { id: 'filled', label: 'Filled', styles: { size: '1/2' as const }, tap: input('f') },
+        { id: 'outline', label: 'Outline', styles: { size: '1/2' as const, appearance: 'outline' as const }, tap: input('o') },
+        {
+          id: 'custom', label: 'Custom', tap: input('c'),
+          styles: { size: '1/2' as const, appearance: 'outline' as const, backgroundColor: '#123456', outlineColor: '#abcdef' }
+        },
+        {
+          id: 'invalid-draft', label: 'Invalid draft', tap: input('i'),
+          styles: { size: '1/2' as const, appearance: 'outline' as const, backgroundColor: '#12', outlineColor: 'red' }
+        }
+      ] }]
+    } satisfies MenuFixture
+    const screen = render(<ActionPad {...actionPadProps({ rootMenu })} />)
+
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-filled').props.style)).toMatchObject({
+      width: '48%', backgroundColor: '#24283b', borderColor: 'transparent'
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-outline').props.style)).toMatchObject({
+      width: '48%', backgroundColor: 'transparent', borderColor: '#353b52'
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-custom').props.style)).toMatchObject({
+      width: '48%', backgroundColor: '#123456', borderColor: '#abcdef'
+    })
+    expect(StyleSheet.flatten(screen.getByTestId('action-pad-invalid-draft').props.style)).toMatchObject({
+      width: '48%', backgroundColor: 'transparent', borderColor: '#353b52'
+    })
   })
 
   it.each([

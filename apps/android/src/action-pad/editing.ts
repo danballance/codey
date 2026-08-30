@@ -1,5 +1,6 @@
 import { validateActionPadConfig, type ActionPadConfig } from './document'
-import type { ActionButtonLabel } from './types'
+import { mergeActionButtonStyles } from './style'
+import type { ActionButtonLabel, ActionButtonStyles } from './types'
 
 export type EditableMenu = ActionPadConfig['menus'][number]
 export type EditableGroup = EditableMenu['groups'][number]
@@ -27,6 +28,10 @@ export interface MenuAnalysis {
   readonly incoming: readonly MenuReference[]
 }
 
+export type EditableButtonPatch = Omit<Partial<EditableButton>, 'styles'> & {
+  readonly styles?: Partial<ActionButtonStyles>
+}
+
 export type ActionPadEdit =
   | { readonly type: 'add-menu' }
   | { readonly type: 'update-menu'; readonly menuIndex: number; readonly patch: Partial<Pick<EditableMenu, 'id' | 'label'>> }
@@ -40,7 +45,7 @@ export type ActionPadEdit =
   | { readonly type: 'reorder-group'; readonly location: GroupLocation; readonly direction: -1 | 1 }
   | { readonly type: 'add-button'; readonly location: GroupLocation }
   | { readonly type: 'duplicate-button'; readonly location: ButtonLocation }
-  | { readonly type: 'update-button'; readonly location: ButtonLocation; readonly patch: Partial<EditableButton> }
+  | { readonly type: 'update-button'; readonly location: ButtonLocation; readonly patch: EditableButtonPatch }
   | { readonly type: 'delete-button'; readonly location: ButtonLocation }
   | { readonly type: 'reorder-button'; readonly location: ButtonLocation; readonly direction: -1 | 1 }
   | { readonly type: 'move-button'; readonly location: ButtonLocation; readonly destination: GroupLocation }
@@ -305,7 +310,13 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
       if (edit.patch.id !== undefined && group.buttons.some((candidate, index) => index !== edit.location.buttonIndex && candidate.id === edit.patch.id)) {
         throw new ActionPadEditError(`A button with ID “${edit.patch.id}” already exists in this group.`)
       }
-      const updated = { ...button, ...edit.patch, styles: edit.patch.styles ?? button.styles }
+      const updated = {
+        ...button,
+        ...edit.patch,
+        styles: edit.patch.styles === undefined
+          ? button.styles
+          : mergeActionButtonStyles(button.styles, edit.patch.styles)
+      }
       for (const optional of ['tap', 'longPress', 'accessibilityLabel', 'accessibilityHint'] as const) {
         if (updated[optional] === undefined) delete updated[optional]
       }
@@ -353,7 +364,7 @@ function duplicateButtonLabel(label: ActionButtonLabel): ActionButtonLabel {
   const runs = label.map((run) => ({ ...run }))
   const lastIndex = runs.length - 1
   const last = runs[lastIndex]
-  if (last !== undefined && last.fontSize === 15 && !last.bold) {
+  if (last !== undefined && last.fontSize === 15 && !last.bold && last.color === undefined) {
     runs[lastIndex] = { ...last, text: `${last.text} copy` }
   } else {
     if (runs.length >= 64) {

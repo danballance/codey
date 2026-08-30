@@ -3,7 +3,6 @@ package dev.codey.actionlabel
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Canvas
-import android.graphics.Color
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.views.ExpoView
 
@@ -38,7 +37,9 @@ class CodeyActionButtonLabelView(context: Context, appContext: AppContext) : Exp
   }
 
   internal fun setLabelColor(color: String) {
-    pendingContent = pendingContent.copy(color = Color.parseColor(color))
+    pendingContent = pendingContent.copy(
+      color = resolveActionLabelColor(color, DEFAULT_ACTION_LABEL_COLOR)
+    )
   }
 
   internal fun commitProps() {
