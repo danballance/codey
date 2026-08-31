@@ -149,6 +149,32 @@ class NvimProcessManagerTest {
   }
 
   @Test
+  fun `rpc eof briefly allows natural exit and preserves final stderr`() {
+    val process = FakeProcess().also(processes::add)
+    val sink = RecordingSink()
+    val manager = manager(sink, rpcEofExitGraceMillis = 2_000) { process }
+    val finalStderr = "final stderr before exit\n"
+
+    manager.start("/workspace")
+    process.closeStdout()
+    assertTrue(
+      "stdout reader did not begin the natural-exit grace wait",
+      process.timedWaitEntered.await(2, TimeUnit.SECONDS)
+    )
+    process.emitStderr(finalStderr.toByteArray())
+    process.complete(23)
+
+    assertTrue(sink.exitReady.await(2, TimeUnit.SECONDS))
+    val event = sink.exitEvents.single()
+    assertEquals(23, event.exitCode)
+    assertEquals(finalStderr, event.stderrTail)
+    assertEquals("E_NVIM_EXIT", event.code)
+    assertEquals("Local NeoVim exited with status 23", event.message)
+    assertEquals(0, process.destroyCalls.get())
+    assertEquals(0, process.forceDestroyCalls.get())
+  }
+
+  @Test
   fun `shutdown prevents future starts`() {
     val process = FakeProcess().also(processes::add)
     val manager = manager(RecordingSink()) { process }
@@ -164,12 +190,14 @@ class NvimProcessManagerTest {
   private fun manager(
     sink: RecordingSink,
     stopTimeoutMillis: Long = 50,
+    rpcEofExitGraceMillis: Long = 10,
     launcher: () -> FakeProcess
   ): NvimProcessManager = NvimProcessManager(
     eventSink = sink,
     launchSpecProvider = { cwd -> NvimLaunchSpec(listOf("nvim"), java.io.File(cwd), emptyMap()) },
     processLauncher = NvimProcessLauncher { launcher() },
-    stopTimeoutMillis = stopTimeoutMillis
+    stopTimeoutMillis = stopTimeoutMillis,
+    rpcEofExitGraceMillis = rpcEofExitGraceMillis
   ).also(managers::add)
 
   private class RecordingSink(expectedBytes: Int = 0) : NvimEventSink {
@@ -223,6 +251,7 @@ class NvimProcessManagerTest {
     private val completed = CountDownLatch(1)
     private val completedFlag = AtomicBoolean(false)
     private val exitCode = AtomicInteger(Int.MIN_VALUE)
+    val timedWaitEntered = CountDownLatch(1)
     val destroyCalls = AtomicInteger(0)
     val forceDestroyCalls = AtomicInteger(0)
 
@@ -237,7 +266,10 @@ class NvimProcessManagerTest {
       return exitCode.get()
     }
 
-    override fun waitFor(timeout: Long, unit: TimeUnit): Boolean = completed.await(timeout, unit)
+    override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
+      timedWaitEntered.countDown()
+      return completed.await(timeout, unit)
+    }
 
     override fun exitValue(): Int {
       if (completed.count > 0) throw IllegalThreadStateException("still running")

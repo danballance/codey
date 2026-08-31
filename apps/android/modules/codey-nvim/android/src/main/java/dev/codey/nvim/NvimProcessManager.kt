@@ -56,7 +56,8 @@ internal class NvimProcessManager(
   private val eventSink: NvimEventSink,
   private val launchSpecProvider: (String) -> NvimLaunchSpec,
   private val processLauncher: NvimProcessLauncher = ProcessBuilderNvimLauncher,
-  private val stopTimeoutMillis: Long = DEFAULT_STOP_TIMEOUT_MILLIS
+  private val stopTimeoutMillis: Long = DEFAULT_STOP_TIMEOUT_MILLIS,
+  private val rpcEofExitGraceMillis: Long = DEFAULT_RPC_EOF_EXIT_GRACE_MILLIS
 ) {
   private val lifecycleLock = Any()
   private val nextSessionId = AtomicInteger(1)
@@ -86,6 +87,7 @@ internal class NvimProcessManager(
         process = process,
         eventSink = eventSink,
         stopTimeoutMillis = stopTimeoutMillis,
+        rpcEofExitGraceMillis = rpcEofExitGraceMillis,
         onTerminal = { terminalSession ->
           synchronized(lifecycleLock) {
             if (activeSession === terminalSession) activeSession = null
@@ -140,6 +142,7 @@ internal class NvimProcessManager(
 
   private companion object {
     const val DEFAULT_STOP_TIMEOUT_MILLIS = 750L
+    const val DEFAULT_RPC_EOF_EXIT_GRACE_MILLIS = 100L
   }
 }
 
@@ -150,6 +153,7 @@ private class NvimProcessSession(
   private val process: Process,
   private val eventSink: NvimEventSink,
   private val stopTimeoutMillis: Long,
+  private val rpcEofExitGraceMillis: Long,
   private val onTerminal: (NvimProcessSession) -> Unit
 ) {
   private val terminal = AtomicBoolean(false)
@@ -260,7 +264,13 @@ private class NvimProcessSession(
       while (!terminal.get()) {
         val byteCount = process.inputStream.read(buffer)
         if (byteCount < 0) {
-          if (!terminal.get() && !stopping.get()) {
+          if (
+            !terminal.get() &&
+            !stopping.get() &&
+            !awaitNaturalExitAfterRpcEof() &&
+            !terminal.get() &&
+            !stopping.get()
+          ) {
             failAndTerminate("E_NVIM_EXIT", "Local NeoVim closed its RPC stream")
           }
           return
@@ -280,6 +290,15 @@ private class NvimProcessSession(
     } finally {
       readersDrained.countDown()
     }
+  }
+
+  private fun awaitNaturalExitAfterRpcEof(): Boolean = try {
+    process.waitFor(rpcEofExitGraceMillis, TimeUnit.MILLISECONDS)
+  } catch (error: InterruptedException) {
+    Thread.currentThread().interrupt()
+    false
+  } catch (_: RuntimeException) {
+    false
   }
 
   private fun drainStderr() {
