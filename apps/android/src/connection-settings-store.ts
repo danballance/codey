@@ -1,6 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
 import {
+  diagnosticLogger,
+  type DiagnosticLogger
+} from './diagnostics/logger'
+import {
   DEFAULT_LOCAL_TARGET,
   DEFAULT_REMOTE_TARGET,
   validateConnectionTarget,
@@ -33,6 +37,16 @@ export interface ConnectionSettingsStore {
 }
 
 export type ConnectionSettingsStorage = Pick<typeof AsyncStorage, 'getItem' | 'setItem'>
+
+interface MigrationResult {
+  readonly settings: ConnectionSettings
+  readonly outcome:
+    | 'no-legacy-settings'
+    | 'legacy-storage-failure'
+    | 'invalid-legacy-settings'
+    | 'migrated'
+    | 'migrated-in-memory'
+}
 
 export function validateConnectionSettings(value: unknown): ConnectionSettings {
   if (typeof value !== 'object' || value === null) throw new TypeError('Invalid connection settings')
@@ -92,31 +106,120 @@ export function withSelectedConnectionTarget(
 }
 
 export function createConnectionSettingsStore(
-  storage: ConnectionSettingsStorage = AsyncStorage
+  storage: ConnectionSettingsStorage = AsyncStorage,
+  logger: DiagnosticLogger = diagnosticLogger
 ): ConnectionSettingsStore {
   return {
     async load(): Promise<ConnectionSettings> {
+      const operation = logger.operation({
+        category: 'settings',
+        event: 'connection_settings.load',
+        message: 'Loading connection settings',
+        details: {
+          storageKey: CONNECTION_SETTINGS_STORAGE_KEY,
+          legacyStorageKey: LEGACY_ENDPOINT_STORAGE_KEY
+        }
+      })
       let raw: string | null
       try {
         raw = await storage.getItem(CONNECTION_SETTINGS_STORAGE_KEY)
-      } catch {
+      } catch (reason) {
+        operation.failure(reason, {
+          event: 'connection_settings.load_storage_failed',
+          message: 'Could not read connection settings; using defaults',
+          details: {
+            storageKey: CONNECTION_SETTINGS_STORAGE_KEY,
+            defaultSettings: DEFAULT_CONNECTION_SETTINGS,
+            storageFailure: reason
+          }
+        })
+        logDefaultSettings(logger, 'v2-storage-failure', reason, operation.id)
         return DEFAULT_CONNECTION_SETTINGS
       }
 
       if (raw !== null) {
         try {
-          return validateConnectionSettings(JSON.parse(raw))
-        } catch {
+          const settings = validateConnectionSettings(JSON.parse(raw))
+          operation.success({
+            details: {
+              source: 'v2',
+              rawSettings: raw,
+              settings
+            }
+          })
+          return settings
+        } catch (reason) {
+          logger.warn({
+            category: 'settings',
+            event: 'connection_settings.invalid',
+            message: 'Stored connection settings were invalid',
+            operationId: operation.id,
+            details: {
+              storageKey: CONNECTION_SETTINGS_STORAGE_KEY,
+              rawSettings: raw,
+              validationFailure: reason
+            }
+          })
+          operation.success({
+            event: 'connection_settings.load_defaulted',
+            message: 'Loaded default connection settings after invalid stored settings',
+            details: {
+              source: 'invalid-v2',
+              rawSettings: raw,
+              defaultSettings: DEFAULT_CONNECTION_SETTINGS
+            }
+          })
           return DEFAULT_CONNECTION_SETTINGS
         }
       }
 
-      return migrateLegacySettings(storage)
+      const migration = await migrateLegacySettings(storage, logger, operation.id)
+      operation.success({
+        event: migration.outcome === 'migrated' || migration.outcome === 'migrated-in-memory'
+          ? 'connection_settings.load_migrated'
+          : 'connection_settings.load_defaulted',
+        message: migration.outcome === 'migrated' || migration.outcome === 'migrated-in-memory'
+          ? 'Loaded migrated connection settings'
+          : 'Loaded default connection settings',
+        details: {
+          source: migration.outcome,
+          settings: migration.settings
+        }
+      })
+      if (migration.settings === DEFAULT_CONNECTION_SETTINGS) {
+        logDefaultSettings(logger, migration.outcome, undefined, operation.id)
+      }
+      return migration.settings
     },
 
     async save(settings: ConnectionSettings): Promise<void> {
-      const normalized = validateConnectionSettings(settings)
-      await storage.setItem(CONNECTION_SETTINGS_STORAGE_KEY, JSON.stringify(normalized))
+      const operation = logger.operation({
+        category: 'settings',
+        event: 'connection_settings.save',
+        message: 'Saving connection settings',
+        details: { settings }
+      })
+      try {
+        const normalized = validateConnectionSettings(settings)
+        const rawSettings = JSON.stringify(normalized)
+        await storage.setItem(CONNECTION_SETTINGS_STORAGE_KEY, rawSettings)
+        operation.success({
+          details: {
+            storageKey: CONNECTION_SETTINGS_STORAGE_KEY,
+            rawSettings,
+            settings: normalized
+          }
+        })
+      } catch (reason) {
+        operation.failure(reason, {
+          details: {
+            storageKey: CONNECTION_SETTINGS_STORAGE_KEY,
+            settings,
+            storageFailure: reason
+          }
+        })
+        throw reason
+      }
     }
   }
 }
@@ -124,14 +227,47 @@ export function createConnectionSettingsStore(
 export const connectionSettingsStore = createConnectionSettingsStore()
 
 async function migrateLegacySettings(
-  storage: ConnectionSettingsStorage
-): Promise<ConnectionSettings> {
+  storage: ConnectionSettingsStorage,
+  logger: DiagnosticLogger,
+  parentOperationId: string
+): Promise<MigrationResult> {
+  const operation = logger.operation({
+    category: 'settings',
+    event: 'connection_settings.migration',
+    message: 'Checking for legacy connection settings',
+    parentOperationId,
+    details: {
+      legacyStorageKey: LEGACY_ENDPOINT_STORAGE_KEY,
+      targetStorageKey: CONNECTION_SETTINGS_STORAGE_KEY
+    }
+  })
   let raw: string | null
   try {
     raw = await storage.getItem(LEGACY_ENDPOINT_STORAGE_KEY)
-    if (raw === null) return DEFAULT_CONNECTION_SETTINGS
-  } catch {
-    return DEFAULT_CONNECTION_SETTINGS
+    if (raw === null) {
+      operation.success({
+        event: 'connection_settings.migration_not_needed',
+        message: 'No legacy connection settings were present',
+        details: { defaultSettings: DEFAULT_CONNECTION_SETTINGS }
+      })
+      return {
+        settings: DEFAULT_CONNECTION_SETTINGS,
+        outcome: 'no-legacy-settings'
+      }
+    }
+  } catch (reason) {
+    operation.failure(reason, {
+      event: 'connection_settings.migration_read_failed',
+      message: 'Could not read legacy connection settings',
+      details: {
+        legacyStorageKey: LEGACY_ENDPOINT_STORAGE_KEY,
+        storageFailure: reason
+      }
+    })
+    return {
+      settings: DEFAULT_CONNECTION_SETTINGS,
+      outcome: 'legacy-storage-failure'
+    }
   }
 
   let migrated: ConnectionSettings
@@ -145,16 +281,72 @@ async function migrateLegacySettings(
     })
     if (remote.kind !== 'remote') throw new TypeError('Invalid legacy endpoint')
     migrated = createSettings('remote', DEFAULT_LOCAL_TARGET, remote)
-  } catch {
-    return DEFAULT_CONNECTION_SETTINGS
+  } catch (reason) {
+    operation.failure(reason, {
+      event: 'connection_settings.migration_invalid',
+      message: 'Legacy connection settings were invalid',
+      details: {
+        rawLegacySettings: raw,
+        validationFailure: reason
+      }
+    })
+    return {
+      settings: DEFAULT_CONNECTION_SETTINGS,
+      outcome: 'invalid-legacy-settings'
+    }
   }
 
   try {
-    await storage.setItem(CONNECTION_SETTINGS_STORAGE_KEY, JSON.stringify(migrated))
-  } catch {
+    const rawSettings = JSON.stringify(migrated)
+    await storage.setItem(CONNECTION_SETTINGS_STORAGE_KEY, rawSettings)
+    operation.success({
+      details: {
+        rawLegacySettings: raw,
+        rawSettings,
+        settings: migrated
+      }
+    })
+    return { settings: migrated, outcome: 'migrated' }
+  } catch (reason) {
     // Migration still succeeds for this session; persistence can be retried later.
+    operation.checkpoint({
+      event: 'connection_settings.migration_persist_failed',
+      message: 'Migrated settings could not be persisted',
+      level: 'error',
+      details: {
+        settings: migrated,
+        storageFailure: reason
+      }
+    })
+    operation.success({
+      event: 'connection_settings.migration_succeeded_in_memory',
+      message: 'Migrated connection settings for this run only',
+      details: {
+        rawLegacySettings: raw,
+        settings: migrated
+      }
+    })
+    return { settings: migrated, outcome: 'migrated-in-memory' }
   }
-  return migrated
+}
+
+function logDefaultSettings(
+  logger: DiagnosticLogger,
+  reason: string,
+  failure: unknown,
+  parentOperationId: string
+): void {
+  logger.info({
+    category: 'settings',
+    event: 'connection_settings.default_used',
+    message: 'Using default connection settings',
+    parentOperationId,
+    details: {
+      reason,
+      defaultSettings: DEFAULT_CONNECTION_SETTINGS,
+      failure
+    }
+  })
 }
 
 function createSettings(

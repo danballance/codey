@@ -15,6 +15,22 @@ import {
   withSelectedConnectionTarget,
   type ConnectionSettingsStorage
 } from '../connection-settings-store'
+import {
+  createDiagnosticLogger,
+  type DiagnosticLogger
+} from '../diagnostics/logger'
+
+function createTestLogger(): DiagnosticLogger {
+  const sink = jest.fn()
+  return createDiagnosticLogger({
+    console: { debug: sink, error: sink, info: sink, warn: sink }
+  })
+}
+
+function createTestStore(storage: ConnectionSettingsStorage) {
+  const logger = createTestLogger()
+  return { logger, store: createConnectionSettingsStore(storage, logger) }
+}
 
 function createStorage(initial: Readonly<Record<string, string>> = {}): {
   readonly storage: ConnectionSettingsStorage
@@ -34,7 +50,7 @@ describe('connection settings store', () => {
   it('uses Local as the fresh-install default when no settings exist', async () => {
     const test = createStorage()
 
-    await expect(createConnectionSettingsStore(test.storage).load()).resolves.toBe(
+    await expect(createTestStore(test.storage).store.load()).resolves.toBe(
       DEFAULT_CONNECTION_SETTINGS
     )
     expect(selectedConnectionTarget(DEFAULT_CONNECTION_SETTINGS)).toEqual({
@@ -55,7 +71,8 @@ describe('connection settings store', () => {
       })
     })
 
-    const loaded = await createConnectionSettingsStore(test.storage).load()
+    const { logger, store } = createTestStore(test.storage)
+    const loaded = await store.load()
 
     expect(loaded).toEqual({
       version: 2,
@@ -69,11 +86,20 @@ describe('connection settings store', () => {
       port: 7777
     })
     expect(test.getItem).toHaveBeenCalledTimes(1)
+    expect(logger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'connection_settings.load.started',
+      'connection_settings.load.succeeded'
+    ])
+    expect(logger.getSnapshot().entries[1]?.details).toMatchObject({
+      source: 'v2',
+      rawSettings: expect.stringContaining('tablet.local'),
+      settings: loaded
+    })
   })
 
   it('saves normalized v2 JSON and retains the other target when selection changes', async () => {
     const test = createStorage()
-    const store = createConnectionSettingsStore(test.storage)
+    const store = createTestStore(test.storage).store
     const settings = withSelectedConnectionTarget(DEFAULT_CONNECTION_SETTINGS, {
       kind: 'remote',
       host: ' remote.test ',
@@ -98,7 +124,7 @@ describe('connection settings store', () => {
       [LEGACY_ENDPOINT_STORAGE_KEY]: '{"host":" legacy.test ","port":6000}'
     })
 
-    const loaded = await createConnectionSettingsStore(test.storage).load()
+    const loaded = await createTestStore(test.storage).store.load()
 
     expect(loaded).toEqual({
       version: 2,
@@ -115,15 +141,23 @@ describe('connection settings store', () => {
     })
     test.setItem.mockRejectedValueOnce(new Error('Storage full'))
 
-    await expect(createConnectionSettingsStore(test.storage).load()).resolves.toMatchObject({
+    const { logger, store } = createTestStore(test.storage)
+    await expect(store.load()).resolves.toMatchObject({
       selectedKind: 'remote',
       remote: { host: 'legacy.test', port: 6000 }
     })
+    expect(logger.getSnapshot().entries.map(({ event }) => event)).toEqual(
+      expect.arrayContaining([
+        'connection_settings.migration_persist_failed',
+        'connection_settings.migration_succeeded_in_memory',
+        'connection_settings.load_migrated'
+      ])
+    )
   })
 
   it('falls back safely for malformed v2, invalid legacy, or storage failure', async () => {
     const malformedV2 = createStorage({ [CONNECTION_SETTINGS_STORAGE_KEY]: '{broken' })
-    await expect(createConnectionSettingsStore(malformedV2.storage).load()).resolves.toBe(
+    await expect(createTestStore(malformedV2.storage).store.load()).resolves.toBe(
       DEFAULT_CONNECTION_SETTINGS
     )
     expect(malformedV2.getItem).toHaveBeenCalledTimes(1)
@@ -131,14 +165,35 @@ describe('connection settings store', () => {
     const invalidLegacy = createStorage({
       [LEGACY_ENDPOINT_STORAGE_KEY]: '{"host":"bad host","port":0}'
     })
-    await expect(createConnectionSettingsStore(invalidLegacy.storage).load()).resolves.toBe(
+    await expect(createTestStore(invalidLegacy.storage).store.load()).resolves.toBe(
       DEFAULT_CONNECTION_SETTINGS
     )
 
     const failing = createStorage()
     failing.getItem.mockRejectedValueOnce(new Error('Storage unavailable'))
-    await expect(createConnectionSettingsStore(failing.storage).load()).resolves.toBe(
+    await expect(createTestStore(failing.storage).store.load()).resolves.toBe(
       DEFAULT_CONNECTION_SETTINGS
     )
+  })
+
+  it('logs save failures with the full attempted settings and still rejects', async () => {
+    const test = createStorage()
+    const failure = new Error('Storage full')
+    test.setItem.mockRejectedValueOnce(failure)
+    const { logger, store } = createTestStore(test.storage)
+
+    await expect(store.save(DEFAULT_CONNECTION_SETTINGS)).rejects.toBe(failure)
+
+    expect(logger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'connection_settings.save.started',
+      'connection_settings.save.failed'
+    ])
+    expect(logger.getSnapshot().entries[1]?.details).toMatchObject({
+      error: expect.objectContaining({ message: 'Storage full' }),
+      context: expect.objectContaining({
+        settings: DEFAULT_CONNECTION_SETTINGS,
+        storageFailure: expect.objectContaining({ message: 'Storage full' })
+      })
+    })
   })
 })

@@ -4,6 +4,7 @@ import {
   Alert,
   AppState,
   BackHandler,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Pressable,
@@ -65,11 +66,14 @@ import {
   type NativeNvimStatus
 } from './native/nvim'
 import { createRuntimeConnection } from './runtime-connection'
+import { diagnosticLogger } from './diagnostics/logger'
 import type { TabletCapability } from './tablet'
 import { WorkspaceDirectoryPicker } from './workspace/WorkspaceDirectoryPicker'
 
 interface TabletClientProps {
   readonly capability: TabletCapability
+  readonly logsVisible: boolean
+  readonly onOpenLogs: () => void
 }
 
 interface CanvasBounds {
@@ -105,8 +109,16 @@ interface NativeInputTiming {
 const KEYBOARD_COMPACT_THRESHOLD = 120
 const ACTION_PAD_WIDTH = 336
 
-export function TabletClient({ capability }: TabletClientProps) {
-  const [controller] = useState(() => new TabletClientController(createRuntimeConnection))
+export function TabletClient({
+  capability,
+  logsVisible,
+  onOpenLogs
+}: TabletClientProps) {
+  const [controller] = useState(() => new TabletClientController(
+    createRuntimeConnection,
+    undefined,
+    diagnosticLogger
+  ))
   const client = useSyncExternalStore(controller.subscribe, controller.getState, controller.getState)
   const [actionPadStore] = useState(() => new ActionPadConfigStore(
     controller,
@@ -122,6 +134,8 @@ export function TabletClient({ capability }: TabletClientProps) {
   const [initialActionPadButton, setInitialActionPadButton] = useState<ActionPadButtonTarget>()
   const editingActionPadRef = useRef(false)
   const openingActionPadEditor = useRef(false)
+  const openingLogs = useRef(false)
+  const logsVisibleRef = useRef(logsVisible)
   const editControlLongPressTriggered = useRef(false)
   const clientMountedRef = useRef(true)
   const nativeNvimStatusRequest = useRef(0)
@@ -136,6 +150,7 @@ export function TabletClient({ capability }: TabletClientProps) {
   const [nativeNvimStatus, setNativeNvimStatus] = useState<NativeNvimStatus | null>(null)
   const [nativeNvimStatusLoading, setNativeNvimStatusLoading] = useState(true)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
+  const workspacePickerOpenRef = useRef(false)
   const [formError, setFormError] = useState('')
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds>({ width: 0, height: 0 })
   const [screenHeight, setScreenHeight] = useState(capability.height)
@@ -145,9 +160,18 @@ export function TabletClient({ capability }: TabletClientProps) {
   const orderedDispatchEpoch = useRef(0)
   const firstKeyAfterFocus = useRef(false)
 
+  logsVisibleRef.current = logsVisible
+  workspacePickerOpenRef.current = workspacePickerOpen
+
   useEffect(() => {
     let mounted = true
     clientMountedRef.current = true
+    diagnosticLogger.info({
+      category: 'app',
+      event: 'tablet_client.mounted',
+      message: 'Mounted the supported tablet client',
+      details: { capability }
+    })
     actionPadInitialization.current = connectionSettingsStore.load()
       .then(async (settings) => {
         // A connection chosen during startup owns its target and recovery data;
@@ -167,6 +191,19 @@ export function TabletClient({ capability }: TabletClientProps) {
     return () => {
       mounted = false
       clientMountedRef.current = false
+      if (workspacePickerOpenRef.current) {
+        diagnosticLogger.info({
+          category: 'workspace',
+          event: 'picker.unmounted',
+          message: 'Workspace picker unmounted with the tablet client',
+          details: { reason: 'capability-driven-client-unmount' }
+        })
+      }
+      diagnosticLogger.info({
+        category: 'app',
+        event: 'tablet_client.unmounted',
+        message: 'Unmounted the supported tablet client'
+      })
       for (const pending of pendingOrderedInputs.current) {
         if (pending.kind === 'editor-transition') pending.resolve()
       }
@@ -176,16 +213,45 @@ export function TabletClient({ capability }: TabletClientProps) {
 
   const refreshNativeNvimStatus = useCallback(async () => {
     const request = ++nativeNvimStatusRequest.current
+    const startedAtMs = Date.now()
+    diagnosticLogger.debug({
+      category: 'device',
+      event: 'native_status.requested',
+      message: 'Checking native NeoVim capability and file permission',
+      details: { requestId: request }
+    })
     if (clientMountedRef.current) setNativeNvimStatusLoading(true)
     try {
       const status = await getNativeNvimStatus()
       if (clientMountedRef.current && request === nativeNvimStatusRequest.current) {
+        diagnosticLogger.info({
+          category: 'device',
+          event: 'native_status.received',
+          message: 'Native NeoVim status check completed',
+          durationMs: Math.max(0, Date.now() - startedAtMs),
+          details: { requestId: request, status }
+        })
         setNativeNvimStatus(status)
         setNativeNvimStatusLoading(false)
+      } else {
+        diagnosticLogger.debug({
+          category: 'device',
+          event: 'native_status.stale_result',
+          message: 'Ignored a stale native status result',
+          durationMs: Math.max(0, Date.now() - startedAtMs),
+          details: { requestId: request, status }
+        })
       }
-    } catch {
+    } catch (reason) {
       // Unit tests, Expo Go, and an ungenerated native project do not have the
       // optional module. Connection startup will still publish a useful error.
+      diagnosticLogger.warn({
+        category: 'device',
+        event: 'native_status.failed',
+        message: 'Native NeoVim status check failed',
+        durationMs: Math.max(0, Date.now() - startedAtMs),
+        details: { requestId: request, reason }
+      })
       if (clientMountedRef.current && request === nativeNvimStatusRequest.current) {
         setNativeNvimStatus(null)
         setNativeNvimStatusLoading(false)
@@ -254,6 +320,12 @@ export function TabletClient({ capability }: TabletClientProps) {
       void actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
       void controller.connect(target)
     } catch (reason) {
+      diagnosticLogger.warn({
+        category: 'connection',
+        event: 'target.rejected',
+        message: 'Rejected invalid connection details',
+        details: { selectedKind, workspacePath, host, port, reason }
+      })
       setFormError(reason instanceof Error ? reason.message : 'Invalid connection details')
     }
   }, [actionPadStore, client.phase, controller, host, port, selectedKind, workspacePath])
@@ -269,7 +341,7 @@ export function TabletClient({ capability }: TabletClientProps) {
 
   const submitCommittedText = useCallback(
     (text: string, metadata?: CodeyImeEventMetadata) => {
-      if (editingActionPadRef.current) return
+      if (editingActionPadRef.current || openingLogs.current || logsVisibleRef.current) return
       if (text.length === 0) return
       const isFirstKeyAfterFocus = consumeFirstKeyAfterFocus(firstKeyAfterFocus)
       const timing = nativeInputTiming(metadata?.receivedAtUptimeMs)
@@ -295,7 +367,7 @@ export function TabletClient({ capability }: TabletClientProps) {
 
   const submitHardwareKey = useCallback(
     (event: CodeyImeKeyEvent) => {
-      if (editingActionPadRef.current) return
+      if (editingActionPadRef.current || openingLogs.current || logsVisibleRef.current) return
       const isFirstKeyAfterFocus = consumeFirstKeyAfterFocus(firstKeyAfterFocus)
       const timing = nativeInputTiming(event.receivedAtUptimeMs)
       const tags: PerformanceTags = {
@@ -330,7 +402,7 @@ export function TabletClient({ capability }: TabletClientProps) {
   const submitOrderedInput = useCallback(
     (event: CodeyImeOrderedInputEvent) => {
       const pending = pendingOrderedInputs.current.shift()
-      if (editingActionPadRef.current) {
+      if (editingActionPadRef.current || logsVisibleRef.current) {
         if (pending?.kind === 'editor-transition') pending.resolve()
         return
       }
@@ -384,7 +456,10 @@ export function TabletClient({ capability }: TabletClientProps) {
   )
 
   const sendOrderedActionInput = useCallback((keys: string) => {
-    if (selectingActionPadRef.current || editingActionPadRef.current || openingActionPadEditor.current) return
+    if (
+      selectingActionPadRef.current || editingActionPadRef.current ||
+      openingActionPadEditor.current || openingLogs.current || logsVisibleRef.current
+    ) return
     if (keys.length === 0) return
     const startedAtMs = performanceNow()
     const pending = {
@@ -406,26 +481,57 @@ export function TabletClient({ capability }: TabletClientProps) {
         firstKeyAfterFocus: pending.firstKeyAfterFocus
       }
     })
-    void imeRef.current?.sendOrderedInput(keys).catch(() => {
+    void imeRef.current?.sendOrderedInput(keys).catch((reason: unknown) => {
       const index = pendingOrderedInputs.current.indexOf(pending)
       if (index >= 0) pendingOrderedInputs.current.splice(index, 1)
+      diagnosticLogger.error({
+        category: 'ime',
+        event: 'ordered_input.failed',
+        message: 'Failed to send ordered Action Pad input through the IME',
+        details: { keys, reason }
+      })
     })
   }, [])
 
   const submitEditorCellPress = useCallback((position: GridCellPosition) => {
-    if (editingActionPadRef.current || openingActionPadEditor.current) return
+    if (
+      editingActionPadRef.current || openingActionPadEditor.current ||
+      openingLogs.current || logsVisibleRef.current
+    ) return
     const pending: PendingMouseInput = { kind: 'mouse', position }
     pendingOrderedInputs.current.push(pending)
-    void imeRef.current?.settleComposition().catch(() => {
+    void imeRef.current?.settleComposition().catch((reason: unknown) => {
       const index = pendingOrderedInputs.current.indexOf(pending)
       if (index >= 0) pendingOrderedInputs.current.splice(index, 1)
+      diagnosticLogger.error({
+        category: 'ime',
+        event: 'mouse_composition_settlement.failed',
+        message: 'Failed to settle composition before editor mouse input',
+        details: { position, reason }
+      })
     })
   }, [])
 
   const focusKeyboardIme = useCallback(() => {
-    if (selectingActionPadRef.current || editingActionPadRef.current || openingActionPadEditor.current) return
+    if (
+      selectingActionPadRef.current || editingActionPadRef.current ||
+      openingActionPadEditor.current || openingLogs.current || logsVisibleRef.current
+    ) return
     firstKeyAfterFocus.current = true
-    void imeRef.current?.focus().catch(() => undefined)
+    void imeRef.current?.focus().then(() => {
+      diagnosticLogger.info({
+        category: 'ime',
+        event: 'focus.completed',
+        message: 'Focused the editor IME'
+      })
+    }).catch((reason: unknown) => {
+      diagnosticLogger.error({
+        category: 'ime',
+        event: 'focus.failed',
+        message: 'Failed to focus the editor IME',
+        details: { reason }
+      })
+    })
   }, [])
 
   const connected = client.phase === 'connected'
@@ -456,9 +562,15 @@ export function TabletClient({ capability }: TabletClientProps) {
       nativeNvimStatus !== null &&
       (!nativeNvimStatus.supported || !nativeNvimStatus.allFilesAccess)
     ) {
+      diagnosticLogger.warn({
+        category: 'workspace',
+        event: 'picker.permission_closed',
+        message: 'Closed the workspace picker because native access is no longer available',
+        details: { nativeNvimStatus, logsVisible }
+      })
       setWorkspacePickerOpen(false)
     }
-  }, [nativeNvimStatus, workspacePickerOpen])
+  }, [logsVisible, nativeNvimStatus, workspacePickerOpen])
 
   const selectConnectionKind = useCallback((kind: ConnectionTargetKind) => {
     if (connected || connecting || kind === selectedKind) return
@@ -474,14 +586,31 @@ export function TabletClient({ capability }: TabletClientProps) {
       void connectionSettingsStore.save(settings).catch(() => undefined)
       void actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
     } catch (reason) {
+      diagnosticLogger.warn({
+        category: 'settings',
+        event: 'target_kind.rejected',
+        message: 'Rejected a connection-kind change with invalid settings',
+        details: { kind, workspacePath, host, port, reason }
+      })
       setFormError(reason instanceof Error ? reason.message : 'Invalid connection details')
     }
   }, [actionPadStore, connected, connecting, host, port, selectedKind, workspacePath])
 
   const grantAllFilesAccess = useCallback(() => {
     setFormError('')
+    diagnosticLogger.info({
+      category: 'device',
+      event: 'all_files_settings.open_requested',
+      message: 'Opening Android all-files access settings'
+    })
     void openNativeNvimAllFilesSettings()
       .catch((reason: unknown) => {
+        diagnosticLogger.error({
+          category: 'device',
+          event: 'all_files_settings.open_failed',
+          message: 'Could not open Android all-files access settings',
+          details: { reason }
+        })
         setFormError(reason instanceof Error ? reason.message : 'Could not open Android file access settings')
       })
   }, [])
@@ -493,6 +622,20 @@ export function TabletClient({ capability }: TabletClientProps) {
       nativeNvimStatus?.supported !== true ||
       !nativeNvimStatus.allFilesAccess
     ) {
+      diagnosticLogger.warn({
+        category: 'workspace',
+        event: 'selection.rejected',
+        message: 'Rejected a workspace selection because browsing is no longer available',
+        details: {
+          path,
+          selectedKind,
+          connecting,
+          connected,
+          connectionSettingsLoaded,
+          nativeNvimStatusLoading,
+          nativeNvimStatus
+        }
+      })
       setWorkspacePickerOpen(false)
       return
     }
@@ -504,8 +647,27 @@ export function TabletClient({ capability }: TabletClientProps) {
       setWorkspacePath(target.workspacePath)
       setActionPadTarget(target)
       setWorkspacePickerOpen(false)
-      void connectionSettingsStore.save(settings).catch(() => undefined)
+      diagnosticLogger.info({
+        category: 'workspace',
+        event: 'selection.accepted',
+        message: 'Selected a canonical local workspace directory',
+        details: { requestedPath: path, canonicalPath: target.workspacePath }
+      })
+      void connectionSettingsStore.save(settings).catch((reason: unknown) => {
+        diagnosticLogger.error({
+          category: 'workspace',
+          event: 'selection.settings_save_failed',
+          message: 'Selected the workspace but could not persist connection settings',
+          details: { path: target.workspacePath, settings, reason }
+        })
+      })
     } catch (reason) {
+      diagnosticLogger.warn({
+        category: 'workspace',
+        event: 'selection.rejected',
+        message: 'Rejected an invalid workspace directory',
+        details: { path, reason }
+      })
       setFormError(reason instanceof Error ? reason.message : 'Invalid workspace directory')
     }
   }, [
@@ -532,15 +694,128 @@ export function TabletClient({ capability }: TabletClientProps) {
       }
       pendingOrderedInputs.current = []
       firstKeyAfterFocus.current = false
-      void imeRef.current?.blur().catch(() => undefined)
+      void imeRef.current?.blur().then(() => {
+        diagnosticLogger.info({
+          category: 'ime',
+          event: 'blur.completed',
+          message: 'Blurred the editor IME after disconnect'
+        })
+      }).catch((reason: unknown) => {
+        diagnosticLogger.warn({
+          category: 'ime',
+          event: 'blur.failed',
+          message: 'Failed to blur the editor IME after disconnect',
+          details: { reason }
+        })
+      })
     }
   }, [connected])
+
+  const openLogsFromMainToolbar = useCallback(async () => {
+    if (logsVisibleRef.current || openingLogs.current) return
+    openingLogs.current = true
+    try {
+      if (controller.getState().phase === 'connected' && imeRef.current !== null) {
+        let finish!: () => void
+        const dispatched = new Promise<void>((resolve) => { finish = resolve })
+        const pending: PendingEditorTransition = { kind: 'editor-transition', resolve: finish }
+        pendingOrderedInputs.current.push(pending)
+        try {
+          await withOperationalTimeout(
+            imeRef.current.settleComposition().then(() => dispatched),
+            1_500,
+            'Timed out while settling editor composition'
+          )
+          diagnosticLogger.info({
+            category: 'ime',
+            event: 'logs_composition_settlement.completed',
+            message: 'Settled ordered editor composition before opening Logs'
+          })
+        } catch (reason) {
+          const index = pendingOrderedInputs.current.indexOf(pending)
+          if (index >= 0) pendingOrderedInputs.current.splice(index, 1)
+          diagnosticLogger.warn({
+            category: 'ime',
+            event: 'logs_composition_settlement.failed',
+            message: 'Could not completely settle editor composition before opening Logs',
+            details: { reason }
+          })
+        }
+      }
+
+      try {
+        if (imeRef.current !== null) {
+          await withOperationalTimeout(
+            imeRef.current.blur(),
+            1_500,
+            'Timed out while blurring the editor IME'
+          )
+        }
+      } catch (reason) {
+        diagnosticLogger.warn({
+          category: 'ime',
+          event: 'logs_blur.failed',
+          message: 'Could not blur the editor IME before opening Logs',
+          details: { reason }
+        })
+      }
+
+      try {
+        Keyboard.dismiss()
+      } catch (reason) {
+        diagnosticLogger.warn({
+          category: 'ime',
+          event: 'logs_keyboard_dismiss.failed',
+          message: 'Could not dismiss the ordinary keyboard before opening Logs',
+          details: { reason }
+        })
+      }
+
+      diagnosticLogger.info({
+        category: 'app',
+        event: 'logs.opened',
+        message: 'Opened the in-app logs viewer from the main toolbar',
+        details: { source: 'main-toolbar' }
+      })
+      onOpenLogs()
+    } finally {
+      openingLogs.current = false
+    }
+  }, [controller, onOpenLogs])
+
+  const openLogsFromActionPadEditor = useCallback(() => {
+    Keyboard.dismiss()
+    diagnosticLogger.info({
+      category: 'app',
+      event: 'logs.opened',
+      message: 'Opened the in-app logs viewer from the Action Pad editor',
+      details: { source: 'action-pad-editor' }
+    })
+    onOpenLogs()
+  }, [onOpenLogs])
+
+  const openLogsFromWorkspacePicker = useCallback(() => {
+    Keyboard.dismiss()
+    diagnosticLogger.info({
+      category: 'app',
+      event: 'logs.opened',
+      message: 'Opened the in-app logs viewer from the workspace picker',
+      details: { source: 'workspace-picker' }
+    })
+    onOpenLogs()
+  }, [onOpenLogs])
 
   const openActionPadEditor = useCallback(async (
     initialButton?: ActionPadButtonTarget,
     source = actionPadStore.getState()
   ) => {
     if (openingActionPadEditor.current || editingActionPadRef.current) return
+    const openOperation = diagnosticLogger.operation({
+      category: 'action-pad',
+      event: 'action_pad.editor_open',
+      message: 'Opening the Action Pad editor',
+      details: { initialButton, source }
+    })
     const selectionVersion = actionPadSelectionVersion.current
     const canOpen = () => {
       if (!clientMountedRef.current) return false
@@ -562,7 +837,12 @@ export function TabletClient({ capability }: TabletClientProps) {
       // opening immediately after launch cannot replace recovered edits.
       await actionPadInitialization.current
       await actionPadStore.selectEndpoint(actionPadStore.getState().endpoint)
-      if (!canOpen()) return
+      if (!canOpen()) {
+        openOperation.cancellation({
+          message: 'Action Pad editor opening was superseded during recovery'
+        })
+        return
+      }
       // Finish the editor's existing composition before giving ordinary form
       // inputs focus. The configuration screen never shares the Neovim IME.
       if (controller.getState().phase === 'connected' && imeRef.current !== null) {
@@ -573,23 +853,69 @@ export function TabletClient({ capability }: TabletClientProps) {
         try {
           await imeRef.current.settleComposition()
           await settled
-        } catch {
+          openOperation.checkpoint({
+            event: 'action_pad.editor_composition_settled',
+            message: 'Settled editor composition before opening the Action Pad editor'
+          })
+        } catch (reason) {
           const index = pendingOrderedInputs.current.indexOf(pending)
           if (index >= 0) pendingOrderedInputs.current.splice(index, 1)
-          throw new Error('Could not settle editor input before opening the Action Pad editor.')
+          const failure = new Error(
+            'Could not settle editor input before opening the Action Pad editor.',
+            { cause: reason }
+          )
+          diagnosticLogger.error({
+            category: 'ime',
+            event: 'action_pad_composition_settlement.failed',
+            message: failure.message,
+            operationId: openOperation.id,
+            details: { initialButton, reason }
+          })
+          throw failure
         }
       }
-      if (!canOpen()) return
+      if (!canOpen()) {
+        openOperation.cancellation({
+          message: 'Action Pad editor opening was superseded after composition settlement'
+        })
+        return
+      }
       editingActionPadRef.current = true
-      await imeRef.current?.blur()
+      try {
+        await imeRef.current?.blur()
+        openOperation.checkpoint({
+          event: 'action_pad.editor_ime_blurred',
+          message: 'Blurred the editor IME before opening the Action Pad editor'
+        })
+      } catch (reason) {
+        diagnosticLogger.error({
+          category: 'ime',
+          event: 'action_pad_blur.failed',
+          message: 'Failed to blur the editor IME before opening the Action Pad editor',
+          operationId: openOperation.id,
+          details: { reason }
+        })
+        throw reason
+      }
       if (!canOpen()) {
         editingActionPadRef.current = false
+        openOperation.cancellation({
+          message: 'Action Pad editor opening was superseded after IME blur'
+        })
         return
       }
       setFormError('')
       setInitialActionPadButton(initialButton)
       setEditingActionPad(true)
+      openOperation.success({
+        message: 'Opened the Action Pad editor',
+        details: { initialButton, endpoint: actionPadStore.getState().endpoint }
+      })
     } catch (reason) {
+      openOperation.failure(reason, {
+        message: 'Could not open the Action Pad editor',
+        details: { initialButton }
+      })
       editingActionPadRef.current = false
       if (clientMountedRef.current) {
         setFormError(reason instanceof Error ? reason.message : 'Could not open the Action Pad editor')
@@ -609,6 +935,12 @@ export function TabletClient({ capability }: TabletClientProps) {
     const state = actionPadStore.getState()
     if (state.busy) return
     const close = () => {
+      diagnosticLogger.info({
+        category: 'action-pad',
+        event: 'action_pad.editor_closed',
+        message: 'Closed the Action Pad editor',
+        details: { dirty: actionPadStore.getState().dirty }
+      })
       setEditingActionPad(false)
       setInitialActionPadButton(undefined)
       editingActionPadRef.current = false
@@ -706,7 +1038,14 @@ export function TabletClient({ capability }: TabletClientProps) {
       ]}
       testID="tablet-client-screen"
     >
-      <View style={[styles.toolbar, compactControls && styles.keyboardCompactToolbar]}>
+      <View
+        style={[
+          styles.toolbar,
+          !expanded && styles.condensedToolbar,
+          compactControls && styles.keyboardCompactToolbar
+        ]}
+        testID="main-toolbar"
+      >
         <View style={styles.brandBlock}>
           <Text style={styles.brand}>CODEY</Text>
           <View style={[styles.statusDot, statusDotStyle(client.phase)]} />
@@ -722,6 +1061,7 @@ export function TabletClient({ capability }: TabletClientProps) {
               onPress={() => selectConnectionKind(kind)}
               style={[
                 styles.targetButton,
+                !expanded && styles.condensedTargetButton,
                 selectedKind === kind && styles.targetButtonSelected
               ]}
             >
@@ -778,7 +1118,11 @@ export function TabletClient({ capability }: TabletClientProps) {
               onChangeText={setHost}
               placeholder="Host"
               placeholderTextColor="#65717e"
-              style={[styles.input, styles.hostInput]}
+              style={[
+                styles.input,
+                styles.hostInput,
+                !expanded && styles.condensedHostInput
+              ]}
               value={host}
             />
             <TextInput
@@ -789,7 +1133,11 @@ export function TabletClient({ capability }: TabletClientProps) {
               onChangeText={setPort}
               placeholder="Port"
               placeholderTextColor="#65717e"
-              style={[styles.input, styles.portInput]}
+              style={[
+                styles.input,
+                styles.portInput,
+                !expanded && styles.condensedPortInput
+              ]}
               value={port}
             />
           </>
@@ -800,6 +1148,7 @@ export function TabletClient({ capability }: TabletClientProps) {
           onPress={connected || !localNeedsFilesAccess ? toggleConnection : grantAllFilesAccess}
           style={({ pressed }) => [
             styles.connectionButton,
+            !expanded && styles.condensedConnectionButton,
             connected && styles.disconnectButton,
             pressed && styles.pressed,
             (connecting || localUnavailable.length > 0) && styles.disabled
@@ -815,12 +1164,22 @@ export function TabletClient({ capability }: TabletClientProps) {
             ? 'Allow all-files access for the local workspace'
             : client.message)}
         </Text>
+        <Pressable
+          accessibilityLabel="Open logs"
+          accessibilityRole="button"
+          onPress={() => { void openLogsFromMainToolbar() }}
+          style={({ pressed }) => [styles.logsButton, pressed && styles.pressed]}
+          testID="main-open-logs"
+        >
+          <Text style={styles.logsButtonText}>Logs</Text>
+        </Pressable>
       </View>
 
       {workspacePickerOpen ? (
         <WorkspaceDirectoryPicker
           initialPath={workspacePath}
           onCancel={() => setWorkspacePickerOpen(false)}
+          onOpenLogs={openLogsFromWorkspacePicker}
           onSelect={selectWorkspaceDirectory}
         />
       ) : null}
@@ -873,7 +1232,9 @@ export function TabletClient({ capability }: TabletClientProps) {
           <ActionPad
             compact={compactControls}
             enabled={connected}
-            interactionMode={editingActionPad ? 'suspended' : selectingActionPad ? 'selection' : 'normal'}
+            interactionMode={editingActionPad || logsVisible || openingLogs.current
+              ? 'suspended'
+              : selectingActionPad ? 'selection' : 'normal'}
             mode={mode}
             onEditButton={editActionPadButton}
             onInput={sendOrderedActionInput}
@@ -975,6 +1336,7 @@ export function TabletClient({ capability }: TabletClientProps) {
             onIdDraftsChange={changeActionPadIds}
             onExport={exportActionPad}
             onLoad={loadActionPad}
+            onOpenLogs={openLogsFromActionPadEditor}
             onReconnectAndCheck={actionPadState.pendingSavePath === null ? undefined : reconnectAndCheckActionPadSave}
             onSave={saveActionPad}
             onStopWaiting={stopWaitingForActionPad}
@@ -1105,6 +1467,22 @@ function nativeInputTiming(receivedAtUptimeMs: number | undefined): NativeInputT
   }
 }
 
+function withOperationalTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (reason: unknown) => {
+        clearTimeout(timer)
+        reject(reason)
+      }
+    )
+  })
+}
+
 function statusDotStyle(phase: string) {
   if (phase === 'connected') return styles.statusConnected
   if (phase === 'connecting') return styles.statusConnecting
@@ -1203,6 +1581,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8
   },
+  condensedToolbar: {
+    gap: 5
+  },
   keyboardCompactToolbar: {
     minHeight: 40
   },
@@ -1254,6 +1635,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 5
   },
+  condensedTargetButton: {
+    minWidth: 50,
+    paddingHorizontal: 4
+  },
   targetButtonSelected: { backgroundColor: '#293442' },
   targetButtonText: { color: '#8c99a8', fontSize: 12, fontWeight: '600' },
   targetButtonTextSelected: { color: '#eef4fa' },
@@ -1282,6 +1667,8 @@ const styles = StyleSheet.create({
   workspaceBrowseButtonText: { color: '#b4caff', fontSize: 12, fontWeight: '600' },
   hostInput: { width: 190 },
   portInput: { width: 82 },
+  condensedHostInput: { width: 104 },
+  condensedPortInput: { width: 68 },
   connectionButton: {
     minWidth: 112,
     height: 38,
@@ -1293,6 +1680,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: '#7ee787'
   },
+  condensedConnectionButton: {
+    minWidth: 88,
+    paddingHorizontal: 10
+  },
   disconnectButton: { backgroundColor: '#f2cc60' },
   connectionButtonText: { color: '#0b0e12', fontSize: 14, fontWeight: '700' },
   disabled: { opacity: 0.65 },
@@ -1302,6 +1693,22 @@ const styles = StyleSheet.create({
     flex: 1,
     color: '#9eabb8',
     fontSize: 13
+  },
+  logsButton: {
+    height: 38,
+    minWidth: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: '#465262',
+    borderRadius: 8,
+    backgroundColor: '#1b2030'
+  },
+  logsButtonText: {
+    color: '#c5d9f2',
+    fontSize: 12,
+    fontWeight: '700'
   },
   error: { color: '#ff7b72' },
   editorFrame: {

@@ -125,7 +125,7 @@ function props(overrides: Partial<ActionPadEditorProps> = {}): ActionPadEditorPr
     config: config(), onChange: jest.fn(), connected: true, busy: false, dirty: false,
     sourcePath: '~/.config/nvim/codey/action-pad.yaml', message: '',
     onLoad: jest.fn().mockResolvedValue(undefined), onSave: jest.fn().mockResolvedValue(undefined),
-    onExport: jest.fn().mockResolvedValue(undefined), onCancel: jest.fn(),
+    onExport: jest.fn().mockResolvedValue(undefined), onCancel: jest.fn(), onOpenLogs: jest.fn(),
     initialButton: { menuId: 'home', groupId: 'actions', buttonId: 'input' },
     ...overrides
   }
@@ -176,6 +176,18 @@ function emitLayout(screen: ReturnType<typeof render>, testID: string, y: number
 }
 
 describe('ActionPadEditor', () => {
+  it('opens Logs from the editor header without cancelling the editor', () => {
+    const onOpenLogs = jest.fn()
+    const onCancel = jest.fn()
+    const screen = renderEditor({ onOpenLogs, onCancel })
+
+    fireEvent.press(screen.getByRole('button', { name: 'Logs' }))
+
+    expect(onOpenLogs).toHaveBeenCalledTimes(1)
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(screen.getByTestId('action-pad-editor')).toBeTruthy()
+  })
+
   it('opens general entry in Manage menus while a targeted entry opens Button settings', () => {
     const general = renderEditor({ initialButton: undefined })
     expect(general.getByTestId('action-pad-menu-manager')).toBeTruthy()

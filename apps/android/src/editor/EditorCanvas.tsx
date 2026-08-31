@@ -22,6 +22,7 @@ import type {
 } from '@codey/editor-core'
 
 import type { PublishedPerformanceSample } from '../controller'
+import { diagnosticLogger } from '../diagnostics/logger'
 import {
   useCodeySkiaFontFaces,
   type CodeySkiaFontFaces,
@@ -219,6 +220,7 @@ interface CommittedGridPictureOptions {
  */
 function useCommittedGridFonts(fontLoadState: CodeySkiaFontLoadState): GridFontResource | null {
   const [resource, setResource] = useState<GridFontResource | null>(null)
+  const fallbackLogged = useRef(false)
 
   useLayoutEffect(() => {
     if (fontLoadState.status === 'pending') return
@@ -227,12 +229,30 @@ function useCommittedGridFonts(fontLoadState: CodeySkiaFontLoadState): GridFontR
     if (fontLoadState.status === 'ready') {
       try {
         created = createBundledFontResource(fontLoadState.fonts)
-      } catch {
+      } catch (reason) {
         // A loaded face without a usable typeface is a real load failure. Keep
         // the editor usable with the previous device-font behavior.
+        if (!fallbackLogged.current) {
+          fallbackLogged.current = true
+          diagnosticLogger.warn({
+            category: 'renderer',
+            event: 'font.bundled_typeface_failed',
+            message: 'Bundled editor typefaces were unusable; using the system monospace fallback',
+            details: { reason }
+          })
+        }
         created = createSystemFontResource()
       }
     } else {
+      if (!fallbackLogged.current) {
+        fallbackLogged.current = true
+        diagnosticLogger.warn({
+          category: 'renderer',
+          event: 'font.system_fallback_selected',
+          message: 'Using the system monospace fallback after bundled font load failure',
+          details: { error: fontLoadState.error }
+        })
+      }
       created = createSystemFontResource()
     }
     setResource(created)

@@ -15,6 +15,7 @@ import {
 
 import { CODEY_NERD_FONT_FAMILIES, useCodeyNerdFontFaces } from '../fonts'
 import type { ConnectionFailure } from '../controller'
+import { diagnosticLogger } from '../diagnostics/logger'
 import { type NerdFontIcon } from '../fonts/nerd-font-icons'
 import { ActionButtonLabel } from './ActionButtonLabel'
 import { NerdFontIconPicker } from './NerdFontIconPicker'
@@ -71,6 +72,7 @@ export interface ActionPadEditorProps {
   readonly onSave: (path: string) => Promise<void>
   readonly onExport: (path: string) => Promise<void>
   readonly onCancel: () => void
+  readonly onOpenLogs: () => void
   readonly onStopWaiting?: () => void
   readonly onReconnectAndCheck?: () => void
   readonly initialButton?: ActionPadButtonTarget
@@ -144,6 +146,7 @@ export function ActionPadEditor({
   onSave,
   onExport,
   onCancel,
+  onOpenLogs,
   onStopWaiting,
   onReconnectAndCheck,
   initialButton,
@@ -154,6 +157,15 @@ export function ActionPadEditor({
   const { width } = useWindowDimensions()
   const wide = width >= 900
   const [fontLoaded, fontError] = useCodeyNerdFontFaces()
+  useEffect(() => {
+    if (fontError === null) return
+    diagnosticLogger.warn({
+      category: 'renderer',
+      event: 'font.action_pad_load_failed',
+      message: 'Bundled Action Pad font loading failed; icon previews are unavailable',
+      details: { fontError }
+    })
+  }, [fontError])
   // Resolve only at entry. Subsequent edits use the existing selection, and a
   // loaded or saved document still resets to its root below.
   const [initialButtonLocation] = useState(() => findInitialButton(config, initialButton))
@@ -559,6 +571,7 @@ export function ActionPadEditor({
           <Text accessibilityRole="header" style={styles.title}>Edit Action Pad</Text>
           <Text style={styles.muted}>{dirty || hasPendingIds ? 'Unsaved changes' : 'No unsaved changes'} · {connected ? 'Host connected' : 'Offline editing'}</Text>
         </View>
+        <EditorButton label="Logs" onPress={onOpenLogs} />
         <EditorButton disabled={busy} label="Cancel" onPress={onCancel} />
         <EditorButton
           disabled={!canWrite || hostPath.length === 0}

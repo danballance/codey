@@ -8,6 +8,16 @@ import {
 } from '@codey/perf'
 
 import {
+  diagnosticLogger,
+  type DiagnosticLogger,
+  type DiagnosticOperation
+} from '../diagnostics/logger'
+import {
+  attachDiagnosticCause,
+  diagnosticOriginOf,
+  markDiagnosticOrigin
+} from '../diagnostics/origin'
+import {
   getNativeTcp,
   type NativeSubscription,
   type NativeTcpCloseEvent,
@@ -22,6 +32,11 @@ export interface ExpoTcpTransportOptions {
   readonly connectTimeoutMs?: number
 }
 
+export interface TcpTransportDiagnosticContext {
+  readonly generation?: number
+  readonly operationId?: string
+}
+
 type TransportState = 'idle' | 'connecting' | 'connected' | 'closing' | 'closed'
 
 type EarlyEvent =
@@ -31,6 +46,8 @@ type EarlyEvent =
 export class ExpoTcpTransport implements DuplexTransport {
   readonly #module: NativeTcpModule
   readonly #options: Required<ExpoTcpTransportOptions>
+  readonly #logger: DiagnosticLogger
+  readonly #diagnosticContext: TcpTransportDiagnosticContext
   readonly #dataListeners = new Set<(chunk: Uint8Array) => void>()
   readonly #closeListeners = new Set<(error?: Error) => void>()
 
@@ -41,10 +58,17 @@ export class ExpoTcpTransport implements DuplexTransport {
   #writeTail: Promise<void> = Promise.resolve()
   #subscriptions: NativeSubscription[] = []
   #earlyEvents: EarlyEvent[] = []
+  #terminalError: Error | undefined
   #didNotifyClose = false
   #explicitClose = false
+  #openOperation: DiagnosticOperation | undefined
 
-  public constructor(options: ExpoTcpTransportOptions, module?: NativeTcpModule) {
+  public constructor(
+    options: ExpoTcpTransportOptions,
+    module?: NativeTcpModule,
+    logger: DiagnosticLogger = diagnosticLogger,
+    diagnosticContext: TcpTransportDiagnosticContext = {}
+  ) {
     const host = options.host.trim()
     if (host.length === 0) throw new TypeError('TCP host must not be empty')
     if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) {
@@ -56,6 +80,8 @@ export class ExpoTcpTransport implements DuplexTransport {
     }
     this.#module = module ?? getNativeTcp()
     this.#options = { host, port: options.port, connectTimeoutMs }
+    this.#logger = logger
+    this.#diagnosticContext = diagnosticContext
   }
 
   public connect(): Promise<void> {
@@ -66,9 +92,42 @@ export class ExpoTcpTransport implements DuplexTransport {
     }
 
     this.#state = 'connecting'
-    this.#subscribe()
-    this.#connectPromise = this.#module
-      .open(this.#options.host, this.#options.port, this.#options.connectTimeoutMs)
+    this.#openOperation = this.#logger.operation({
+      category: 'transport',
+      event: 'transport.tcp.open',
+      message: 'Opening the remote TCP transport',
+      parentOperationId: this.#diagnosticContext.operationId,
+      details: { ...this.#diagnosticContext, ...this.#options }
+    })
+    let nativeOpen: Promise<number>
+    try {
+      this.#subscribe()
+      nativeOpen = this.#module.open(
+        this.#options.host,
+        this.#options.port,
+        this.#options.connectTimeoutMs
+      )
+    } catch (reason) {
+      const error = toError(reason, 'TCP connection failed')
+      const observedOrigin = diagnosticOriginOf(error)
+      if (observedOrigin === undefined) markDiagnosticOrigin(error, 'transport.tcp.open')
+      const cleanupFailures = this.#terminate(error)
+      this.#openOperation.failure(
+        observedOrigin === undefined ? error : originObservedError(observedOrigin), {
+        message: 'Remote TCP transport failed to open',
+        details: {
+          ...this.#diagnosticContext,
+          ...this.#options,
+          cleanupFailures,
+          ...(observedOrigin === undefined
+            ? {}
+            : originSummary(observedOrigin, error))
+        }
+      })
+      this.#connectPromise = Promise.reject(error)
+      return this.#connectPromise
+    }
+    this.#connectPromise = Promise.resolve(nativeOpen)
       .then(async (connectionId) => {
         if (!Number.isSafeInteger(connectionId) || connectionId < 1) {
           throw new Error('Native TCP module returned an invalid connection ID')
@@ -80,12 +139,45 @@ export class ExpoTcpTransport implements DuplexTransport {
         this.#state = 'connected'
         this.#drainEarlyEvents()
         if (this.#state !== 'connected') {
-          throw new Error('TCP connection closed while it was being established')
+          throw this.#terminalError ?? new Error(
+            'TCP connection closed while it was being established'
+          )
         }
+        this.#openOperation?.success({
+          message: 'Remote TCP transport opened',
+          details: { ...this.#diagnosticContext, ...this.#options, connectionId }
+        })
       })
       .catch((reason: unknown) => {
         const error = toError(reason, 'TCP connection failed')
-        this.#terminate(this.#explicitClose ? undefined : error)
+        if (this.#explicitClose) {
+          const cleanupFailures = this.#terminate()
+          this.#openOperation?.cancellation({
+            message: 'Remote TCP transport was closed while opening',
+            details: {
+              ...this.#diagnosticContext,
+              ...this.#options,
+              reason: error,
+              cleanupFailures
+            }
+          })
+        } else {
+          const observedOrigin = diagnosticOriginOf(error)
+          if (observedOrigin === undefined) markDiagnosticOrigin(error, 'transport.tcp.open')
+          const cleanupFailures = this.#terminate(error)
+          this.#openOperation?.failure(
+            observedOrigin === undefined ? error : originObservedError(observedOrigin), {
+            message: 'Remote TCP transport failed to open',
+            details: {
+              ...this.#diagnosticContext,
+              ...this.#options,
+              cleanupFailures,
+              ...(observedOrigin === undefined
+                ? {}
+                : originSummary(observedOrigin, error))
+            }
+          })
+        }
         throw error
       })
     return this.#connectPromise
@@ -135,8 +227,44 @@ export class ExpoTcpTransport implements DuplexTransport {
     })
     this.#writeTail = operation.catch((reason: unknown) => {
       const error = withNativeCode(toError(reason, 'TCP write failed'), 'E_TCP_WRITE')
-      this.#terminate(this.#explicitClose ? undefined : error)
-      if (!this.#explicitClose) void this.#module.close(connectionId).catch(() => undefined)
+      markDiagnosticOrigin(error, 'transport.tcp.write')
+      this.#logger.error({
+        category: 'transport',
+        event: 'transport.tcp.write_failed',
+        message: 'Failed to write to the remote TCP transport',
+        operationId: this.#diagnosticContext.operationId,
+        details: {
+          ...this.#diagnosticContext,
+          host: this.#options.host,
+          port: this.#options.port,
+          connectionId,
+          bytes,
+          error
+        }
+      })
+      const cleanupFailures = this.#terminate(this.#explicitClose ? undefined : error)
+      if (cleanupFailures.length > 0) {
+        this.#logger.warn({
+          category: 'transport',
+          event: 'transport.tcp.write_cleanup_failed',
+          message: 'TCP write failure cleanup did not complete cleanly',
+          operationId: this.#diagnosticContext.operationId,
+          details: { ...this.#diagnosticContext, connectionId, cleanupFailures }
+        })
+      }
+      if (!this.#explicitClose) {
+        void Promise.resolve().then(() => this.#module.close(connectionId)).catch(
+          (closeReason: unknown) => {
+          this.#logger.warn({
+            category: 'transport',
+            event: 'transport.tcp.failure_cleanup_failed',
+            message: 'Could not close the native TCP socket after a write failure',
+            operationId: this.#diagnosticContext.operationId,
+            details: { ...this.#diagnosticContext, connectionId, closeReason }
+          })
+          }
+        )
+      }
     })
     return operation
   }
@@ -152,7 +280,7 @@ export class ExpoTcpTransport implements DuplexTransport {
   }
 
   public close(): Promise<void> {
-    if (this.#state === 'closed') return Promise.resolve()
+    if (this.#state === 'closed') return this.#closePromise ?? Promise.resolve()
     if (this.#state === 'closing') return this.#closePromise!
     if (this.#state === 'idle') {
       this.#explicitClose = true
@@ -163,27 +291,75 @@ export class ExpoTcpTransport implements DuplexTransport {
 
     this.#explicitClose = true
     this.#state = 'closing'
+    const closeOperation = this.#logger.operation({
+      category: 'transport',
+      event: 'transport.tcp.close',
+      message: 'Closing the remote TCP transport',
+      parentOperationId: this.#diagnosticContext.operationId,
+      details: {
+        ...this.#diagnosticContext,
+        host: this.#options.host,
+        port: this.#options.port,
+        connectionId: this.#connectionId
+      }
+    })
     this.#closePromise = (async () => {
       await this.#connectPromise?.catch(() => undefined)
       const connectionId = this.#connectionId
+      let nativeCloseFailure: unknown
       if (connectionId !== undefined) {
         // Close the socket before waiting on any write: the socket is what
         // interrupts a native write blocked by a stalled peer. The write tail
         // deliberately remains detached and already owns its rejection.
-        await this.#module.close(connectionId).catch(() => undefined)
+        try {
+          await this.#module.close(connectionId)
+        } catch (reason) {
+          nativeCloseFailure = reason
+        }
       }
       this.#state = 'closed'
-      this.#unsubscribe()
-      this.#notifyClose()
+      const cleanupFailures = this.#unsubscribe()
+      cleanupFailures.push(...this.#notifyClose())
+      if (nativeCloseFailure !== undefined || cleanupFailures.length > 0) {
+        const failure = toError(
+          nativeCloseFailure ?? cleanupFailures[0],
+          'TCP transport closed with cleanup failures'
+        )
+        markDiagnosticOrigin(failure, 'transport.tcp.close')
+        closeOperation.failure(failure, {
+          event: 'transport.tcp.close.partial_failure',
+          message: 'Remote TCP transport closed with native cleanup failures',
+          details: {
+            ...this.#diagnosticContext,
+            connectionId,
+            nativeCloseFailure,
+            cleanupFailures,
+            closed: true
+          }
+        })
+        throw failure
+      } else {
+        closeOperation.success({ message: 'Closed the remote TCP transport' })
+      }
     })()
     return this.#closePromise
   }
 
   #subscribe(): void {
-    this.#subscriptions = [
-      this.#module.addListener('data', (event) => this.#receiveData(event)),
-      this.#module.addListener('close', (event) => this.#receiveClose(event))
-    ]
+    const subscriptions: NativeSubscription[] = []
+    try {
+      subscriptions.push(this.#module.addListener('data', (event) => this.#receiveData(event)))
+      subscriptions.push(this.#module.addListener('close', (event) => this.#receiveClose(event)))
+      this.#subscriptions = subscriptions
+    } catch (reason) {
+      this.#subscriptions = subscriptions
+      const cleanupFailures = this.#unsubscribe()
+      const error = toError(reason, 'Failed to subscribe to native TCP events')
+      if (cleanupFailures.length > 0) {
+        Object.assign(error, { subscriptionCleanupFailures: cleanupFailures })
+      }
+      throw error
+    }
   }
 
   #receiveData(event: NativeTcpDataEvent): void {
@@ -203,11 +379,30 @@ export class ExpoTcpTransport implements DuplexTransport {
       if (this.#state === 'connecting') this.#earlyEvents.push({ kind: 'close', event })
       return
     }
-    if (event.connectionId !== this.#connectionId) return
-    const error = this.#state === 'closing'
+    if (event.connectionId !== this.#connectionId || this.#state === 'closed') return
+    const error = this.#state === 'closing' || this.#explicitClose
       ? undefined
-      : event.message || event.code ? nativeCloseError(event) : undefined
-    this.#terminate(error)
+      : nativeCloseError(event)
+    if (error !== undefined) {
+      markDiagnosticOrigin(error, 'transport.tcp.close')
+      this.#logger.error({
+        category: 'transport',
+        event: 'transport.tcp.unexpected_close',
+        message: 'Remote TCP transport closed unexpectedly',
+        operationId: this.#diagnosticContext.operationId,
+        details: { ...this.#diagnosticContext, nativeEvent: event, error }
+      })
+    }
+    const cleanupFailures = this.#terminate(error)
+    if (cleanupFailures.length > 0) {
+      this.#logger.warn({
+        category: 'transport',
+        event: 'transport.tcp.close_cleanup_failed',
+        message: 'Unexpected TCP close cleanup did not complete cleanly',
+        operationId: this.#diagnosticContext.operationId,
+        details: { ...this.#diagnosticContext, nativeEvent: event, cleanupFailures }
+      })
+    }
   }
 
   #drainEarlyEvents(): void {
@@ -219,23 +414,41 @@ export class ExpoTcpTransport implements DuplexTransport {
     }
   }
 
-  #terminate(error?: Error): void {
-    if (this.#state === 'closed') return
+  #terminate(error?: Error): unknown[] {
+    if (this.#state === 'closed') return []
+    this.#terminalError = error
     this.#state = 'closed'
-    this.#unsubscribe()
-    this.#notifyClose(error)
+    const cleanupFailures = this.#unsubscribe()
+    cleanupFailures.push(...this.#notifyClose(error))
+    return cleanupFailures
   }
 
-  #unsubscribe(): void {
-    for (const subscription of this.#subscriptions) subscription.remove()
+  #unsubscribe(): unknown[] {
+    const failures: unknown[] = []
+    for (const subscription of this.#subscriptions) {
+      try {
+        subscription.remove()
+      } catch (reason) {
+        failures.push(reason)
+      }
+    }
     this.#subscriptions = []
     this.#earlyEvents = []
+    return failures
   }
 
-  #notifyClose(error?: Error): void {
-    if (this.#didNotifyClose) return
+  #notifyClose(error?: Error): unknown[] {
+    if (this.#didNotifyClose) return []
     this.#didNotifyClose = true
-    for (const listener of [...this.#closeListeners]) listener(error)
+    const failures: unknown[] = []
+    for (const listener of [...this.#closeListeners]) {
+      try {
+        listener(error)
+      } catch (reason) {
+        failures.push(reason)
+      }
+    }
+    return failures
   }
 }
 
@@ -255,7 +468,24 @@ function withNativeCode(error: Error, code: string): Error {
 
 function toError(reason: unknown, fallback: string): Error {
   if (reason instanceof Error) return reason
+  if (typeof reason === 'object' && reason !== null) {
+    const message = (reason as { readonly message?: unknown }).message
+    return attachDiagnosticCause(
+      new Error(typeof message === 'string' && message.length > 0 ? message : fallback),
+      reason
+    )
+  }
   return new Error(typeof reason === 'string' && reason.length > 0 ? reason : fallback)
+}
+
+function originObservedError(origin: string): Error {
+  const error = new Error(`Operational failure was already recorded by ${origin}`)
+  error.name = 'DiagnosticOriginObserved'
+  return error
+}
+
+function originSummary(origin: string, error: Error) {
+  return { observedOrigin: origin, errorName: error.name, errorMessage: error.message }
 }
 
 function recordNativeReadPerformance(event: NativeTcpDataEvent, byteLength: number): void {

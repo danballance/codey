@@ -30,6 +30,12 @@ import {
   validateConnectionTarget,
   type ConnectionTarget
 } from './connection-target'
+import {
+  diagnosticLogger,
+  type DiagnosticLogger,
+  type DiagnosticOperation
+} from './diagnostics/logger'
+import { diagnosticOriginOf } from './diagnostics/origin'
 import type { Endpoint } from './endpoint'
 import { sameGridSize, type GridSize } from './grid'
 
@@ -85,9 +91,18 @@ export interface MobileSession {
 export interface ConnectionResources {
   readonly transport: DuplexTransport
   readonly session: MobileSession
+  readonly disposeDiagnostics?: () => void
 }
 
-export type ConnectionFactory = (target: ConnectionTarget) => ConnectionResources
+export interface ConnectionDiagnosticContext {
+  readonly generation: number
+  readonly operationId: string
+}
+
+export type ConnectionFactory = (
+  target: ConnectionTarget,
+  diagnostics?: ConnectionDiagnosticContext
+) => ConnectionResources
 
 export type ConnectionTargetInput = ConnectionTarget | Endpoint
 
@@ -99,6 +114,7 @@ export interface FrameScheduler {
 interface ActiveConnection extends ConnectionResources {
   readonly generation: number
   readonly target: ConnectionTarget
+  readonly connectOperation: DiagnosticOperation
   editorState: EditorState
   ready: boolean
   closing: boolean
@@ -110,6 +126,7 @@ interface ActiveConnection extends ConnectionResources {
   publicationFrame: number | null
   removeRedrawListener: () => void
   removeCloseListener: () => void
+  removeDiagnosticListeners: () => void
 }
 
 const INITIAL_GRID: GridSize = Object.freeze({ columns: 80, rows: 24 })
@@ -124,6 +141,7 @@ export class TabletClientController {
   readonly #listeners = new Set<() => void>()
   readonly #factory: ConnectionFactory
   readonly #frameScheduler: FrameScheduler
+  readonly #logger: DiagnosticLogger
 
   #state: ClientState = {
     phase: 'disconnected',
@@ -144,10 +162,12 @@ export class TabletClientController {
 
   public constructor(
     factory: ConnectionFactory,
-    frameScheduler: FrameScheduler = ANDROID_FRAME_SCHEDULER
+    frameScheduler: FrameScheduler = ANDROID_FRAME_SCHEDULER,
+    logger: DiagnosticLogger = diagnosticLogger
   ) {
     this.#factory = factory
     this.#frameScheduler = frameScheduler
+    this.#logger = logger
   }
 
   public getState = (): ClientState => this.#state
@@ -161,14 +181,47 @@ export class TabletClientController {
     this.#assertUsable()
     const target = normalizeConnectionTarget(input)
     const generation = this.#nextGeneration++
+    const connectOperation = this.#logger.operation({
+      category: 'connection',
+      event: 'connection.connect',
+      message: 'Establishing a Neovim connection',
+      details: { generation, target }
+    })
     this.#latestConnectRequest = generation
-    await this.#closeActive(false)
-    if (this.#disposed || generation !== this.#latestConnectRequest) return
+    try {
+      await this.#closeActive(false)
+    } catch (reason) {
+      connectOperation.failure(reason, {
+        message: 'Could not safely close the previous Neovim connection',
+        details: { generation, target }
+      })
+      if (!this.#disposed) this.#setError(reason, 'Could not close the previous connection')
+      return
+    }
+    if (this.#disposed || generation !== this.#latestConnectRequest) {
+      connectOperation.cancellation({
+        message: 'Connection creation was superseded before resources were created',
+        details: { generation, disposed: this.#disposed, latestGeneration: this.#latestConnectRequest }
+      })
+      return
+    }
 
     let resources: ConnectionResources
     try {
-      resources = this.#factory(target)
+      resources = this.#factory(target, {
+        generation,
+        operationId: connectOperation.id
+      })
+      connectOperation.checkpoint({
+        event: 'connection.resources.created',
+        message: 'Created connection resources',
+        details: { generation, target }
+      })
     } catch (reason) {
+      connectOperation.failure(reason, {
+        message: 'Could not create Android connection resources',
+        details: { generation, target }
+      })
       this.#setError(reason, 'Could not create the Android connection')
       return
     }
@@ -177,6 +230,7 @@ export class TabletClientController {
       ...resources,
       generation,
       target,
+      connectOperation,
       editorState: createEditorState(),
       ready: false,
       closing: false,
@@ -187,7 +241,8 @@ export class TabletClientController {
       pendingPublicationSamples: [],
       publicationFrame: null,
       removeRedrawListener: () => undefined,
-      removeCloseListener: () => undefined
+      removeCloseListener: () => undefined,
+      removeDiagnosticListeners: resources.disposeDiagnostics ?? (() => undefined)
     }
     this.#active = connection
     this.#replaceState({
@@ -200,24 +255,62 @@ export class TabletClientController {
       performanceSamples: EMPTY_PERFORMANCE_SAMPLES
     })
 
-    connection.removeRedrawListener = connection.session.onRedraw((batch) => {
-      this.#receiveRedraw(connection, batch)
-    })
-    connection.removeCloseListener = connection.transport.onClose((error) => {
-      this.#receiveClose(connection, error)
-    })
-
     try {
-      await connection.session.connect()
+      const removeRedrawListener = connection.session.onRedraw((batch) => {
+        this.#receiveRedraw(connection, batch)
+      })
+      if (connection.closing) {
+        this.#releaseObserver(connection, 'redraw', removeRedrawListener)
+      } else {
+        connection.removeRedrawListener = removeRedrawListener
+      }
+
+      const removeCloseListener = connection.transport.onClose((error) => {
+        this.#receiveClose(connection, error)
+      })
+      if (connection.closing) {
+        this.#releaseObserver(connection, 'transport-close', removeCloseListener)
+      } else {
+        connection.removeCloseListener = removeCloseListener
+      }
+
       if (!this.#isCurrent(connection)) {
-        await this.#closeConnection(connection)
+        connectOperation.failure(this.#state.connectionFailure, {
+          message: 'The Neovim connection closed while observers were being registered',
+          details: { generation, target }
+        })
+        await this.#closeConnection(connection).catch(() => undefined)
+        return
+      }
+
+      await connection.session.connect()
+      connectOperation.checkpoint({
+        event: 'connection.session.connected',
+        message: 'Connected the MessagePack-RPC session',
+        details: { generation }
+      })
+      if (!this.#isCurrent(connection)) {
+        connectOperation.cancellation({
+          message: 'Connection was superseded after session connect',
+          details: { generation, latestGeneration: this.#latestConnectRequest }
+        })
+        await this.#closeConnection(connection).catch(() => undefined)
         return
       }
 
       const attachGrid = this.#state.gridSize
       await connection.session.attach(attachGrid.columns, attachGrid.rows)
+      connectOperation.checkpoint({
+        event: 'connection.session.attached',
+        message: 'Attached the Neovim UI session',
+        details: { generation, grid: attachGrid }
+      })
       if (!this.#isCurrent(connection)) {
-        await this.#closeConnection(connection)
+        connectOperation.cancellation({
+          message: 'Connection was superseded after session attach',
+          details: { generation, latestGeneration: this.#latestConnectRequest }
+        })
+        await this.#closeConnection(connection).catch(() => undefined)
         return
       }
 
@@ -230,25 +323,64 @@ export class TabletClientController {
           : `Connected to ${remoteTargetAddress(target)}`,
         connectionFailure: null
       })
+      connectOperation.success({
+        message: 'Neovim connection is ready',
+        details: { generation, target, grid: attachGrid }
+      })
 
       const latestGrid = this.#state.gridSize
       if (!sameGridSize(attachGrid, latestGrid)) {
         await this.#scheduleResize(connection, latestGrid)
       }
     } catch (reason) {
-      if (!this.#isCurrent(connection)) {
-        await this.#closeConnection(connection)
+      if (!this.#isCurrent(connection) && (
+        this.#disposed || generation !== this.#latestConnectRequest
+      )) {
+        connectOperation.cancellation({
+          message: 'Connection failed after it was superseded',
+          details: {
+            generation,
+            latestGeneration: this.#latestConnectRequest,
+            reason: diagnosticReason(reason)
+          }
+        })
+        await this.#closeConnection(connection).catch(() => undefined)
         return
       }
-      await this.#closeConnection(connection)
+      connectOperation.failure(diagnosticReason(reason), {
+        message: 'Neovim connection failed',
+        details: {
+          generation,
+          target,
+          origin: diagnosticOriginOf(reason)
+        }
+      })
+      await this.#closeConnection(connection).catch(() => undefined)
       if (!this.#disposed) this.#setError(reason, 'Connection failed')
     }
   }
 
   public async disconnect(): Promise<void> {
     if (this.#disposed) return
+    const active = this.#active
+    const operation = this.#logger.operation({
+      category: 'connection',
+      event: 'connection.disconnect',
+      message: 'Disconnecting the active Neovim session',
+      parentOperationId: active?.connectOperation.id,
+      details: active === null ? { active: false } : {
+        active: true,
+        generation: active.generation,
+        target: active.target
+      }
+    })
     this.#latestConnectRequest = this.#nextGeneration++
-    await this.#closeActive(true)
+    try {
+      await this.#closeActive(true)
+      operation.success({ message: 'Disconnected the Neovim session' })
+    } catch (reason) {
+      operation.failure(reason, { message: 'Neovim disconnect cleanup failed' })
+    }
   }
 
   public async input(keys: string): Promise<void> {
@@ -283,6 +415,17 @@ export class TabletClientController {
       await inputPromise
     } catch (reason) {
       if (this.#isCurrent(connection)) {
+        this.#logger.error({
+          category: 'ime',
+          event: 'input.write_failed',
+          message: 'Neovim input failed and the connection will close',
+          operationId: connection.connectOperation.id,
+          details: {
+            generation: connection.generation,
+            keys,
+            reason: diagnosticReason(reason)
+          }
+        })
         await this.#failConnection(connection, reason, 'Input failed')
       }
     }
@@ -296,6 +439,17 @@ export class TabletClientController {
       await connection.session.inputMouse(mouse)
     } catch (reason) {
       if (this.#isCurrent(connection)) {
+        this.#logger.error({
+          category: 'ime',
+          event: 'mouse.write_failed',
+          message: 'Neovim mouse input failed and the connection will close',
+          operationId: connection.connectOperation.id,
+          details: {
+            generation: connection.generation,
+            mouse,
+            reason: diagnosticReason(reason)
+          }
+        })
         await this.#failConnection(connection, reason, 'Mouse input failed')
       }
     }
@@ -357,10 +511,37 @@ export class TabletClientController {
 
   public dispose(): Promise<void> {
     if (this.#disposed) return this.#disposePromise ?? Promise.resolve()
+    const active = this.#active
+    const operation = this.#logger.operation({
+      category: 'connection',
+      event: 'connection.controller_dispose',
+      message: 'Disposing the tablet connection controller',
+      parentOperationId: active?.connectOperation.id,
+      details: active === null ? { active: false } : {
+        active: true,
+        generation: active.generation,
+        target: active.target
+      }
+    })
     this.#disposed = true
     this.#latestConnectRequest = this.#nextGeneration++
     this.#listeners.clear()
-    this.#disposePromise = this.#closeActive(false)
+    this.#disposePromise = (async () => {
+      try {
+        await this.#closeActive(false)
+        operation.success({ message: 'Disposed the tablet connection controller' })
+      } catch (reason) {
+        operation.failure(reason, { message: 'Tablet connection controller disposal failed' })
+      } finally {
+        this.#replaceState({
+          phase: 'disconnected',
+          message: 'Disposed',
+          connectionFailure: null,
+          snapshot: null,
+          performanceSamples: EMPTY_PERFORMANCE_SAMPLES
+        })
+      }
+    })()
     return this.#disposePromise
   }
 
@@ -382,13 +563,44 @@ export class TabletClientController {
       if (!this.#isCurrent(connection) || !connection.ready) continue
       if (connection.attachedGrid !== null && sameGridSize(connection.attachedGrid, size)) continue
 
+      const resizeOperation = this.#logger.operation({
+        category: 'rpc',
+        event: 'rpc.resize',
+        message: 'Resizing the attached Neovim UI',
+        parentOperationId: connection.connectOperation.id,
+        details: {
+          generation: connection.generation,
+          previousGrid: connection.attachedGrid,
+          requestedGrid: size
+        }
+      })
       try {
         await connection.session.resize(size.columns, size.rows)
-        if (this.#isCurrent(connection)) connection.attachedGrid = size
+        if (this.#isCurrent(connection)) {
+          connection.attachedGrid = size
+          resizeOperation.success({
+            message: 'Resized the attached Neovim UI',
+            details: { generation: connection.generation, grid: size }
+          })
+        } else {
+          resizeOperation.cancellation({
+            message: 'Resize result arrived after the connection changed',
+            details: { generation: connection.generation, grid: size }
+          })
+        }
       } catch (reason) {
         if (this.#isCurrent(connection)) {
+          resizeOperation.failure(diagnosticReason(reason), {
+            message: 'Failed to resize the Neovim UI',
+            details: { generation: connection.generation, grid: size }
+          })
           this.#pendingResize = null
           await this.#failConnection(connection, reason, 'Resize failed')
+        } else {
+          resizeOperation.cancellation({
+            message: 'Resize failed after the connection changed',
+            details: { generation: connection.generation, grid: size, reason }
+          })
         }
       }
     }
@@ -489,7 +701,21 @@ export class TabletClientController {
   #receiveClose(connection: ActiveConnection, error?: Error): void {
     if (!this.#isCurrent(connection)) return
     const connectionFailure = connectionFailureOf(error, 'Neovim connection closed')
-    void this.#closeConnection(connection)
+    this.#logger.error({
+      category: connection.target.kind === 'local' ? 'nvim' : 'transport',
+      event: connection.target.kind === 'local'
+        ? 'nvim.process.unexpected_exit'
+        : 'transport.unexpected_close',
+      message: error?.message ?? 'Neovim connection closed unexpectedly',
+      operationId: connection.connectOperation.id,
+      details: {
+        generation: connection.generation,
+        target: connection.target,
+        failure: connectionFailure,
+        error: diagnosticReason(error)
+      }
+    })
+    void this.#closeConnection(connection).catch(() => undefined)
     this.#replaceState({
       phase: 'error',
       message: error?.message
@@ -506,26 +732,35 @@ export class TabletClientController {
     reason: unknown,
     fallback: string
   ): Promise<void> {
-    await this.#closeConnection(connection)
+    await this.#closeConnection(connection).catch(() => undefined)
     if (!this.#disposed) this.#setError(reason, fallback)
   }
 
   async #closeActive(reportDisconnected: boolean): Promise<void> {
-    const connection = this.#active
-    if (connection !== null) {
-      await this.#closeConnection(connection)
-    } else {
-      await this.#closeInFlight
+    let failed = false
+    let failure: unknown
+    try {
+      const connection = this.#active
+      if (connection !== null) {
+        await this.#closeConnection(connection)
+      } else {
+        await this.#closeInFlight
+      }
+    } catch (reason) {
+      failed = true
+      failure = reason
+    } finally {
+      if (reportDisconnected && !this.#disposed) {
+        this.#replaceState({
+          phase: 'disconnected',
+          message: 'Disconnected',
+          connectionFailure: null,
+          snapshot: null,
+          performanceSamples: EMPTY_PERFORMANCE_SAMPLES
+        })
+      }
     }
-    if (reportDisconnected && !this.#disposed) {
-      this.#replaceState({
-        phase: 'disconnected',
-        message: 'Disconnected',
-        connectionFailure: null,
-        snapshot: null,
-        performanceSamples: EMPTY_PERFORMANCE_SAMPLES
-      })
-    }
+    if (failed) throw failure
   }
 
   async #closeConnection(connection: ActiveConnection): Promise<void> {
@@ -543,20 +778,55 @@ export class TabletClientController {
     this.#detach(connection)
     const closePromise = Promise.resolve()
       .then(() => connection.session.close())
-      .catch(() => {
-        // A remote close may have already torn the transport down.
+      .catch((reason: unknown) => {
+        this.#logger.warn({
+          category: 'connection',
+          event: 'connection.cleanup_failed',
+          message: 'Connection cleanup failed while closing the Neovim session',
+          operationId: connection.connectOperation.id,
+          details: { generation: connection.generation, target: connection.target, reason }
+        })
+        throw reason
       })
     connection.closePromise = closePromise
     this.#closeInFlight = closePromise
-    await closePromise
-    if (this.#closeInFlight === closePromise) this.#closeInFlight = null
+    try {
+      await closePromise
+    } finally {
+      if (this.#closeInFlight === closePromise) this.#closeInFlight = null
+    }
   }
 
   #detach(connection: ActiveConnection): void {
-    connection.removeRedrawListener()
-    connection.removeCloseListener()
+    const observers = [
+      ['redraw', connection.removeRedrawListener],
+      ['transport-close', connection.removeCloseListener],
+      ['diagnostics', connection.removeDiagnosticListeners]
+    ] as const
+    for (const [observer, remove] of observers) {
+      this.#releaseObserver(connection, observer, remove)
+    }
     connection.removeRedrawListener = () => undefined
     connection.removeCloseListener = () => undefined
+    connection.removeDiagnosticListeners = () => undefined
+  }
+
+  #releaseObserver(
+    connection: ActiveConnection,
+    observer: 'redraw' | 'transport-close' | 'diagnostics',
+    remove: () => void
+  ): void {
+    try {
+      remove()
+    } catch (reason) {
+      this.#logger.warn({
+        category: 'connection',
+        event: 'connection.observer_detach_failed',
+        message: `Failed to release the ${observer} observer`,
+        operationId: connection.connectOperation.id,
+        details: { generation: connection.generation, observer, reason }
+      })
+    }
   }
 
   #cancelPendingSnapshot(connection: ActiveConnection): void {
@@ -704,5 +974,15 @@ function connectionFailureOf(reason: unknown, fallback: string): ConnectionFailu
     message: error?.message || fallback,
     ...(nativeCode === undefined ? {} : { nativeCode }),
     ...(error?.message ? { nativeMessage: error.message } : {})
+  }
+}
+
+function diagnosticReason(reason: unknown): unknown {
+  const origin = diagnosticOriginOf(reason)
+  if (origin === undefined || !(reason instanceof Error)) return reason
+  return {
+    alreadyLoggedAt: origin,
+    name: reason.name,
+    message: reason.message
   }
 }

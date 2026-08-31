@@ -1,8 +1,12 @@
-import { StyleSheet, Text, View } from 'react-native'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 
 import { MIN_TABLET_SHORTEST_SIDE_DP } from './tablet'
 
-export function UnsupportedDeviceScreen() {
+export interface UnsupportedDeviceScreenProps {
+  readonly onOpenLogs: () => void
+}
+
+export function UnsupportedDeviceScreen({ onOpenLogs }: UnsupportedDeviceScreenProps) {
   return (
     <View style={styles.screen} testID="unsupported-device-screen">
       <View style={styles.card}>
@@ -13,6 +17,13 @@ export function UnsupportedDeviceScreen() {
           {` ${MIN_TABLET_SHORTEST_SIDE_DP}dp`}. Portrait, square, and phone-sized windows
           cannot start an editor session.
         </Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onOpenLogs}
+          style={({ pressed }) => [styles.logsButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.logsButtonText}>Open Logs</Text>
+        </Pressable>
       </View>
     </View>
   )
@@ -51,5 +62,24 @@ const styles = StyleSheet.create({
     color: '#a9b4c0',
     fontSize: 16,
     lineHeight: 24
+  },
+  logsButton: {
+    alignSelf: 'flex-start',
+    marginTop: 22,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: '#3d4b5c',
+    borderRadius: 8,
+    backgroundColor: '#1b2330'
+  },
+  logsButtonText: {
+    color: '#dbe8f6',
+    fontSize: 14,
+    fontWeight: '700'
+  },
+  pressed: {
+    opacity: 0.75
   }
 })

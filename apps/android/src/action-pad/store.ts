@@ -7,6 +7,11 @@ import type {
 } from '@codey/nvim-session'
 
 import { DEFAULT_ENDPOINT, type Endpoint } from '../endpoint'
+import {
+  diagnosticLogger,
+  type DiagnosticLogger,
+  type DiagnosticOperation
+} from '../diagnostics/logger'
 import { DEFAULT_ACTION_PAD_CONFIG } from './config'
 import {
   ACTION_PAD_CONFIG_MAX_BYTES,
@@ -108,11 +113,15 @@ interface OperationContext {
   readonly generation: number
   readonly connectionGeneration: number
   readonly endpoint: Endpoint
+  readonly diagnostics: DiagnosticOperation
+  readonly rawLifecycle: Record<string, unknown>
 }
 
 interface ActiveRun {
   readonly id: number
   readonly cancel: () => void
+  readonly diagnostics: DiagnosticOperation
+  readonly rawLifecycle: Record<string, unknown>
 }
 
 type OperationOutcome =
@@ -137,6 +146,7 @@ export class ActionPadConfigStore {
   readonly #listeners = new Set<() => void>()
   readonly #documents: ActionPadHostDocuments
   readonly #storage: RecoveryStorage
+  readonly #logger: DiagnosticLogger
   #state: ActionPadStoreState
   #baseline: DocumentBaseline | null = null
   #pendingSave: PendingSave | null = null
@@ -154,10 +164,12 @@ export class ActionPadConfigStore {
   constructor(
     documents: ActionPadHostDocuments,
     storage: RecoveryStorage = AsyncStorage,
-    initialEndpoint: Endpoint = DEFAULT_ENDPOINT
+    initialEndpoint: Endpoint = DEFAULT_ENDPOINT,
+    logger: DiagnosticLogger = diagnosticLogger
   ) {
     this.#documents = documents
     this.#storage = storage
+    this.#logger = logger
     this.#state = initialState(initialEndpoint)
   }
 
@@ -184,11 +196,29 @@ export class ActionPadConfigStore {
   }
 
   async #restore(endpoint: Endpoint, generation: number): Promise<void> {
+    const operation = this.#logger.operation({
+      category: 'action-pad',
+      event: 'action_pad.recovery_restore',
+      message: 'Restoring the local Action Pad recovery record',
+      details: { endpoint, generation, storageKey: actionPadStorageKey(endpoint) }
+    })
     try {
       await this.#writeTail
       const raw = await this.#storage.getItem(actionPadStorageKey(endpoint))
-      if (generation !== this.#generation) return
-      if (raw === null || raw === undefined) return
+      if (generation !== this.#generation) {
+        operation.cancellation({
+          message: 'Ignored Action Pad recovery from a superseded endpoint',
+          details: { endpoint, generation, currentGeneration: this.#generation, raw }
+        })
+        return
+      }
+      if (raw === null || raw === undefined) {
+        operation.success({
+          message: 'No local Action Pad recovery record was present',
+          details: { endpoint, generation, found: false }
+        })
+        return
+      }
       // Several bounded representations may coexist in the recovery envelope.
       if (raw.length > ACTION_PAD_CONFIG_MAX_BYTES * 5) throw new Error('Recovery data is too large')
       const record = parseRecovery(JSON.parse(raw))
@@ -211,7 +241,15 @@ export class ActionPadConfigStore {
             ? notice('info', 'Recovered unsaved edits.', 'Save when connected, or Cancel to keep or discard them.')
             : notice('info', 'Using the cached configuration until the host is connected.')
       })
+      operation.success({
+        message: 'Restored the local Action Pad recovery record',
+        details: { endpoint, generation, raw, record, dirty }
+      })
     } catch (reason) {
+      operation.failure(reason, {
+        message: 'Could not restore the local Action Pad recovery record',
+        details: { endpoint, generation }
+      })
       if (generation === this.#generation) {
         this.#set({
           notice: notice('error', `Could not restore the local configuration. Using the starter. ${messageOf(reason)}`)
@@ -224,7 +262,22 @@ export class ActionPadConfigStore {
 
   async setConnected(connected: boolean): Promise<void> {
     const changed = connected !== this.#state.connected
-    if (changed) this.#connectionGeneration += 1
+    if (changed) {
+      this.#connectionGeneration += 1
+      this.#logger.info({
+        category: 'action-pad',
+        event: 'action_pad.connection_changed',
+        message: connected
+          ? 'Action Pad host file operations are connected'
+          : 'Action Pad host file operations are disconnected',
+        details: {
+          connected,
+          endpoint: this.#state.endpoint,
+          connectionGeneration: this.#connectionGeneration,
+          activeOperation: this.#state.operation
+        }
+      })
+    }
     if (!connected && this.#activeRun !== null) {
       this.#cancelActiveOperation(
         this.#state.operation?.writeStarted
@@ -268,6 +321,7 @@ export class ActionPadConfigStore {
       if (path.length === 0) {
         this.#updateOperation(context, { phase: 'checking-host-file' })
         path = await this.#documents.defaultActionPadPath(context.endpoint)
+        context.rawLifecycle.defaultActionPadPath = path
         this.#assertCurrent(context)
         this.#set({ sourcePath: path })
         this.#updateOperation(context, { path })
@@ -287,6 +341,7 @@ export class ActionPadConfigStore {
       const editVersion = this.#editVersion
       this.#updateOperation(context, { phase: 'checking-host-file', path })
       const document = await this.#documents.readHostDocument(context.endpoint, path)
+      context.rawLifecycle.readDocument = document
       this.#assertCurrent(context)
       if (editVersion !== this.#editVersion) return
       if (document.text === null) {
@@ -355,6 +410,7 @@ export class ActionPadConfigStore {
       const editVersion = this.#editVersion
       this.#updateOperation(context, { phase: 'checking-host-file', path: requiredPath })
       const document = await this.#documents.readHostDocument(context.endpoint, requiredPath)
+      context.rawLifecycle.readDocument = document
       this.#assertCurrent(context)
       if (document.text === null) throw new Error('That host file does not exist. Use Save to create a file.')
       const config = parseActionPadConfig(document.text)
@@ -368,6 +424,12 @@ export class ActionPadConfigStore {
 
   async save(path: string): Promise<void> {
     if (this.#pendingSave !== null) {
+      this.#logger.warn({
+        category: 'action-pad',
+        event: 'action_pad.save_blocked_unconfirmed',
+        message: 'Blocked a save while a previous save remains unconfirmed',
+        details: { requestedPath: path, pendingSave: this.#pendingSave, endpoint: this.#state.endpoint }
+      })
       this.#set({
         notice: notice('warning', `A save to ${this.#pendingSave.path} was not confirmed.`,
           'Use Reconnect & check save before another Save. No write was sent.', {
@@ -387,6 +449,7 @@ export class ActionPadConfigStore {
         phase: 'checking-host-file', path: requiredPath, byteCount
       })
       const current = await this.#documents.readHostDocument(context.endpoint, requiredPath)
+      context.rawLifecycle.readDocument = current
       this.#assertCurrent(context)
 
       const baseline = this.#baseline?.path === current.path ? this.#baseline : null
@@ -408,6 +471,7 @@ export class ActionPadConfigStore {
         expectedRevision: baseline?.revision ?? null,
         expectedResolvedPath: current.resolvedPath
       }
+      context.rawLifecycle.writeRequest = request
       this.#pendingSave = { ...baselineOf(current), text }
       await this.#persist()
       this.#assertCurrent(context)
@@ -415,6 +479,7 @@ export class ActionPadConfigStore {
       const writing = this.#documents.writeHostDocument(context.endpoint, request)
       this.#updateOperation(context, { phase: 'awaiting-confirmation' })
       const written = await writing
+      context.rawLifecycle.writeDocument = written
       this.#assertCurrent(context)
       if (written.text !== text || written.revision === null) {
         throw new Error('The host did not confirm the complete save. Your draft is retained; reconcile before retrying.')
@@ -442,6 +507,7 @@ export class ActionPadConfigStore {
         phase: 'checking-host-file', path: requiredPath, byteCount
       })
       const current = await this.#documents.readHostDocument(context.endpoint, requiredPath)
+      context.rawLifecycle.readDocument = current
       this.#assertCurrent(context)
       if (
         current.path === this.#state.sourcePath ||
@@ -449,21 +515,32 @@ export class ActionPadConfigStore {
       ) {
         throw new Error('Export must use a different file. Use Save to update the active configuration.')
       }
-      if (current.text !== null && !await confirmOverwrite(current.path)) {
-        this.#assertCurrent(context)
-        this.#set({ notice: notice('info', 'Export canceled. No file was changed.') })
-        return
+      if (current.text !== null) {
+        const confirmed = await confirmOverwrite(current.path)
+        context.rawLifecycle.overwriteConfirmation = { path: current.path, confirmed }
+        if (!confirmed) {
+          this.#assertCurrent(context)
+          context.diagnostics.cancellation({
+            message: 'Action Pad export was cancelled at overwrite confirmation',
+            details: { requestedPath: path, current, rawLifecycle: context.rawLifecycle }
+          })
+          this.#set({ notice: notice('info', 'Export canceled. No file was changed.') })
+          return
+        }
       }
       this.#assertCurrent(context)
       this.#updateOperation(context, { phase: 'writing', writeStarted: true })
-      const writing = this.#documents.writeHostDocument(context.endpoint, {
+      const request: HostDocumentWrite = {
         path: current.path,
         text,
         expectedRevision: current.revision,
         expectedResolvedPath: current.resolvedPath
-      })
+      }
+      context.rawLifecycle.writeRequest = request
+      const writing = this.#documents.writeHostDocument(context.endpoint, request)
       this.#updateOperation(context, { phase: 'awaiting-confirmation' })
       const written = await writing
+      context.rawLifecycle.writeDocument = written
       this.#assertCurrent(context)
       if (written.text !== text || written.revision === null) {
         throw new Error('Export was not confirmed. Check the destination before retrying.')
@@ -486,6 +563,8 @@ export class ActionPadConfigStore {
       if (pending === null) return
       this.#updateOperation(context, { phase: 'checking-host-file', path: pending.path })
       const current = await this.#documents.readHostDocument(context.endpoint, pending.path)
+      context.rawLifecycle.pendingSave = pending
+      context.rawLifecycle.readDocument = current
       this.#assertCurrent(context)
 
       if (current.path !== pending.path) {
@@ -557,8 +636,22 @@ export class ActionPadConfigStore {
     path: string,
     operation: (context: OperationContext) => Promise<void>
   ): Promise<void> {
-    if (this.#state.busy) return
+    if (this.#state.busy) {
+      this.#logger.debug({
+        category: 'action-pad',
+        event: 'action_pad.operation_ignored_busy',
+        message: 'Ignored an Action Pad host operation while another operation is active',
+        details: { requestedKind: kind, requestedPath: path, activeOperation: this.#state.operation }
+      })
+      return
+    }
     if (!this.#state.connected) {
+      this.#logger.warn({
+        category: 'action-pad',
+        event: 'action_pad.operation_blocked_disconnected',
+        message: 'Blocked an Action Pad host operation while disconnected',
+        details: { kind, path, endpoint: this.#state.endpoint }
+      })
       this.#set({
         notice: notice('error', 'Connect to the Neovim host to load, save, export, or reconcile.',
           'Your draft is kept locally.')
@@ -567,11 +660,31 @@ export class ActionPadConfigStore {
     }
 
     const id = ++this.#operationSequence
+    const diagnostics = this.#logger.operation({
+      category: 'action-pad',
+      event: `action_pad.${kind}`,
+      message: `Running Action Pad ${kind}`,
+      details: {
+        id,
+        path,
+        endpoint: this.#state.endpoint,
+        generation: this.#generation,
+        connectionGeneration: this.#connectionGeneration,
+        sourcePath: this.#state.sourcePath,
+        pendingSave: this.#pendingSave,
+        baseline: this.#baseline,
+        activeConfig: this.#state.activeConfig,
+        draft: this.#state.draft,
+        idDrafts: this.#state.idDrafts
+      }
+    })
     const context: OperationContext = {
       id,
       generation: this.#generation,
       connectionGeneration: this.#connectionGeneration,
-      endpoint: this.#state.endpoint
+      endpoint: this.#state.endpoint,
+      diagnostics,
+      rawLifecycle: {}
     }
     const operationState: ActionPadOperation = {
       id,
@@ -586,11 +699,17 @@ export class ActionPadConfigStore {
     const cancellation = new Promise<OperationOutcome>((resolve) => {
       cancel = () => resolve({ status: 'cancelled' })
     })
-    this.#activeRun = { id, cancel }
+    this.#activeRun = { id, cancel, diagnostics, rawLifecycle: context.rawLifecycle }
     this.#set({ busy: true, operation: operationState, notice: null })
     this.#slowTimer = setTimeout(() => {
       if (this.#activeRun?.id !== id || this.#state.operation?.id !== id) return
       this.#set({ operation: { ...this.#state.operation, slow: true } })
+      diagnostics.checkpoint({
+        event: `action_pad.${kind}.slow`,
+        message: `Action Pad ${kind} is taking longer than expected`,
+        level: 'warn',
+        details: { operation: this.#state.operation, endpoint: context.endpoint }
+      })
     }, SLOW_OPERATION_MS)
 
     const work: Promise<OperationOutcome> = Promise.resolve()
@@ -606,10 +725,33 @@ export class ActionPadConfigStore {
     this.#clearActiveRun(id)
     if (outcome.status === 'failed') {
       const failureNotice = operationFailureNotice(outcome.reason, finalOperation)
-      warnOperationFailure(failureNotice)
+      diagnostics.failure(outcome.reason, {
+        message: `Action Pad ${kind} failed`,
+        details: {
+          operation: finalOperation,
+          endpoint: context.endpoint,
+          notice: failureNotice,
+          pendingSave: this.#pendingSave,
+          rawLifecycle: context.rawLifecycle
+        }
+      })
       this.#set({ busy: false, operation: null, notice: failureNotice })
       void this.#persist()
     } else {
+      diagnostics.success({
+        message: `Action Pad ${kind} completed`,
+        details: {
+          operation: finalOperation,
+          endpoint: context.endpoint,
+          sourcePath: this.#state.sourcePath,
+          pendingSave: this.#pendingSave,
+          baseline: this.#baseline,
+          notice: this.#state.notice,
+          activeConfig: this.#state.activeConfig,
+          draft: this.#state.draft,
+          rawLifecycle: context.rawLifecycle
+        }
+      })
       this.#set({ busy: false, operation: null })
     }
     void this.#refreshIfNeeded()
@@ -622,7 +764,13 @@ export class ActionPadConfigStore {
     this.#assertCurrent(context)
     const current = this.#state.operation
     if (current === null || current.id !== context.id) throw new Error('The host operation is no longer active.')
-    this.#set({ operation: { ...current, ...change } })
+    const next = { ...current, ...change }
+    this.#set({ operation: next })
+    context.diagnostics.checkpoint({
+      event: `action_pad.${current.kind}.phase`,
+      message: `Action Pad ${current.kind} entered ${next.phase}`,
+      details: { previous: current, operation: next, endpoint: context.endpoint }
+    })
   }
 
   #cancelActiveOperation(summary: string, recommendedAction: string): void {
@@ -632,6 +780,15 @@ export class ActionPadConfigStore {
     if (operation.kind === 'save' && !operation.writeStarted) this.#pendingSave = null
     this.#clearSlowTimer()
     this.#activeRun = null
+    active.diagnostics.cancellation({
+      message: summary,
+      details: {
+        operation,
+        endpoint: this.#state.endpoint,
+        recommendedAction,
+        rawLifecycle: active.rawLifecycle
+      }
+    })
     active.cancel()
     this.#set({
       busy: false,
@@ -645,6 +802,14 @@ export class ActionPadConfigStore {
     const active = this.#activeRun
     this.#clearSlowTimer()
     this.#activeRun = null
+    active?.diagnostics.cancellation({
+      message: 'Action Pad operation was superseded by an endpoint change',
+      details: {
+        operation: this.#state.operation,
+        endpoint: this.#state.endpoint,
+        rawLifecycle: active.rawLifecycle
+      }
+    })
     active?.cancel()
   }
 
@@ -707,6 +872,12 @@ export class ActionPadConfigStore {
           this.#set({ recoveryNotice: null })
         }
       } catch (reason) {
+        this.#logger.error({
+          category: 'action-pad',
+          event: 'action_pad.recovery_persist_failed',
+          message: 'Could not persist the local Action Pad recovery record',
+          details: { generation, currentGeneration: this.#generation, key, record, encoded, reason }
+        })
         if (generation === this.#generation) {
           this.#set({
             recoveryNotice: notice('warning', `Local recovery could not be stored: ${messageOf(reason)}`,
@@ -890,23 +1061,6 @@ function errorChain(reason: unknown): readonly unknown[] {
     current = (current as { readonly cause?: unknown }).cause
   }
   return chain
-}
-
-function warnOperationFailure(failure: ActionPadNotice): void {
-  if (typeof __DEV__ === 'undefined' || !__DEV__) return
-  const details = failure.details
-  if (details?.hostErrorCode === undefined && details?.socketCode === undefined) return
-  // Deliberately closed metadata: never include YAML, labels, commands, or typed input.
-  console.warn('Action Pad host operation failed', {
-    operation: details?.operation,
-    phase: details?.phase,
-    durationMs: details?.durationMs,
-    path: details?.path,
-    byteCount: details?.byteCount,
-    hostErrorCode: details?.hostErrorCode,
-    hostStage: details?.hostStage,
-    socketCode: details?.socketCode
-  })
 }
 
 function baselineOf(document: HostDocument): DocumentBaseline {

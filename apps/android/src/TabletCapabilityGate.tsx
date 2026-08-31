@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react'
 
-import { UnsupportedDeviceScreen } from './UnsupportedDeviceScreen'
 import type { TabletCapability } from './tablet'
 
 interface TabletCapabilityGateProps {
   readonly capability: TabletCapability
   readonly renderSupported: () => ReactNode
+  readonly renderUnsupported: () => ReactNode
 }
 
 /**
@@ -15,9 +15,10 @@ interface TabletCapabilityGateProps {
  */
 export function TabletCapabilityGate({
   capability,
-  renderSupported
+  renderSupported,
+  renderUnsupported
 }: TabletCapabilityGateProps) {
   return capability.layout === 'unsupported'
-    ? <UnsupportedDeviceScreen />
+    ? renderUnsupported()
     : renderSupported()
 }

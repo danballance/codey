@@ -1,6 +1,16 @@
 import type { DuplexTransport } from '@codey/transport'
 
 import {
+  diagnosticLogger,
+  type DiagnosticLogger,
+  type DiagnosticOperation
+} from '../diagnostics/logger'
+import {
+  attachDiagnosticCause,
+  diagnosticOriginOf,
+  markDiagnosticOrigin
+} from '../diagnostics/origin'
+import {
   getNativeNvim,
   type NativeNvimDataEvent,
   type NativeNvimExitEvent,
@@ -10,6 +20,11 @@ import {
 
 export interface ExpoNvimProcessTransportOptions {
   readonly workspacePath: string
+}
+
+export interface NvimTransportDiagnosticContext {
+  readonly generation?: number
+  readonly operationId?: string
 }
 
 type TransportState = 'idle' | 'starting' | 'connected' | 'closing' | 'closed'
@@ -31,6 +46,8 @@ interface NvimExitError extends NativeCodedError {
 export class ExpoNvimProcessTransport implements DuplexTransport {
   readonly #module: NativeNvimModule
   readonly #workspacePath: string
+  readonly #logger: DiagnosticLogger
+  readonly #diagnosticContext: NvimTransportDiagnosticContext
   readonly #dataListeners = new Set<(chunk: Uint8Array) => void>()
   readonly #closeListeners = new Set<(error?: Error) => void>()
 
@@ -45,10 +62,13 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
   #terminalError: Error | undefined
   #didNotifyClose = false
   #explicitClose = false
+  #openOperation: DiagnosticOperation | undefined
 
   public constructor(
     options: ExpoNvimProcessTransportOptions,
-    module?: NativeNvimModule
+    module?: NativeNvimModule,
+    logger: DiagnosticLogger = diagnosticLogger,
+    diagnosticContext: NvimTransportDiagnosticContext = {}
   ) {
     const workspacePath = options.workspacePath.trim()
     if (workspacePath.length === 0) {
@@ -56,6 +76,8 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
     }
     this.#module = module ?? getNativeNvim()
     this.#workspacePath = workspacePath
+    this.#logger = logger
+    this.#diagnosticContext = diagnosticContext
   }
 
   public connect(): Promise<void> {
@@ -66,9 +88,41 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
     }
 
     this.#state = 'starting'
-    this.#subscribe()
-    this.#connectPromise = this.#module
-      .start(this.#workspacePath)
+    this.#openOperation = this.#logger.operation({
+      category: 'transport',
+      event: 'transport.local.open',
+      message: 'Starting the local NeoVim process transport',
+      parentOperationId: this.#diagnosticContext.operationId,
+      details: { ...this.#diagnosticContext, workspacePath: this.#workspacePath }
+    })
+    let nativeStart: Promise<number>
+    try {
+      this.#subscribe()
+      nativeStart = this.#module.start(this.#workspacePath)
+    } catch (reason) {
+      const error = withNativeCode(
+        toError(reason, 'NeoVim process failed to start'),
+        'E_NVIM_START'
+      )
+      const observedOrigin = diagnosticOriginOf(error)
+      if (observedOrigin === undefined) markDiagnosticOrigin(error, 'transport.local.open')
+      const cleanupFailures = this.#terminate(error)
+      this.#openOperation.failure(
+        observedOrigin === undefined ? error : originObservedError(observedOrigin), {
+        message: 'Local NeoVim process transport failed to open',
+        details: {
+          ...this.#diagnosticContext,
+          workspacePath: this.#workspacePath,
+          cleanupFailures,
+          ...(observedOrigin === undefined
+            ? {}
+            : originSummary(observedOrigin, error))
+        }
+      })
+      this.#connectPromise = Promise.reject(error)
+      return this.#connectPromise
+    }
+    this.#connectPromise = Promise.resolve(nativeStart)
       .then((sessionId) => {
         if (!Number.isSafeInteger(sessionId) || sessionId < 1) {
           throw codedError(
@@ -91,10 +145,45 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
             'E_NVIM_EXIT'
           )
         }
+        this.#openOperation?.success({
+          message: 'Local NeoVim process transport opened',
+          details: {
+            ...this.#diagnosticContext,
+            workspacePath: this.#workspacePath,
+            sessionId
+          }
+        })
       })
       .catch((reason: unknown) => {
         const error = withNativeCode(toError(reason, 'NeoVim process failed to start'), 'E_NVIM_START')
-        this.#terminate(this.#explicitClose ? undefined : error)
+        if (this.#explicitClose) {
+          const cleanupFailures = this.#terminate()
+          this.#openOperation?.cancellation({
+            message: 'Local NeoVim process transport was closed while opening',
+            details: {
+              ...this.#diagnosticContext,
+              workspacePath: this.#workspacePath,
+              reason: error,
+              cleanupFailures
+            }
+          })
+        } else {
+          const observedOrigin = diagnosticOriginOf(error)
+          if (observedOrigin === undefined) markDiagnosticOrigin(error, 'transport.local.open')
+          const cleanupFailures = this.#terminate(error)
+          this.#openOperation?.failure(
+            observedOrigin === undefined ? error : originObservedError(observedOrigin), {
+            message: 'Local NeoVim process transport failed to open',
+            details: {
+              ...this.#diagnosticContext,
+              workspacePath: this.#workspacePath,
+              cleanupFailures,
+              ...(observedOrigin === undefined
+                ? {}
+                : originSummary(observedOrigin, error))
+            }
+          })
+        }
         throw error
       })
     return this.#connectPromise
@@ -118,8 +207,46 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
     })
     this.#writeTail = operation.catch((reason: unknown) => {
       const error = withNativeCode(toError(reason, 'NeoVim write failed'), 'E_NVIM_WRITE')
-      this.#terminate(this.#explicitClose ? undefined : error)
-      if (!this.#explicitClose) void this.#requestStop(sessionId)
+      markDiagnosticOrigin(error, 'transport.local.write')
+      this.#logger.error({
+        category: 'transport',
+        event: 'transport.local.write_failed',
+        message: 'Failed to write to the local NeoVim process',
+        operationId: this.#diagnosticContext.operationId,
+        details: {
+          ...this.#diagnosticContext,
+          workspacePath: this.#workspacePath,
+          sessionId,
+          bytes,
+          error
+        }
+      })
+      const cleanupFailures = this.#terminate(this.#explicitClose ? undefined : error)
+      if (cleanupFailures.length > 0) {
+        this.#logger.warn({
+          category: 'transport',
+          event: 'transport.local.write_cleanup_failed',
+          message: 'Local NeoVim write failure cleanup did not complete cleanly',
+          operationId: this.#diagnosticContext.operationId,
+          details: { ...this.#diagnosticContext, sessionId, cleanupFailures }
+        })
+      }
+      if (!this.#explicitClose) {
+        void this.#requestStop(sessionId).catch((stopReason: unknown) => {
+          this.#logger.warn({
+            category: 'nvim',
+            event: 'nvim.process.stop_failed',
+            message: 'Native NeoVim stop cleanup failed after a write failure',
+            operationId: this.#diagnosticContext.operationId,
+            details: {
+              ...this.#diagnosticContext,
+              workspacePath: this.#workspacePath,
+              sessionId,
+              reason: stopReason
+            }
+          })
+        })
+      }
     })
     return operation
   }
@@ -136,6 +263,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
 
   public close(): Promise<void> {
     if (this.#state === 'closed') {
+      if (this.#closePromise !== undefined) return this.#closePromise
       return this.#sessionId === undefined
         ? Promise.resolve()
         : this.#requestStop(this.#sessionId)
@@ -150,22 +278,72 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
 
     this.#explicitClose = true
     this.#state = 'closing'
+    const closeOperation = this.#logger.operation({
+      category: 'transport',
+      event: 'transport.local.close',
+      message: 'Closing the local NeoVim process transport',
+      parentOperationId: this.#diagnosticContext.operationId,
+      details: {
+        ...this.#diagnosticContext,
+        workspacePath: this.#workspacePath,
+        sessionId: this.#sessionId
+      }
+    })
     this.#closePromise = (async () => {
       await this.#connectPromise?.catch(() => undefined)
       const sessionId = this.#sessionId
-      if (sessionId !== undefined) await this.#requestStop(sessionId)
+      let nativeStopFailure: unknown
+      if (sessionId !== undefined) {
+        try {
+          await this.#requestStop(sessionId)
+        } catch (reason) {
+          nativeStopFailure = reason
+        }
+      }
       this.#state = 'closed'
-      this.#unsubscribe()
-      this.#notifyClose()
+      const cleanupFailures = this.#unsubscribe()
+      cleanupFailures.push(...this.#notifyClose())
+      if (nativeStopFailure !== undefined || cleanupFailures.length > 0) {
+        const failure = toError(
+          nativeStopFailure ?? cleanupFailures[0],
+          'Local NeoVim transport closed with cleanup failures'
+        )
+        markDiagnosticOrigin(failure, 'transport.local.close')
+        closeOperation.failure(failure, {
+          event: 'transport.local.close.partial_failure',
+          message: 'Local NeoVim process transport closed with native cleanup failures',
+          details: {
+            ...this.#diagnosticContext,
+            workspacePath: this.#workspacePath,
+            sessionId,
+            nativeStopFailure,
+            cleanupFailures,
+            closed: true
+          }
+        })
+        throw failure
+      } else {
+        closeOperation.success({ message: 'Closed the local NeoVim process transport' })
+      }
     })()
     return this.#closePromise
   }
 
   #subscribe(): void {
-    this.#subscriptions = [
-      this.#module.addListener('data', (event) => this.#receiveData(event)),
-      this.#module.addListener('exit', (event) => this.#receiveExit(event))
-    ]
+    const subscriptions: NativeSubscription[] = []
+    try {
+      subscriptions.push(this.#module.addListener('data', (event) => this.#receiveData(event)))
+      subscriptions.push(this.#module.addListener('exit', (event) => this.#receiveExit(event)))
+      this.#subscriptions = subscriptions
+    } catch (reason) {
+      this.#subscriptions = subscriptions
+      const cleanupFailures = this.#unsubscribe()
+      const error = toError(reason, 'Failed to subscribe to native NeoVim events')
+      if (cleanupFailures.length > 0) {
+        Object.assign(error, { subscriptionCleanupFailures: cleanupFailures })
+      }
+      throw error
+    }
   }
 
   #receiveData(event: NativeNvimDataEvent): void {
@@ -184,11 +362,36 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
       if (this.#state === 'starting') this.#earlyEvents.push({ kind: 'exit', event })
       return
     }
-    if (event.sessionId !== this.#sessionId) return
+    if (event.sessionId !== this.#sessionId || this.#state === 'closed') return
     const error = this.#state === 'closing' || this.#explicitClose
       ? undefined
       : nativeExitError(event)
-    this.#terminate(error)
+    if (error !== undefined) {
+      markDiagnosticOrigin(error, 'nvim.process.exit')
+      this.#logger.error({
+        category: 'nvim',
+        event: 'nvim.process.exited',
+        message: 'Local NeoVim exited unexpectedly',
+        operationId: this.#diagnosticContext.operationId,
+        details: {
+          ...this.#diagnosticContext,
+          workspacePath: this.#workspacePath,
+          sessionId: this.#sessionId,
+          exitEvent: event,
+          error
+        }
+      })
+    }
+    const cleanupFailures = this.#terminate(error)
+    if (cleanupFailures.length > 0) {
+      this.#logger.warn({
+        category: 'nvim',
+        event: 'nvim.process.exit_cleanup_failed',
+        message: 'NeoVim exit cleanup did not complete cleanly',
+        operationId: this.#diagnosticContext.operationId,
+        details: { ...this.#diagnosticContext, exitEvent: event, cleanupFailures }
+      })
+    }
   }
 
   #drainEarlyEvents(): void {
@@ -202,29 +405,46 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
 
   #requestStop(sessionId: number): Promise<void> {
     if (this.#stopPromise === undefined) {
-      this.#stopPromise = this.#module.stop(sessionId).catch(() => undefined)
+      this.#stopPromise = Promise.resolve().then(() => this.#module.stop(sessionId))
     }
     return this.#stopPromise
   }
 
-  #terminate(error?: Error): void {
-    if (this.#state === 'closed') return
+  #terminate(error?: Error): unknown[] {
+    if (this.#state === 'closed') return []
     this.#terminalError = error
     this.#state = 'closed'
-    this.#unsubscribe()
-    this.#notifyClose(error)
+    const cleanupFailures = this.#unsubscribe()
+    cleanupFailures.push(...this.#notifyClose(error))
+    return cleanupFailures
   }
 
-  #unsubscribe(): void {
-    for (const subscription of this.#subscriptions) subscription.remove()
+  #unsubscribe(): unknown[] {
+    const failures: unknown[] = []
+    for (const subscription of this.#subscriptions) {
+      try {
+        subscription.remove()
+      } catch (reason) {
+        failures.push(reason)
+      }
+    }
     this.#subscriptions = []
     this.#earlyEvents = []
+    return failures
   }
 
-  #notifyClose(error?: Error): void {
-    if (this.#didNotifyClose) return
+  #notifyClose(error?: Error): unknown[] {
+    if (this.#didNotifyClose) return []
     this.#didNotifyClose = true
-    for (const listener of [...this.#closeListeners]) listener(error)
+    const failures: unknown[] = []
+    for (const listener of [...this.#closeListeners]) {
+      try {
+        listener(error)
+      } catch (reason) {
+        failures.push(reason)
+      }
+    }
+    return failures
   }
 }
 
@@ -270,7 +490,7 @@ function toError(reason: unknown, fallback: string): Error {
     const message = typeof record.message === 'string' && record.message.length > 0
       ? record.message
       : fallback
-    const error = new Error(message) as NativeCodedError
+    const error = attachDiagnosticCause(new Error(message), reason) as NativeCodedError
     const code = typeof record.nativeCode === 'string'
       ? record.nativeCode
       : typeof record.code === 'string'
@@ -283,4 +503,14 @@ function toError(reason: unknown, fallback: string): Error {
     return error
   }
   return new Error(typeof reason === 'string' && reason.length > 0 ? reason : fallback)
+}
+
+function originObservedError(origin: string): Error {
+  const error = new Error(`Operational failure was already recorded by ${origin}`)
+  error.name = 'DiagnosticOriginObserved'
+  return error
+}
+
+function originSummary(origin: string, error: Error) {
+  return { observedOrigin: origin, errorName: error.name, errorMessage: error.message }
 }

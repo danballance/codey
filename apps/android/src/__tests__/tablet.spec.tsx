@@ -3,9 +3,12 @@ import { Text } from 'react-native'
 import { cleanup, render } from '@testing-library/react-native'
 
 import { TabletCapabilityGate } from '../TabletCapabilityGate'
+import { UnsupportedDeviceScreen } from '../UnsupportedDeviceScreen'
 import { tabletCapability } from '../tablet'
 
 afterEach(cleanup)
+
+const renderUnsupported = () => <UnsupportedDeviceScreen onOpenLogs={jest.fn()} />
 
 describe('Android tablet capability', () => {
   it('requires a 600dp-shortest-side landscape window', () => {
@@ -37,6 +40,7 @@ describe('Android tablet capability', () => {
       <TabletCapabilityGate
         capability={tabletCapability(600, 800)}
         renderSupported={createClient}
+        renderUnsupported={renderUnsupported}
       />
     )
 
@@ -60,6 +64,7 @@ describe('Android tablet capability', () => {
       <TabletCapabilityGate
         capability={tabletCapability(1_280, 800)}
         renderSupported={renderSupported}
+        renderUnsupported={renderUnsupported}
       />
     )
     expect(screen.getByTestId('client')).toBeTruthy()
@@ -69,6 +74,7 @@ describe('Android tablet capability', () => {
       <TabletCapabilityGate
         capability={tabletCapability(800, 1_280)}
         renderSupported={renderSupported}
+        renderUnsupported={renderUnsupported}
       />
     )
     expect(onUnmount).toHaveBeenCalledTimes(1)
@@ -78,6 +84,7 @@ describe('Android tablet capability', () => {
       <TabletCapabilityGate
         capability={tabletCapability(1_280, 800)}
         renderSupported={renderSupported}
+        renderUnsupported={renderUnsupported}
       />
     )
     expect(screen.getByTestId('client')).toBeTruthy()
@@ -87,6 +94,7 @@ describe('Android tablet capability', () => {
       <TabletCapabilityGate
         capability={tabletCapability(800, 800)}
         renderSupported={renderSupported}
+        renderUnsupported={renderUnsupported}
       />
     )
     expect(onUnmount).toHaveBeenCalledTimes(2)

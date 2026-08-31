@@ -123,7 +123,10 @@ describe('TabletClientController', () => {
 
     await controller.connect(localTarget)
 
-    expect(factory).toHaveBeenCalledWith(localTarget)
+    expect(factory).toHaveBeenCalledWith(localTarget, {
+      generation: 1,
+      operationId: expect.any(String)
+    })
     expect(controller.getState()).toMatchObject({
       phase: 'connected',
       message: 'Running Local (/storage/emulated/0/Code)'
@@ -530,7 +533,10 @@ describe('TabletClientController', () => {
     await Promise.all([first, second])
 
     expect(factory).toHaveBeenCalledTimes(1)
-    expect(factory).toHaveBeenCalledWith({ kind: 'remote', host: '192.168.0.21', port: 7777 })
+    expect(factory).toHaveBeenCalledWith(
+      { kind: 'remote', host: '192.168.0.21', port: 7777 },
+      { generation: 2, operationId: expect.any(String) }
+    )
     expect(created).toHaveLength(1)
     expect(created[0]!.session.attach).toHaveBeenCalledTimes(1)
     expect(controller.getState().message).toBe('Connected to 192.168.0.21:7777')
@@ -557,7 +563,10 @@ describe('TabletClientController', () => {
     await Promise.all([supersededReconnect, latestReconnect])
 
     expect(factory).toHaveBeenCalledTimes(2)
-    expect(factory).toHaveBeenLastCalledWith({ kind: 'remote', host: '192.168.0.22', port: 8888 })
+    expect(factory).toHaveBeenLastCalledWith(
+      { kind: 'remote', host: '192.168.0.22', port: 8888 },
+      { generation: 3, operationId: expect.any(String) }
+    )
     expect(latest.session.connect).toHaveBeenCalledTimes(1)
     expect(controller.getState().message).toBe('Connected to 192.168.0.22:8888')
   })

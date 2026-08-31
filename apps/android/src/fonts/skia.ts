@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useFont, type SkFont } from '@shopify/react-native-skia'
 
 import { CODEY_NERD_FONT_ASSETS } from '.'
+import { diagnosticLogger } from '../diagnostics/logger'
 
 export const CODEY_SKIA_FONT_LOAD_TIMEOUT_MS = 5_000
 
@@ -61,6 +62,16 @@ export function useCodeySkiaFontFaces(fontSize: number): CodeySkiaFontLoadState 
     }, CODEY_SKIA_FONT_LOAD_TIMEOUT_MS)
     return () => clearTimeout(timeout)
   }, [error, fontsReady, recordError])
+
+  useEffect(() => {
+    if (error === null) return
+    diagnosticLogger.warn({
+      category: 'renderer',
+      event: 'font.skia_load_failed',
+      message: 'Bundled Skia font loading failed; the editor will use a system fallback',
+      details: { fontSize, error }
+    })
+  }, [error, fontSize])
 
   return useMemo<CodeySkiaFontLoadState>(() => {
     if (

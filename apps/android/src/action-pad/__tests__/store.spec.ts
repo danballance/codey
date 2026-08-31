@@ -349,7 +349,7 @@ describe('ActionPadConfigStore', () => {
   })
 
   it('reports socket codes with different certainty guidance before and during a write', async () => {
-    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined)
     try {
       const beforeWrite = setup()
       await beforeWrite.connect()
@@ -376,10 +376,15 @@ describe('ActionPadConfigStore', () => {
         details: { phase: 'awaiting-confirmation', socketCode: 'E_TCP_WRITE' }
       })
       expect(duringWrite.store.getState().pendingSavePath).toBe(sourcePath)
-      expect(warning).toHaveBeenCalledTimes(2)
-      expect(JSON.stringify(warning.mock.calls)).not.toContain(serializeActionPadConfig(editLabel(fixture)))
+      expect(errors).toHaveBeenCalledTimes(2)
+      expect(errors.mock.calls.map(([prefix]) => prefix)).toEqual([
+        '[codey][action-pad][action_pad.save.failed]',
+        '[codey][action-pad][action_pad.save.failed]'
+      ])
+      expect(JSON.stringify(errors.mock.calls)).toContain('connection reset while reading')
+      expect(JSON.stringify(errors.mock.calls)).toContain('broken pipe')
     } finally {
-      warning.mockRestore()
+      errors.mockRestore()
     }
   })
 

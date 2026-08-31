@@ -1,5 +1,13 @@
-import { act } from 'react'
-import { Alert, AppState, BackHandler, StyleSheet, type AppStateStatus } from 'react-native'
+import { act, useState, type ComponentProps } from 'react'
+import {
+  Alert,
+  AppState,
+  BackHandler,
+  Keyboard,
+  Modal,
+  StyleSheet,
+  type AppStateStatus
+} from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react-native'
 import type { HostDocument, HostDocumentWrite, RedrawBatch } from '@codey/nvim-session'
@@ -10,7 +18,7 @@ import {
 } from '@codey/perf'
 import type { DuplexTransport } from '@codey/transport'
 
-import { TabletClient } from '../TabletClient'
+import { TabletClient as TabletClientComponent } from '../TabletClient'
 import { DEFAULT_ACTION_PAD_CONFIG } from '../action-pad/config'
 import { parseActionPadConfig, serializeActionPadConfig, type ActionPadConfig } from '../action-pad/document'
 import { actionPadStorageKey } from '../action-pad/store'
@@ -25,6 +33,8 @@ import {
   type ConnectionTarget
 } from '../connection-target'
 import type { MobileSession } from '../controller'
+import { DiagnosticsModal } from '../diagnostics/DiagnosticsModal'
+import { diagnosticLogger } from '../diagnostics/logger'
 import { createRuntimeConnection } from '../runtime-connection'
 import { getNativeNvimStatus, openNativeNvimAllFilesSettings } from '../native/nvim'
 import { tabletCapability } from '../tablet'
@@ -106,7 +116,7 @@ jest.mock('../native/CodeyIme', () => {
             })
           },
           settleComposition: async () => {
-            settleComposition()
+            await settleComposition()
             const prefix = orderedPrefix
             orderedPrefix = []
             props.onOrderedInput({
@@ -153,14 +163,17 @@ jest.mock('../workspace/WorkspaceDirectoryPicker', () => {
     WorkspaceDirectoryPicker: ({
       initialPath,
       onCancel,
+      onOpenLogs,
       onSelect
     }: {
       initialPath: string
       onCancel: () => void
+      onOpenLogs: () => void
       onSelect: (path: string) => void
     }) => React.createElement(View, {
       initialPath,
       onCancel,
+      onOpenLogs,
       onSelect,
       testID: 'mock-workspace-directory-picker'
     })
@@ -174,6 +187,28 @@ const mockedAppStateAddEventListener = jest.mocked(AppState.addEventListener)
 const getItem = jest.mocked(AsyncStorage.getItem)
 const setItem = jest.mocked(AsyncStorage.setItem)
 const DEFAULT_ACTION_PAD_ENDPOINT = actionPadEndpointForTarget(DEFAULT_CONNECTION_TARGET)
+
+type TabletClientTestProps = Omit<
+  ComponentProps<typeof TabletClientComponent>,
+  'logsVisible' | 'onOpenLogs'
+> & Partial<Pick<
+  ComponentProps<typeof TabletClientComponent>,
+  'logsVisible' | 'onOpenLogs'
+>>
+
+function TabletClient({
+  logsVisible = false,
+  onOpenLogs = () => undefined,
+  ...props
+}: TabletClientTestProps) {
+  return (
+    <TabletClientComponent
+      {...props}
+      logsVisible={logsVisible}
+      onOpenLogs={onOpenLogs}
+    />
+  )
+}
 
 interface ConnectionDouble {
   readonly transport: DuplexTransport
@@ -243,6 +278,23 @@ function storedSettings(target: ConnectionTarget): string {
 function openManagedButton(editor: ReturnType<typeof within>, menu = 'Home (home)') {
   fireEvent.press(editor.getByRole('button', { name: `Edit ${menu}` }))
   fireEvent.press(editor.getByRole('button', { name: 'Button settings' }))
+}
+
+function TabletLogsHarness() {
+  const [logsVisible, setLogsVisible] = useState(false)
+  return (
+    <>
+      <TabletClient
+        capability={tabletCapability(1_280, 800)}
+        logsVisible={logsVisible}
+        onOpenLogs={() => setLogsVisible(true)}
+      />
+      <DiagnosticsModal
+        onClose={() => setLogsVisible(false)}
+        visible={logsVisible}
+      />
+    </>
+  )
 }
 
 afterEach(async () => {
@@ -353,6 +405,9 @@ describe('tablet client shell', () => {
         remote: { host: 'saved-remote.test', port: 7331 }
       })
     ))
+    expect(setItem.mock.calls.filter(([key]) => (
+      key === CONNECTION_SETTINGS_STORAGE_KEY
+    ))).toHaveLength(1)
     expect(screen.queryByTestId('mock-workspace-directory-picker')).toBeNull()
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
 
@@ -361,6 +416,40 @@ describe('tablet client shell', () => {
     })
     expect(screen.getByText('Local (/storage/emulated/0/Projects) · Offline editing')).toBeTruthy()
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('uses and logs the selected canonical workspace on a later explicit Connect', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled
+    ).toBe(false))
+    fireEvent.press(screen.getByRole('button', { name: 'Browse local workspaces' }))
+    fireEvent(
+      screen.getByTestId('mock-workspace-directory-picker'),
+      'select',
+      '/storage/emulated/0/Canonical'
+    )
+    await waitFor(() => expect(screen.getByLabelText('Local workspace path').props.value).toBe(
+      '/storage/emulated/0/Canonical'
+    ))
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+
+    diagnosticLogger.clear()
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+
+    await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(
+      { kind: 'local', workspacePath: '/storage/emulated/0/Canonical' },
+      { generation: 1, operationId: expect.any(String) }
+    ))
+    expect(diagnosticLogger.getSnapshot().entries.find(
+      ({ event }) => event === 'connection.connect.started'
+    )?.details).toMatchObject({
+      generation: 1,
+      target: { kind: 'local', workspacePath: '/storage/emulated/0/Canonical' }
+    })
   })
 
   it('waits for saved connection settings before browsing and preserves the hydrated Remote target', async () => {
@@ -466,6 +555,47 @@ describe('tablet client shell', () => {
     expect(screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled).toBe(true)
   })
 
+  it('tears down the picker under visible Logs without clearing process history', async () => {
+    let appStateListener: ((state: AppStateStatus) => void) | undefined
+    mockedAppStateAddEventListener.mockImplementation((type, listener) => {
+      if (type === 'change') appStateListener = listener
+      return { remove: jest.fn() }
+    })
+    diagnosticLogger.clear()
+    diagnosticLogger.info({
+      category: 'app',
+      event: 'test.history_before_permission_change',
+      message: 'History retained while permission changes under Logs'
+    })
+    const screen = render(
+      <TabletClient
+        capability={tabletCapability(1_280, 800)}
+        logsVisible
+        onOpenLogs={jest.fn()}
+      />
+    )
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled
+    ).toBe(false))
+    fireEvent.press(screen.getByRole('button', { name: 'Browse local workspaces' }))
+    expect(screen.getByTestId('mock-workspace-directory-picker')).toBeTruthy()
+
+    mockedNativeNvimStatus.mockResolvedValueOnce({
+      supported: true,
+      running: false,
+      allFilesAccess: false
+    })
+    await act(async () => { appStateListener?.('active') })
+
+    await waitFor(() => expect(screen.queryByTestId('mock-workspace-directory-picker')).toBeNull())
+    expect(diagnosticLogger.getSnapshot().entries.map(({ event }) => event)).toEqual(
+      expect.arrayContaining([
+        'test.history_before_permission_change',
+        'picker.permission_closed'
+      ])
+    )
+  })
+
   it('routes the offline Action Pad connection through local file-access settings', async () => {
     mockedNativeNvimStatus.mockResolvedValue({
       supported: true,
@@ -550,7 +680,10 @@ describe('tablet client shell', () => {
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     fireEvent.press(screen.getByText('Connect'))
-    await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(DEFAULT_CONNECTION_TARGET))
+    await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(
+      DEFAULT_CONNECTION_TARGET,
+      expect.objectContaining({ generation: 1, operationId: expect.any(String) })
+    ))
     await act(async () => { restoreEndpoint(JSON.stringify({ host: 'previous.test', port: 7777 })) })
     expect(screen.getByLabelText('Local workspace path').props.value).toBe('/storage/emulated/0')
     await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
@@ -1037,6 +1170,24 @@ describe('tablet client shell', () => {
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
   })
 
+  it('keeps the remote toolbar and Logs action within the condensed layout budget', async () => {
+    const screen = render(<TabletClient capability={tabletCapability(601, 600)} />)
+    await act(async () => { await Promise.resolve() })
+
+    fireEvent.press(screen.getByRole('tab', { name: 'Use remote Neovim' }))
+
+    expect(StyleSheet.flatten(screen.getByTestId('main-toolbar').props.style).gap).toBe(5)
+    expect(StyleSheet.flatten(
+      screen.getByRole('tab', { name: 'Use remote Neovim' }).props.style
+    )).toMatchObject({ minWidth: 50, paddingHorizontal: 4 })
+    expect(StyleSheet.flatten(screen.getByLabelText('Neovim host').props.style).width).toBe(104)
+    expect(StyleSheet.flatten(screen.getByLabelText('Neovim port').props.style).width).toBe(68)
+    expect(StyleSheet.flatten(
+      screen.getByRole('button', { name: 'Connect' }).props.style
+    )).toMatchObject({ minWidth: 88, paddingHorizontal: 10 })
+    expect(screen.getByTestId('main-open-logs')).toBeTruthy()
+  })
+
   it('applies keyboard compaction to the landscape shell while retaining rail controls', async () => {
     const screen = render(
       <TabletClient capability={tabletCapability(1_280, 800)} />
@@ -1096,7 +1247,7 @@ describe('tablet client shell', () => {
     expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
     expect(mockedConnectionFactory).toHaveBeenCalledWith({
       kind: 'remote', host: '192.168.0.42', port: 7777
-    })
+    }, expect.objectContaining({ generation: 1, operationId: expect.any(String) }))
     expect(double.session.attach).toHaveBeenCalledTimes(1)
     expect(double.session.close).not.toHaveBeenCalled()
 
@@ -1353,6 +1504,156 @@ describe('tablet client shell', () => {
     expect(screen.getByText('Connect')).toBeTruthy()
     expect(double.session.close).toHaveBeenCalledTimes(1)
     expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
+  })
+
+  it('settles ordered composition and blurs before opening Logs from the main toolbar', async () => {
+    const double = connectionDouble()
+    const order: string[] = []
+    const onOpenLogs = jest.fn(() => { order.push('open') })
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient
+        capability={tabletCapability(1_280, 800)}
+        logsVisible={false}
+        onOpenLogs={onOpenLogs}
+      />
+    )
+    const nativeIme = jest.requireMock('../native/CodeyIme') as {
+      __blur: jest.Mock
+      __settleComposition: jest.Mock
+    }
+
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+    nativeIme.__blur.mockClear()
+    nativeIme.__settleComposition.mockClear()
+    nativeIme.__settleComposition.mockImplementationOnce(() => { order.push('settle') })
+    nativeIme.__blur.mockImplementationOnce(async () => { order.push('blur') })
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {
+      order.push('dismiss')
+    })
+
+    fireEvent.press(screen.getByTestId('main-open-logs'))
+
+    await waitFor(() => expect(onOpenLogs).toHaveBeenCalledTimes(1))
+    expect(nativeIme.__settleComposition).toHaveBeenCalledTimes(1)
+    expect(nativeIme.__blur).toHaveBeenCalledTimes(1)
+    expect(dismiss).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['settle', 'blur', 'dismiss', 'open'])
+  })
+
+  it('opens Logs after settlement and blur failures and dismisses a focused toolbar keyboard', async () => {
+    const double = connectionDouble()
+    const onOpenLogs = jest.fn()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient
+        capability={tabletCapability(1_280, 800)}
+        logsVisible={false}
+        onOpenLogs={onOpenLogs}
+      />
+    )
+    const nativeIme = jest.requireMock('../native/CodeyIme') as {
+      __blur: jest.Mock
+      __settleComposition: jest.Mock
+    }
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+    diagnosticLogger.clear()
+    nativeIme.__settleComposition.mockRejectedValueOnce(new Error('settlement failed'))
+    nativeIme.__blur.mockRejectedValueOnce(new Error('blur failed'))
+    const dismiss = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => undefined)
+
+    fireEvent.press(screen.getByTestId('main-open-logs'))
+
+    await waitFor(() => expect(onOpenLogs).toHaveBeenCalledTimes(1))
+    expect(dismiss).toHaveBeenCalledTimes(1)
+    expect(diagnosticLogger.getSnapshot().entries.map(({ event }) => event)).toEqual(
+      expect.arrayContaining([
+        'logs_composition_settlement.failed',
+        'logs_blur.failed',
+        'logs.opened'
+      ])
+    )
+
+    screen.rerender(
+      <TabletClient
+        capability={tabletCapability(1_280, 800)}
+        logsVisible={false}
+        onOpenLogs={onOpenLogs}
+      />
+    )
+    fireEvent.press(screen.getByText('Disconnect'))
+    await waitFor(() => expect(screen.getByText('Disconnected')).toBeTruthy())
+    fireEvent(screen.getByLabelText('Local workspace path'), 'focus')
+    fireEvent.press(screen.getByTestId('main-open-logs'))
+    await waitFor(() => expect(onOpenLogs).toHaveBeenCalledTimes(2))
+    expect(dismiss).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards the workspace Logs action without closing or changing the picker', async () => {
+    const onOpenLogs = jest.fn()
+    const screen = render(
+      <TabletClient
+        capability={tabletCapability(1_280, 800)}
+        logsVisible={false}
+        onOpenLogs={onOpenLogs}
+      />
+    )
+
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled
+    ).toBe(false))
+    fireEvent.press(screen.getByRole('button', { name: 'Browse local workspaces' }))
+    const picker = screen.getByTestId('mock-workspace-directory-picker')
+    fireEvent(picker, 'openLogs')
+
+    expect(onOpenLogs).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('mock-workspace-directory-picker').props.initialPath).toBe(
+      '/storage/emulated/0'
+    )
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('layers real Logs over the Action Pad editor and preserves its form state', async () => {
+    const screen = render(<TabletLogsHarness />)
+    await act(async () => { await Promise.resolve() })
+    await act(async () => {
+      fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
+    })
+    const editor = within(await screen.findByTestId('action-pad-editor'))
+    fireEvent.changeText(editor.getByLabelText('Host YAML path'), '/private/kept-under-logs.yaml')
+
+    fireEvent.press(editor.getByRole('button', { name: 'Logs' }))
+
+    expect(screen.getByTestId('diagnostics-modal')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-editor')).toBeTruthy()
+    expect(screen.UNSAFE_getAllByType(Modal).length).toBeGreaterThanOrEqual(2)
+    fireEvent(screen.UNSAFE_getAllByType(Modal).at(-1)!, 'requestClose')
+
+    expect(screen.queryByTestId('diagnostics-modal')).toBeNull()
+    expect(within(screen.getByTestId('action-pad-editor')).getByLabelText(
+      'Host YAML path'
+    ).props.value).toBe('/private/kept-under-logs.yaml')
+  })
+
+  it('suspends editor and Action Pad input while Logs is visible', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(
+      <TabletClient capability={tabletCapability(1_280, 800)} logsVisible={false} />
+    )
+
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+    screen.rerender(
+      <TabletClient capability={tabletCapability(1_280, 800)} logsVisible />
+    )
+
+    fireEvent(screen.getByTestId('mock-codey-ime'), 'onCommittedText', 'blocked text')
+    fireEvent.press(screen.getByText('Esc'))
+
+    expect(double.session.input).not.toHaveBeenCalled()
   })
 
   it('disposes a connected session when the supported client unmounts', async () => {

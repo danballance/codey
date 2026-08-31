@@ -11,6 +11,8 @@ import {
   getPerformanceRecords,
   performanceNow
 } from '@codey/perf'
+import { createDiagnosticLogger, type DiagnosticLogger } from '../diagnostics/logger'
+import { diagnosticOriginOf } from '../diagnostics/origin'
 import { ExpoTcpTransport } from '../transport/expo-tcp-transport'
 
 class FakeNativeTcp implements NativeTcpModule {
@@ -18,20 +20,26 @@ class FakeNativeTcp implements NativeTcpModule {
   readonly measuredWrites: Array<{ connectionId: number; bytes: number[] }> = []
   nextConnectionId = 1
   openError: Error | undefined
+  openSynchronousError: Error | undefined
   openImplementation: (() => Promise<number>) | undefined
+  addListenerImplementation:
+    | ((eventName: 'data' | 'close') => NativeSubscription)
+    | undefined
   writeImplementation: ((connectionId: number, bytes: Uint8Array) => Promise<void>) | undefined
   writeMeasuredImplementation:
     | ((connectionId: number, bytes: Uint8Array) => Promise<NativeTcpWriteMeasurement>)
     | undefined
+  removeListenerImplementation: ((eventName: 'data' | 'close') => void) | undefined
   readonly close = jest.fn(async (_connectionId: number) => undefined)
 
   readonly #dataListeners = new Set<(event: NativeTcpDataEvent) => void>()
   readonly #closeListeners = new Set<(event: NativeTcpCloseEvent) => void>()
 
-  async open(_host: string, _port: number, _timeoutMs: number): Promise<number> {
-    if (this.openError !== undefined) throw this.openError
+  open(_host: string, _port: number, _timeoutMs: number): Promise<number> {
+    if (this.openSynchronousError !== undefined) throw this.openSynchronousError
+    if (this.openError !== undefined) return Promise.reject(this.openError)
     if (this.openImplementation !== undefined) return this.openImplementation()
-    return this.nextConnectionId++
+    return Promise.resolve(this.nextConnectionId++)
   }
 
   async write(connectionId: number, bytes: Uint8Array): Promise<void> {
@@ -69,9 +77,17 @@ class FakeNativeTcp implements NativeTcpModule {
     eventName: 'data' | 'close',
     listener: ((event: NativeTcpDataEvent) => void) | ((event: NativeTcpCloseEvent) => void)
   ): NativeSubscription {
+    if (this.addListenerImplementation !== undefined) {
+      return this.addListenerImplementation(eventName)
+    }
     const listeners = eventName === 'data' ? this.#dataListeners : this.#closeListeners
     listeners.add(listener as never)
-    return { remove: () => listeners.delete(listener as never) }
+    return {
+      remove: () => {
+        this.removeListenerImplementation?.(eventName)
+        listeners.delete(listener as never)
+      }
+    }
   }
 
   emitData(event: NativeTcpDataEvent): void {
@@ -81,6 +97,13 @@ class FakeNativeTcp implements NativeTcpModule {
   emitClose(event: NativeTcpCloseEvent): void {
     for (const listener of [...this.#closeListeners]) listener(event)
   }
+}
+
+function createTestLogger(): DiagnosticLogger {
+  const sink = jest.fn()
+  return createDiagnosticLogger({
+    console: { debug: sink, error: sink, info: sink, warn: sink }
+  })
 }
 
 function deferred() {
@@ -106,7 +129,9 @@ describe('ExpoTcpTransport', () => {
 
   it('forwards split binary data only for its connection ID', async () => {
     const native = new FakeNativeTcp()
-    const transport = new ExpoTcpTransport({ host: '192.168.0.20', port: 6666 }, native)
+    const transport = new ExpoTcpTransport(
+      { host: '192.168.0.20', port: 6666 }, native, createTestLogger()
+    )
     const chunks: number[][] = []
     transport.onData((chunk) => chunks.push([...chunk]))
     await transport.connect()
@@ -123,7 +148,9 @@ describe('ExpoTcpTransport', () => {
     const gates = [deferred(), deferred()]
     let writeIndex = 0
     native.writeImplementation = async () => gates[writeIndex++]!.promise
-    const transport = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 }, native, createTestLogger()
+    )
     await transport.connect()
 
     const first = transport.write(Uint8Array.of(1, 2))
@@ -156,7 +183,9 @@ describe('ExpoTcpTransport', () => {
         socketWriteDurationMs: 3.75
       }
     }
-    const transport = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 }, native, createTestLogger()
+    )
     await transport.connect()
 
     await transport.write(Uint8Array.of(1, 2, 3))
@@ -182,13 +211,21 @@ describe('ExpoTcpTransport', () => {
 
   it('surfaces a write failure once and makes close idempotent', async () => {
     const native = new FakeNativeTcp()
+    const logger = createTestLogger()
     native.writeImplementation = async () => {
       throw new Error('broken pipe')
     }
-    const transport = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 }, native, logger
+    )
     const closeListener = jest.fn()
     transport.onClose(closeListener)
+    transport.onClose(() => { throw new Error('write close observer failed') })
     await transport.connect()
+    logger.clear()
+    native.removeListenerImplementation = () => {
+      throw new Error('write subscription removal failed')
+    }
 
     await expect(transport.write(Uint8Array.of(1))).rejects.toThrow('broken pipe')
     await transport.close()
@@ -198,13 +235,27 @@ describe('ExpoTcpTransport', () => {
     expect(closeListener).toHaveBeenCalledWith(expect.objectContaining({
       name: 'E_TCP_WRITE', nativeCode: 'E_TCP_WRITE', message: 'broken pipe'
     }))
+    expect(logger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'transport.tcp.write_failed',
+      'transport.tcp.write_cleanup_failed'
+    ])
+    expect(logger.getSnapshot().entries.at(-1)?.detailsText).toContain(
+      'write subscription removal failed'
+    )
+    expect(logger.getSnapshot().entries.at(-1)?.detailsText).toContain(
+      'write close observer failed'
+    )
     expect(native.close).toHaveBeenCalledTimes(1)
   })
 
   it('isolates reconnects by native connection ID and one terminal event each', async () => {
     const native = new FakeNativeTcp()
-    const first = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
-    const second = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
+    const first = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 }, native, createTestLogger()
+    )
+    const second = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 }, native, createTestLogger()
+    )
     const firstClosed = jest.fn()
     const secondClosed = jest.fn()
     first.onClose(firstClosed)
@@ -222,6 +273,45 @@ describe('ExpoTcpTransport', () => {
 
     native.emitClose({ connectionId: 2 })
     expect(secondClosed).toHaveBeenCalledTimes(1)
+    expect(secondClosed).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'NativeTcpError',
+      message: 'TCP connection closed unexpectedly'
+    }))
+  })
+
+  it('retains a raw message-less native EOF and reports throwing termination cleanup', async () => {
+    const native = new FakeNativeTcp()
+    const logger = createTestLogger()
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 },
+      native,
+      logger,
+      { generation: 4, operationId: 'connection-4' }
+    )
+    transport.onClose(() => { throw new Error('close observer cleanup failed') })
+    await transport.connect()
+    logger.clear()
+    native.removeListenerImplementation = () => {
+      throw new Error('native subscription removal failed')
+    }
+
+    native.emitClose({ connectionId: 1 })
+    native.emitClose({ connectionId: 1 })
+
+    expect(logger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'transport.tcp.unexpected_close',
+      'transport.tcp.close_cleanup_failed'
+    ])
+    expect(logger.getSnapshot().entries[0]?.details).toMatchObject({
+      nativeEvent: { connectionId: 1 },
+      error: expect.objectContaining({ name: 'NativeTcpError' })
+    })
+    expect(logger.getSnapshot().entries[1]?.detailsText).toContain(
+      'native subscription removal failed'
+    )
+    expect(logger.getSnapshot().entries[1]?.detailsText).toContain(
+      'close observer cleanup failed'
+    )
   })
 
   it('closes a connection-in-progress once without reporting an explicit close as an error', async () => {
@@ -231,7 +321,9 @@ describe('ExpoTcpTransport', () => {
       new Promise<number>((resolve) => {
         finishOpen = resolve
       })
-    const transport = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 }, native, createTestLogger()
+    )
     const closed = jest.fn()
     transport.onClose(closed)
 
@@ -247,10 +339,52 @@ describe('ExpoTcpTransport', () => {
     expect(closed).toHaveBeenCalledWith(undefined)
   })
 
+  it('summarizes an already-recorded early native close in the open terminal', async () => {
+    const native = new FakeNativeTcp()
+    const logger = createTestLogger()
+    native.openImplementation = async () => {
+      native.emitClose({
+        connectionId: 7,
+        code: 'ECONNRESET',
+        message: 'peer reset during open'
+      })
+      return 7
+    }
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 },
+      native,
+      logger
+    )
+
+    await expect(transport.connect()).rejects.toMatchObject({
+      name: 'ECONNRESET',
+      message: 'peer reset during open'
+    })
+
+    expect(logger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'transport.tcp.open.started',
+      'transport.tcp.unexpected_close',
+      'transport.tcp.open.failed'
+    ])
+    expect(logger.getSnapshot().entries.at(-1)?.details).toMatchObject({
+      error: expect.objectContaining({
+        name: 'DiagnosticOriginObserved',
+        message: expect.stringContaining('transport.tcp.close')
+      }),
+      context: expect.objectContaining({
+        observedOrigin: 'transport.tcp.close',
+        errorName: 'ECONNRESET',
+        errorMessage: 'peer reset during open'
+      })
+    })
+  })
+
   it('closes natively without waiting behind a stalled write', async () => {
     const native = new FakeNativeTcp()
     native.writeImplementation = () => new Promise<void>(() => undefined)
-    const transport = new ExpoTcpTransport({ host: 'tablet-host', port: 6666 }, native)
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 }, native, createTestLogger()
+    )
     const closed = jest.fn()
     transport.onClose(closed)
     await transport.connect()
@@ -269,5 +403,74 @@ describe('ExpoTcpTransport', () => {
     const native = new FakeNativeTcp()
     expect(() => new ExpoTcpTransport({ host: ' ', port: 6666 }, native)).toThrow('host')
     expect(() => new ExpoTcpTransport({ host: 'host', port: 0 }, native)).toThrow('port')
+  })
+
+  it('rolls back partial subscriptions and terminally records synchronous open failures', async () => {
+    const subscriptionNative = new FakeNativeTcp()
+    const removeData = jest.fn()
+    subscriptionNative.addListenerImplementation = (eventName) => {
+      if (eventName === 'data') return { remove: removeData }
+      throw new Error('close listener registration failed')
+    }
+    const subscriptionLogger = createTestLogger()
+    const subscriptionTransport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 },
+      subscriptionNative,
+      subscriptionLogger
+    )
+
+    await expect(subscriptionTransport.connect()).rejects.toThrow(
+      'close listener registration failed'
+    )
+    expect(removeData).toHaveBeenCalledTimes(1)
+    expect(subscriptionLogger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'transport.tcp.open.started',
+      'transport.tcp.open.failed'
+    ])
+
+    const openNative = new FakeNativeTcp()
+    const nativeFailure = new Error('native open threw synchronously')
+    openNative.openSynchronousError = nativeFailure
+    const openLogger = createTestLogger()
+    const openTransport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 },
+      openNative,
+      openLogger
+    )
+
+    await expect(openTransport.connect()).rejects.toBe(nativeFailure)
+    expect(openLogger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'transport.tcp.open.started',
+      'transport.tcp.open.failed'
+    ])
+    expect(diagnosticOriginOf(nativeFailure)).toBe('transport.tcp.open')
+  })
+
+  it('records native close rejection as a partial failure while still closing once', async () => {
+    const native = new FakeNativeTcp()
+    const logger = createTestLogger()
+    const transport = new ExpoTcpTransport(
+      { host: 'tablet-host', port: 6666 },
+      native,
+      logger
+    )
+    const closed = jest.fn()
+    transport.onClose(closed)
+    await transport.connect()
+    logger.clear()
+    const closeFailure = new Error('native close rejected')
+    native.close.mockRejectedValueOnce(closeFailure)
+
+    await expect(transport.close()).rejects.toBe(closeFailure)
+    await expect(transport.close()).rejects.toBe(closeFailure)
+
+    expect(closed).toHaveBeenCalledTimes(1)
+    expect(closed).toHaveBeenCalledWith(undefined)
+    expect(native.close).toHaveBeenCalledTimes(1)
+    expect(logger.getSnapshot().entries.map(({ event }) => event)).toEqual([
+      'transport.tcp.close.started',
+      'transport.tcp.close.partial_failure'
+    ])
+    expect(logger.getSnapshot().entries.at(-1)).toMatchObject({ level: 'error' })
   })
 })

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
   Modal,
   Pressable,
   StyleSheet,
@@ -14,24 +15,40 @@ import {
   getNativeWorkspaceRoot,
   listNativeWorkspaceDirectory
 } from '../native/nvim'
+import {
+  diagnosticLogger,
+  type DiagnosticLogger
+} from '../diagnostics/logger'
 
 type WorkspaceRoot = Awaited<ReturnType<typeof getNativeWorkspaceRoot>>
 type WorkspaceListing = Awaited<ReturnType<typeof listNativeWorkspaceDirectory>>
 type WorkspaceDirectory = WorkspaceListing['directories'][number]
+type WorkspaceRequestSource = 'initial' | 'child' | 'parent' | 'retry' | 'fallback'
+
+type WorkspaceRequestResult<T> =
+  | { readonly status: 'success'; readonly value: T; readonly operationId: string }
+  | { readonly status: 'failure'; readonly reason: unknown; readonly operationId: string }
+  | { readonly status: 'suppressed'; readonly operationId: string }
 
 export interface WorkspaceDirectoryPickerProps {
   readonly initialPath: string
   readonly onCancel: () => void
+  readonly onOpenLogs: () => void
   readonly onSelect: (path: string) => void
+  readonly logger?: DiagnosticLogger
 }
 
 export function WorkspaceDirectoryPicker({
   initialPath,
   onCancel,
-  onSelect
+  onOpenLogs,
+  onSelect,
+  logger = diagnosticLogger
 }: WorkspaceDirectoryPickerProps) {
   const requestId = useRef(0)
   const closed = useRef(false)
+  const closeReason = useRef<'open' | 'cancelled' | 'selected'>('open')
+  const initialPathAtOpen = useRef(initialPath)
   const [root, setRoot] = useState<WorkspaceRoot | null>(null)
   const [listing, setListing] = useState<WorkspaceListing | null>(null)
   const [loading, setLoading] = useState(true)
@@ -43,7 +60,160 @@ export function WorkspaceDirectoryPicker({
     []
   )
 
-  const loadDirectory = useCallback(async (path: string) => {
+  const requestWorkspaceRoot = useCallback(async (
+    candidate: number,
+    source: Extract<WorkspaceRequestSource, 'initial' | 'retry'>
+  ): Promise<WorkspaceRequestResult<WorkspaceRoot>> => {
+    const operation = logger.operation({
+      category: 'workspace',
+      event: 'root.request',
+      message: 'Getting the native workspace root',
+      details: {
+        requestId: candidate,
+        requestedPath: initialPath,
+        source
+      }
+    })
+
+    try {
+      const nextRoot = await getNativeWorkspaceRoot()
+      if (!isCurrentRequest(candidate)) {
+        operation.cancellation({
+          event: 'root.result_suppressed',
+          message: 'Suppressed a late workspace-root result',
+          details: {
+            requestId: candidate,
+            requestedPath: initialPath,
+            source,
+            suppression: closed.current ? 'picker-closed' : 'newer-request',
+            rawRoot: nextRoot
+          }
+        })
+        return { status: 'suppressed', operationId: operation.id }
+      }
+
+      operation.success({
+        details: {
+          requestId: candidate,
+          requestedPath: initialPath,
+          source,
+          canonicalPath: nextRoot.path,
+          rootPath: nextRoot.path,
+          volumeLabel: nextRoot.label,
+          rawRoot: nextRoot
+        }
+      })
+      return { status: 'success', value: nextRoot, operationId: operation.id }
+    } catch (reason) {
+      if (!isCurrentRequest(candidate)) {
+        operation.cancellation({
+          event: 'root.failure_suppressed',
+          message: 'Suppressed a late workspace-root failure',
+          details: {
+            requestId: candidate,
+            requestedPath: initialPath,
+            source,
+            suppression: closed.current ? 'picker-closed' : 'newer-request',
+            nativeFailure: reason
+          }
+        })
+        return { status: 'suppressed', operationId: operation.id }
+      }
+
+      operation.failure(reason, {
+        details: {
+          requestId: candidate,
+          requestedPath: initialPath,
+          source,
+          nativeFailure: reason
+        }
+      })
+      return { status: 'failure', reason, operationId: operation.id }
+    }
+  }, [initialPath, isCurrentRequest, logger])
+
+  const requestDirectory = useCallback(async (
+    path: string,
+    source: WorkspaceRequestSource,
+    candidate: number,
+    workspaceRoot: WorkspaceRoot | null,
+    parentOperationId?: string
+  ): Promise<WorkspaceRequestResult<WorkspaceListing>> => {
+    const operation = logger.operation({
+      category: 'workspace',
+      event: 'directory.list',
+      message: 'Listing a native workspace directory',
+      parentOperationId,
+      details: {
+        requestId: candidate,
+        source,
+        requestedPath: path,
+        rootPath: workspaceRoot?.path,
+        volumeLabel: workspaceRoot?.label
+      }
+    })
+
+    try {
+      const nextListing = await listNativeWorkspaceDirectory(path)
+      if (!isCurrentRequest(candidate)) {
+        operation.cancellation({
+          event: 'directory.result_suppressed',
+          message: 'Suppressed a late workspace-directory result',
+          details: {
+            requestId: candidate,
+            source,
+            requestedPath: path,
+            suppression: closed.current ? 'picker-closed' : 'newer-request',
+            rawListing: nextListing
+          }
+        })
+        return { status: 'suppressed', operationId: operation.id }
+      }
+
+      operation.success({
+        details: listingDiagnosticDetails(
+          nextListing,
+          candidate,
+          source,
+          path,
+          workspaceRoot
+        )
+      })
+      return { status: 'success', value: nextListing, operationId: operation.id }
+    } catch (reason) {
+      if (!isCurrentRequest(candidate)) {
+        operation.cancellation({
+          event: 'directory.failure_suppressed',
+          message: 'Suppressed a late workspace-directory failure',
+          details: {
+            requestId: candidate,
+            source,
+            requestedPath: path,
+            suppression: closed.current ? 'picker-closed' : 'newer-request',
+            nativeFailure: reason
+          }
+        })
+        return { status: 'suppressed', operationId: operation.id }
+      }
+
+      operation.failure(reason, {
+        details: {
+          requestId: candidate,
+          source,
+          requestedPath: path,
+          rootPath: workspaceRoot?.path,
+          volumeLabel: workspaceRoot?.label,
+          nativeFailure: reason
+        }
+      })
+      return { status: 'failure', reason, operationId: operation.id }
+    }
+  }, [isCurrentRequest, logger])
+
+  const loadDirectory = useCallback(async (
+    path: string,
+    source: Extract<WorkspaceRequestSource, 'child' | 'parent' | 'retry'>
+  ) => {
     if (closed.current) return
     const candidate = ++requestId.current
     setLoading(true)
@@ -51,20 +221,22 @@ export function WorkspaceDirectoryPicker({
     setListing(null)
     setRetryPath(path)
 
-    try {
-      const nextListing = await listNativeWorkspaceDirectory(path)
-      if (!isCurrentRequest(candidate)) return
-      setListing(nextListing)
-      setRetryPath(nextListing.path)
+    const result = await requestDirectory(path, source, candidate, root)
+    if (result.status === 'suppressed') return
+    if (result.status === 'failure') {
+      setError(errorMessage(result.reason))
       setLoading(false)
-    } catch (reason) {
-      if (!isCurrentRequest(candidate)) return
-      setError(errorMessage(reason))
-      setLoading(false)
+      return
     }
-  }, [isCurrentRequest])
 
-  const initialize = useCallback(async () => {
+    setListing(result.value)
+    setRetryPath(result.value.path)
+    setLoading(false)
+  }, [requestDirectory, root])
+
+  const initialize = useCallback(async (
+    source: Extract<WorkspaceRequestSource, 'initial' | 'retry'>
+  ) => {
     if (closed.current) return
     const candidate = ++requestId.current
     setRoot(null)
@@ -73,66 +245,173 @@ export function WorkspaceDirectoryPicker({
     setError('')
     setRetryPath(null)
 
-    let workspaceRoot: WorkspaceRoot | null = null
-    try {
-      workspaceRoot = await getNativeWorkspaceRoot()
-      if (!isCurrentRequest(candidate)) return
-
-      let initialFailure: unknown
-      let nextListing: WorkspaceListing
-      try {
-        nextListing = await listNativeWorkspaceDirectory(initialPath)
-      } catch (reason) {
-        initialFailure = reason
-        if (!isCurrentRequest(candidate)) return
-        if (initialPath === workspaceRoot.path) throw reason
-        nextListing = await listNativeWorkspaceDirectory(workspaceRoot.path)
-      }
-      if (!isCurrentRequest(candidate)) return
-
-      setRoot(workspaceRoot)
-      setListing(nextListing)
-      setRetryPath(nextListing.path)
+    const rootResult = await requestWorkspaceRoot(candidate, source)
+    if (rootResult.status === 'suppressed') return
+    if (rootResult.status === 'failure') {
+      setError(errorMessage(rootResult.reason))
       setLoading(false)
-      // Retain no warning when the requested path was stale or invalid and the
-      // canonical shared-storage root loaded successfully.
-      void initialFailure
-    } catch (reason) {
-      if (!isCurrentRequest(candidate)) return
-      setRoot(workspaceRoot)
-      setRetryPath(workspaceRoot?.path ?? null)
-      setError(errorMessage(reason))
-      setLoading(false)
+      return
     }
-  }, [initialPath, isCurrentRequest])
+
+    const workspaceRoot = rootResult.value
+    const initialResult = await requestDirectory(
+      initialPath,
+      source,
+      candidate,
+      workspaceRoot,
+      rootResult.operationId
+    )
+    if (initialResult.status === 'suppressed') return
+
+    let listingResult: WorkspaceRequestResult<WorkspaceListing> = initialResult
+    if (initialResult.status === 'failure' && initialPath !== workspaceRoot.path) {
+      logger.warn({
+        category: 'workspace',
+        event: 'directory.initial_fallback',
+        message: 'Initial workspace path failed; falling back to the canonical root',
+        operationId: initialResult.operationId,
+        parentOperationId: rootResult.operationId,
+        details: {
+          requestId: candidate,
+          source,
+          requestedPath: initialPath,
+          fallbackPath: workspaceRoot.path,
+          rootPath: workspaceRoot.path,
+          volumeLabel: workspaceRoot.label,
+          nativeFailure: initialResult.reason
+        }
+      })
+      listingResult = await requestDirectory(
+        workspaceRoot.path,
+        'fallback',
+        candidate,
+        workspaceRoot,
+        initialResult.operationId
+      )
+      if (listingResult.status === 'suppressed') return
+    }
+
+    setRoot(workspaceRoot)
+    if (listingResult.status === 'failure') {
+      setRetryPath(workspaceRoot.path)
+      setError(errorMessage(listingResult.reason))
+      setLoading(false)
+      return
+    }
+
+    setListing(listingResult.value)
+    setRetryPath(listingResult.value.path)
+    setLoading(false)
+  }, [initialPath, logger, requestDirectory, requestWorkspaceRoot])
+
+  useEffect(() => {
+    logger.info({
+      category: 'workspace',
+      event: 'picker.opened',
+      message: 'Opened the workspace directory picker',
+      details: { initialPath: initialPathAtOpen.current }
+    })
+
+    return () => {
+      const reason = closeReason.current
+      closed.current = true
+      requestId.current += 1
+      logger.info({
+        category: 'workspace',
+        event: reason === 'open' ? 'picker.unmounted_externally' : 'picker.unmounted',
+        message: reason === 'open'
+          ? 'Workspace directory picker was unmounted by its owner'
+          : 'Workspace directory picker was unmounted',
+        details: {
+          initialPath: initialPathAtOpen.current,
+          closeReason: reason === 'open' ? 'external' : reason,
+          lastRequestId: requestId.current
+        }
+      })
+    }
+  }, [logger])
 
   useEffect(() => {
     closed.current = false
-    void initialize()
+    closeReason.current = 'open'
+    void initialize('initial')
     return () => {
-      closed.current = true
       requestId.current += 1
     }
   }, [initialize])
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback((source: 'button' | 'android-back') => {
     if (closed.current) return
     closed.current = true
+    closeReason.current = 'cancelled'
     requestId.current += 1
+    logger.info({
+      category: 'workspace',
+      event: 'picker.cancelled',
+      message: 'Cancelled workspace directory selection',
+      details: {
+        source,
+        path: listing?.path,
+        loading,
+        hadError: error.length > 0
+      }
+    })
     onCancel()
-  }, [onCancel])
+  }, [error.length, listing?.path, loading, logger, onCancel])
 
   const select = useCallback(() => {
-    if (closed.current || loading || listing === null || !listing.writable) return
+    if (closed.current || loading || listing === null || !listing.writable) {
+      logger.warn({
+        category: 'workspace',
+        event: 'picker.selection_rejected',
+        message: 'Rejected an unavailable workspace-directory selection',
+        details: {
+          closed: closed.current,
+          loading,
+          canonicalPath: listing?.path,
+          writable: listing?.writable
+        }
+      })
+      return
+    }
     closed.current = true
+    closeReason.current = 'selected'
     requestId.current += 1
+    logger.info({
+      category: 'workspace',
+      event: 'picker.directory_selected',
+      message: 'Selected a workspace directory',
+      details: {
+        canonicalPath: listing.path,
+        rootPath: listing.rootPath,
+        parentPath: listing.parentPath,
+        writable: listing.writable
+      }
+    })
     onSelect(listing.path)
-  }, [listing, loading, onSelect])
+  }, [listing, loading, logger, onSelect])
 
   const retry = useCallback(() => {
-    if (retryPath === null) void initialize()
-    else void loadDirectory(retryPath)
-  }, [initialize, loadDirectory, retryPath])
+    logger.info({
+      category: 'workspace',
+      event: 'directory.retry_requested',
+      message: 'Retrying a workspace-directory request',
+      details: { requestedPath: retryPath ?? initialPath }
+    })
+    if (retryPath === null) void initialize('retry')
+    else void loadDirectory(retryPath, 'retry')
+  }, [initialPath, initialize, loadDirectory, logger, retryPath])
+
+  const openLogs = useCallback(() => {
+    Keyboard.dismiss()
+    logger.info({
+      category: 'workspace',
+      event: 'picker.logs_opened',
+      message: 'Opened Logs from the workspace directory picker',
+      details: { path: listing?.path, loading, hadError: error.length > 0 }
+    })
+    onOpenLogs()
+  }, [error.length, listing?.path, loading, logger, onOpenLogs])
 
   const canUseCurrentFolder = listing !== null && listing.writable && !loading
   const currentPath = listing?.path
@@ -140,7 +419,7 @@ export function WorkspaceDirectoryPicker({
   return (
     <Modal
       animationType="slide"
-      onRequestClose={cancel}
+      onRequestClose={() => { cancel('android-back') }}
       presentationStyle="fullScreen"
       visible
     >
@@ -156,15 +435,26 @@ export function WorkspaceDirectoryPicker({
               {root === null ? 'Shared storage' : `${root.label} · ${root.path}`}
             </Text>
           </View>
-          <Pressable
-            accessibilityLabel="Cancel workspace selection"
-            accessibilityRole="button"
-            onPress={cancel}
-            style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
-            testID="workspace-directory-cancel"
-          >
-            <Text style={styles.secondaryButtonText}>Cancel</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              accessibilityLabel="Open Logs"
+              accessibilityRole="button"
+              onPress={openLogs}
+              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+              testID="workspace-directory-logs"
+            >
+              <Text style={styles.secondaryButtonText}>Logs</Text>
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Cancel workspace selection"
+              accessibilityRole="button"
+              onPress={() => { cancel('button') }}
+              style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+              testID="workspace-directory-cancel"
+            >
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.locationBar}>
@@ -174,7 +464,9 @@ export function WorkspaceDirectoryPicker({
             accessibilityState={{ disabled: loading || listing?.parentPath === undefined }}
             disabled={loading || listing?.parentPath === undefined}
             onPress={() => {
-              if (listing?.parentPath !== undefined) void loadDirectory(listing.parentPath)
+              if (listing?.parentPath !== undefined) {
+                void loadDirectory(listing.parentPath, 'parent')
+              }
             }}
             style={({ pressed }) => [
               styles.upButton,
@@ -236,7 +528,7 @@ export function WorkspaceDirectoryPicker({
                     ? `Open folder ${item.name}`
                     : `Open folder ${item.name}, read-only`}
                   accessibilityRole="button"
-                  onPress={() => { void loadDirectory(item.path) }}
+                  onPress={() => { void loadDirectory(item.path, 'child') }}
                   style={({ pressed }) => [styles.directoryRow, pressed && styles.pressed]}
                   testID={`workspace-directory-row-${item.path}`}
                 >
@@ -296,6 +588,33 @@ function errorMessage(reason: unknown): string {
   return 'Unable to read this workspace directory.'
 }
 
+function listingDiagnosticDetails(
+  listing: WorkspaceListing,
+  requestId: number,
+  source: WorkspaceRequestSource,
+  requestedPath: string,
+  workspaceRoot: WorkspaceRoot | null
+) {
+  const readOnlyDirectoryCount = listing.directories.reduce(
+    (count, directory) => count + (directory.writable ? 0 : 1),
+    0
+  )
+  return {
+    requestId,
+    source,
+    requestedPath,
+    canonicalPath: listing.path,
+    rootPath: listing.rootPath,
+    parentPath: listing.parentPath,
+    volumeLabel: workspaceRoot?.label,
+    writable: listing.writable,
+    directoryCount: listing.directories.length,
+    writableDirectoryCount: listing.directories.length - readOnlyDirectoryCount,
+    readOnlyDirectoryCount,
+    rawListing: listing
+  }
+}
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -315,6 +634,11 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     gap: 2
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
   },
   title: {
     color: '#eef4fa',
