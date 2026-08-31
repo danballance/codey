@@ -11,6 +11,25 @@ export interface NativeNvimStatus {
   readonly unavailableReason?: string
 }
 
+export interface NativeWorkspaceRoot {
+  readonly label: string
+  readonly path: string
+}
+
+export interface NativeWorkspaceDirectory {
+  readonly name: string
+  readonly path: string
+  readonly writable: boolean
+}
+
+export interface NativeWorkspaceListing {
+  readonly rootPath: string
+  readonly path: string
+  readonly parentPath?: string
+  readonly writable: boolean
+  readonly directories: readonly NativeWorkspaceDirectory[]
+}
+
 export interface NativeNvimDataEvent {
   readonly sessionId: number
   readonly bytes: Uint8Array | readonly number[]
@@ -40,8 +59,13 @@ export interface NativeNvimModule {
   ): NativeSubscription
 }
 
-export function getNativeNvim(): NativeNvimModule {
-  return requireNativeModule<NativeNvimModule>('CodeyNvim')
+export interface NativeNvimWorkspaceModule {
+  getWorkspaceRoot(): Promise<NativeWorkspaceRoot>
+  listWorkspaceDirectory(path: string): Promise<NativeWorkspaceListing>
+}
+
+export function getNativeNvim(): NativeNvimModule & NativeNvimWorkspaceModule {
+  return requireNativeModule<NativeNvimModule & NativeNvimWorkspaceModule>('CodeyNvim')
 }
 
 export function getNativeNvimStatus(
@@ -54,4 +78,17 @@ export function openNativeNvimAllFilesSettings(
   module: NativeNvimModule = getNativeNvim()
 ): Promise<void> {
   return module.openAllFilesSettings()
+}
+
+export function getNativeWorkspaceRoot(
+  module: NativeNvimWorkspaceModule = getNativeNvim()
+): Promise<NativeWorkspaceRoot> {
+  return module.getWorkspaceRoot()
+}
+
+export function listNativeWorkspaceDirectory(
+  path: string,
+  module: NativeNvimWorkspaceModule = getNativeNvim()
+): Promise<NativeWorkspaceListing> {
+  return module.listWorkspaceDirectory(path)
 }

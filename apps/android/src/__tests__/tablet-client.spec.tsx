@@ -146,11 +146,33 @@ jest.mock('../native/nvim', () => ({
   openNativeNvimAllFilesSettings: jest.fn()
 }))
 
+jest.mock('../workspace/WorkspaceDirectoryPicker', () => {
+  const React = require('react')
+  const { View } = require('react-native')
+  return {
+    WorkspaceDirectoryPicker: ({
+      initialPath,
+      onCancel,
+      onSelect
+    }: {
+      initialPath: string
+      onCancel: () => void
+      onSelect: (path: string) => void
+    }) => React.createElement(View, {
+      initialPath,
+      onCancel,
+      onSelect,
+      testID: 'mock-workspace-directory-picker'
+    })
+  }
+})
+
 const mockedConnectionFactory = jest.mocked(createRuntimeConnection)
 const mockedNativeNvimStatus = jest.mocked(getNativeNvimStatus)
 const mockedOpenAllFilesSettings = jest.mocked(openNativeNvimAllFilesSettings)
 const mockedAppStateAddEventListener = jest.mocked(AppState.addEventListener)
 const getItem = jest.mocked(AsyncStorage.getItem)
+const setItem = jest.mocked(AsyncStorage.setItem)
 const DEFAULT_ACTION_PAD_ENDPOINT = actionPadEndpointForTarget(DEFAULT_CONNECTION_TARGET)
 
 interface ConnectionDouble {
@@ -269,9 +291,179 @@ describe('tablet client shell', () => {
     await waitFor(() => expect(screen.getByText('Grant files')).toBeTruthy())
     expect(screen.getByRole('tab', { name: 'Use local Neovim' }).props.accessibilityState.selected).toBe(true)
     expect(screen.getByLabelText('Local workspace path').props.value).toBe('/storage/emulated/0')
+    expect(screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled).toBe(true)
     fireEvent.press(screen.getByText('Grant files'))
     expect(mockedOpenAllFilesSettings).toHaveBeenCalledTimes(1)
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('opens and cancels the available local workspace browser without changing the path', async () => {
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    const browse = screen.getByRole('button', { name: 'Browse local workspaces' })
+
+    expect(browse.props.accessibilityState.disabled).toBe(true)
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled
+    ).toBe(false))
+    fireEvent.press(screen.getByRole('button', { name: 'Browse local workspaces' }))
+
+    const picker = screen.getByTestId('mock-workspace-directory-picker')
+    expect(picker.props.initialPath).toBe('/storage/emulated/0')
+    fireEvent(picker, 'cancel')
+
+    expect(screen.queryByTestId('mock-workspace-directory-picker')).toBeNull()
+    expect(screen.getByLabelText('Local workspace path').props.value).toBe('/storage/emulated/0')
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+    expect(setItem).not.toHaveBeenCalled()
+  })
+
+  it('stores a browsed local workspace while retaining Remote and does not connect', async () => {
+    getItem.mockImplementation(async (key) => key === CONNECTION_SETTINGS_STORAGE_KEY
+      ? JSON.stringify({
+          version: 2,
+          selectedKind: 'local',
+          local: { workspacePath: '/storage/emulated/0/Old' },
+          remote: { host: 'saved-remote.test', port: 7331 }
+        })
+      : null)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+
+    await waitFor(() => expect(screen.getByLabelText('Local workspace path').props.value).toBe(
+      '/storage/emulated/0/Old'
+    ))
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled
+    ).toBe(false))
+    fireEvent.press(screen.getByRole('button', { name: 'Browse local workspaces' }))
+    fireEvent(
+      screen.getByTestId('mock-workspace-directory-picker'),
+      'select',
+      '/storage/emulated/0/Projects'
+    )
+
+    await waitFor(() => expect(screen.getByLabelText('Local workspace path').props.value).toBe(
+      '/storage/emulated/0/Projects'
+    ))
+    await waitFor(() => expect(setItem).toHaveBeenCalledWith(
+      CONNECTION_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        selectedKind: 'local',
+        local: { workspacePath: '/storage/emulated/0/Projects' },
+        remote: { host: 'saved-remote.test', port: 7331 }
+      })
+    ))
+    expect(screen.queryByTestId('mock-workspace-directory-picker')).toBeNull()
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
+    })
+    expect(screen.getByText('Local (/storage/emulated/0/Projects) · Offline editing')).toBeTruthy()
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('waits for saved connection settings before browsing and preserves the hydrated Remote target', async () => {
+    let resolveSettings!: (value: string) => void
+    const settingsRead = new Promise<string>((resolve) => { resolveSettings = resolve })
+    getItem.mockImplementation((key) => key === CONNECTION_SETTINGS_STORAGE_KEY
+      ? settingsRead
+      : Promise.resolve(null))
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+
+    await waitFor(() => expect(mockedNativeNvimStatus).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('button', {
+      name: 'Browse local workspaces'
+    }).props.accessibilityState.disabled).toBe(true)
+
+    await act(async () => {
+      resolveSettings(JSON.stringify({
+        version: 2,
+        selectedKind: 'local',
+        local: { workspacePath: '/storage/emulated/0/Previous' },
+        remote: { host: 'hydrated-remote.test', port: 7444 }
+      }))
+      await settingsRead
+    })
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Browse local workspaces'
+    }).props.accessibilityState.disabled).toBe(false))
+
+    fireEvent.press(screen.getByRole('button', { name: 'Browse local workspaces' }))
+    fireEvent(
+      screen.getByTestId('mock-workspace-directory-picker'),
+      'select',
+      '/storage/emulated/0/New'
+    )
+
+    await waitFor(() => expect(setItem).toHaveBeenCalledWith(
+      CONNECTION_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        selectedKind: 'local',
+        local: { workspacePath: '/storage/emulated/0/New' },
+        remote: { host: 'hydrated-remote.test', port: 7444 }
+      })
+    ))
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('keeps Browse disabled during startup and a session, and hides it in Remote', async () => {
+    let resolveConnect!: () => void
+    const connectGate = new Promise<void>((resolve) => { resolveConnect = resolve })
+    const double = connectionDouble()
+    jest.mocked(double.session.connect).mockImplementation(() => connectGate)
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+
+    expect(screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled).toBe(true)
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled
+    ).toBe(false))
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await waitFor(() => expect(screen.getByText('Starting Local (/storage/emulated/0)…')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled).toBe(true)
+
+    await act(async () => { resolveConnect() })
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled).toBe(true)
+    await act(async () => { fireEvent.press(screen.getByText('Disconnect')) })
+    await waitFor(() => expect(screen.getByText('Disconnected')).toBeTruthy())
+    await act(async () => {
+      fireEvent.press(screen.getByRole('tab', { name: 'Use remote Neovim' }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(screen.queryByRole('button', { name: 'Browse local workspaces' })).toBeNull()
+  })
+
+  it('closes the workspace browser when refreshed status revokes local access', async () => {
+    let appStateListener: ((state: AppStateStatus) => void) | undefined
+    mockedAppStateAddEventListener.mockImplementation((type, listener) => {
+      if (type === 'change') appStateListener = listener
+      return { remove: jest.fn() }
+    })
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await waitFor(() => expect(
+      screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled
+    ).toBe(false))
+    fireEvent.press(screen.getByRole('button', { name: 'Browse local workspaces' }))
+    expect(screen.getByTestId('mock-workspace-directory-picker')).toBeTruthy()
+
+    mockedNativeNvimStatus.mockResolvedValueOnce({
+      supported: true,
+      running: false,
+      allFilesAccess: false
+    })
+    await act(async () => { appStateListener?.('active') })
+
+    await waitFor(() => expect(screen.queryByTestId('mock-workspace-directory-picker')).toBeNull())
+    expect(screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled).toBe(true)
   })
 
   it('routes the offline Action Pad connection through local file-access settings', async () => {
@@ -798,9 +990,14 @@ describe('tablet client shell', () => {
   }, 15_000)
 
   it('uses the same fixed right rail in condensed and expanded landscape layouts', async () => {
-    const landscape = render(<TabletClient capability={tabletCapability(800, 600)} />)
+    const landscape = render(<TabletClient capability={tabletCapability(601, 600)} />)
     await act(async () => { await Promise.resolve() })
     expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(8)
+    expect(StyleSheet.flatten(landscape.getByTestId('local-workspace-controls').props.style)).toMatchObject({
+      width: 320,
+      flexShrink: 1,
+      minWidth: 160
+    })
     expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-workspace').props.style)).toMatchObject({
       flexDirection: 'row'
     })
@@ -829,6 +1026,12 @@ describe('tablet client shell', () => {
 
     landscape.rerender(<TabletClient capability={tabletCapability(1_280, 800)} />)
     expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-screen').props.style).paddingHorizontal).toBe(16)
+    expect(StyleSheet.flatten(landscape.getByTestId('local-workspace-controls').props.style)).toMatchObject({
+      width: 320
+    })
+    expect(StyleSheet.flatten(
+      landscape.getByTestId('local-workspace-controls').props.style
+    ).flexShrink).toBeUndefined()
     expect(StyleSheet.flatten(landscape.getByTestId('tablet-client-workspace').props.style).flexDirection).toBe('row')
     expect(StyleSheet.flatten(landscape.getByTestId('action-pad-container').props.style).width).toBe(336)
     expect(mockedConnectionFactory).not.toHaveBeenCalled()

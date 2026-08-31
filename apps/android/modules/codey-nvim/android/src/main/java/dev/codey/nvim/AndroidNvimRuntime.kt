@@ -28,6 +28,11 @@ internal data class NvimRuntimeStatus(
 internal class AndroidNvimRuntime(private val context: Context) {
   private val applicationContext = context.applicationContext
   private val installer = NvimRuntimeInstaller(applicationContext)
+  private val workspaceDirectoryValidator = WorkspaceDirectoryValidator()
+  private val workspaceBrowser = WorkspaceBrowser(
+    volumeProvider = { primarySharedStorageVolume(applicationContext) },
+    allFilesAccessProvider = ::hasAllFilesAccess
+  )
 
   fun status(running: Boolean): NvimRuntimeStatus {
     val reason = when {
@@ -74,6 +79,11 @@ internal class AndroidNvimRuntime(private val context: Context) {
     }
   }
 
+  fun getWorkspaceRoot(): WorkspaceRoot = workspaceBrowser.getRoot()
+
+  fun listWorkspaceDirectory(path: String): WorkspaceListing =
+    workspaceBrowser.listDirectory(path)
+
   fun prepare(cwd: String): NvimLaunchSpec {
     val runtimeStatus = status(running = false)
     check(runtimeStatus.supported) {
@@ -83,7 +93,7 @@ internal class AndroidNvimRuntime(private val context: Context) {
       "All-files access must be granted before starting local NeoVim"
     }
 
-    val workspace = validateWorkspace(cwd)
+    val workspace = workspaceDirectoryValidator.requireWritableDirectory(cwd)
     val runtime = installer.installIfNeeded()
     val privateRoot = File(applicationContext.filesDir, PRIVATE_ROOT).ensureDirectory()
     val home = File(privateRoot, "home").ensureDirectory()
@@ -115,21 +125,6 @@ internal class AndroidNvimRuntime(private val context: Context) {
         "LANG" to "C.UTF-8"
       )
     )
-  }
-
-  private fun validateWorkspace(cwd: String): File {
-    require(cwd.isNotBlank()) { "Local workspace path must not be empty" }
-    val requested = File(cwd)
-    require(requested.isAbsolute) { "Local workspace path must be absolute" }
-    val workspace = try {
-      requested.canonicalFile
-    } catch (error: IOException) {
-      throw IllegalArgumentException("Unable to resolve local workspace path", error)
-    }
-    require(workspace.isDirectory) { "Local workspace path is not a directory" }
-    require(workspace.canRead()) { "Local workspace directory is not readable" }
-    require(workspace.canWrite()) { "Local workspace directory is not writable" }
-    return workspace
   }
 
   private fun nativeExecutable(): File = File(

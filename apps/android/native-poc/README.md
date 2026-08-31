@@ -11,7 +11,9 @@ recipe or a production release pipeline.
 - One app-scoped `nvim --clean --embed` process at a time.
 - MessagePack-RPC over the child process's stdin/stdout, with stderr retained
   only as a bounded diagnostic tail.
-- A user-selected absolute workspace path, using Android all-files access.
+- A user-selected absolute workspace path, using Android all-files access. The
+  native browser covers primary shared storage only; the editable field remains
+  available for manually entered filesystem paths.
 - Existing remote TCP mode remains available and unchanged at the protocol
   layer.
 
@@ -46,9 +48,17 @@ gate.
 ## Install and use
 
 Install the APK on an arm64 Android 11+ device, choose **Local**, grant the
-all-files permission when prompted, enter an existing writable absolute
-directory such as `/storage/emulated/0/Documents`, and connect. Choose
-**Remote** to keep using the existing host/port workflow.
+all-files permission when prompted, and use **Browse** to choose an existing
+writable directory below `/storage/emulated/0`. Selection only saves the Local
+workspace; press **Connect** separately to start NeoVim. You can instead type a
+known writable absolute filesystem path manually. Choose **Remote** to keep
+using the existing host/port workflow.
+
+This POC browser deliberately does not use `ACTION_OPEN_DOCUMENT_TREE`, map
+`content://` URIs to paths, enumerate cloud document providers, or browse
+removable storage. NeoVim needs a real working-directory path for ordinary
+filesystem and Git operations, while a Storage Access Framework tree is a
+provider URI rather than a portable filesystem location.
 
 Local mode intentionally uses a private clean HOME/XDG environment. It does
 not load the user's desktop NeoVim configuration or plugins, open a localhost

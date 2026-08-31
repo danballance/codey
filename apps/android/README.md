@@ -17,8 +17,19 @@ Skia + Android IME
 
 Fresh installs select **Local**. On arm64 Android 11 or newer, the personal POC
 APK starts one bundled `nvim --clean --embed` process and carries RPC bytes over
-stdin/stdout. Enter an existing writable absolute workspace path. Android's
-all-files settings page is opened explicitly when access has not been granted.
+stdin/stdout. Grant Android's all-files access, then use **Browse** to choose an
+existing writable directory under primary shared storage (the device's internal
+user storage). The browser is intentionally limited to that storage root in this
+POC; it does not expose removable volumes, cloud providers, or Android's Storage
+Access Framework. The path remains editable as a manual fallback for another
+known writable absolute filesystem path.
+
+The browser returns the canonical path that the bundled process can use as its
+real working directory. It does not attempt to convert a `content://` tree URI
+into a filesystem path. Choosing a directory updates and saves the Local target
+without starting a session; **Connect** remains an explicit second action.
+Android's all-files settings page is opened explicitly when access has not been
+granted.
 The process gets a private clean HOME/XDG environment and stops with the app
 session; it is not a background server.
 

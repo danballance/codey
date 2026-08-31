@@ -69,6 +69,31 @@ class CodeyNvimModule : Module() {
       nvimRuntime.openAllFilesSettings()
     }
 
+    AsyncFunction("getWorkspaceRoot") {
+      val root = nvimRuntime.getWorkspaceRoot()
+      mapOf(
+        "label" to root.label,
+        "path" to root.path
+      )
+    }.runOnQueue(ioScope)
+
+    AsyncFunction("listWorkspaceDirectory") { path: String ->
+      val listing = nvimRuntime.listWorkspaceDirectory(path)
+      buildMap<String, Any> {
+        put("rootPath", listing.rootPath)
+        put("path", listing.path)
+        listing.parentPath?.let { parentPath -> put("parentPath", parentPath) }
+        put("writable", listing.writable)
+        put("directories", listing.directories.map { directory ->
+          mapOf(
+            "name" to directory.name,
+            "path" to directory.path,
+            "writable" to directory.writable
+          )
+        })
+      }
+    }.runOnQueue(ioScope)
+
     AsyncFunction("start") { cwd: String ->
       manager.start(cwd)
     }.runOnQueue(ioScope)
