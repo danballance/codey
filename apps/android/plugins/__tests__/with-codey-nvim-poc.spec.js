@@ -7,6 +7,20 @@ const {
   configurePocSettingsGradle
 } = require('../with-codey-nvim-poc')
 
+const DO_NOT_STRIP_PROPERTY = 'android.packagingOptions.doNotStrip'
+const EXPECTED_NVIM_NATIVE_LIBRARY_PATTERNS = [
+  '**/libandroid-support.so',
+  '**/libcodey_nvim.so',
+  '**/libiconv.so',
+  '**/liblpeg-5.1.so',
+  '**/libluajit-5.1.so',
+  '**/libluv.so',
+  '**/libtree-sitter.so',
+  '**/libunibilium.so',
+  '**/libutf8proc.so',
+  '**/libuv.so'
+]
+
 describe('bundled NeoVim Android config plugin', () => {
   it('sets the API floor, arm64 ABI, and extracted native-library packaging', () => {
     const result = configureGradleProperties([
@@ -18,6 +32,36 @@ describe('bundled NeoVim Android config plugin', () => {
       { type: 'property', key: 'reactNativeArchitectures', value: 'arm64-v8a' },
       { type: 'property', key: 'expo.useLegacyPackaging', value: 'true' }
     ]))
+  })
+
+  it('preserves existing do-not-strip entries and adds every bundled NeoVim library once', () => {
+    const existingEntries = ['**/libalready-preserved.so', 'lib/arm64-v8a/libvendor.so']
+    const unrelatedEntry = { type: 'comment', value: 'keep this record' }
+    const initial = [
+      unrelatedEntry,
+      {
+        type: 'property',
+        key: DO_NOT_STRIP_PROPERTY,
+        value: ` ${existingEntries[0]}, , ${existingEntries[0]}, ${existingEntries[1]} `
+      },
+      {
+        type: 'property',
+        key: DO_NOT_STRIP_PROPERTY,
+        value: ' **/libandroid-support.so, **/libandroid-support.so '
+      }
+    ]
+
+    const result = configureGradleProperties(initial)
+    const property = result.find((item) => item.key === DO_NOT_STRIP_PROPERTY)
+    const entries = property.value.split(',')
+
+    expect(result.filter((item) => item.key === DO_NOT_STRIP_PROPERTY)).toHaveLength(1)
+    expect(result).toContain(unrelatedEntry)
+    expect(entries).toEqual([...existingEntries, ...EXPECTED_NVIM_NATIVE_LIBRARY_PATTERNS])
+    expect(new Set(entries).size).toBe(entries.length)
+
+    const repeated = configureGradleProperties(result)
+    expect(repeated).toEqual(result)
   })
 
   it('adds only the required broad access and forces native-library extraction', () => {
