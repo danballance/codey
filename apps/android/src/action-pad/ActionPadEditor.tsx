@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Modal,
@@ -13,6 +14,7 @@ import {
 } from 'react-native'
 
 import { CODEY_NERD_FONT_FAMILIES, useCodeyNerdFontFaces } from '../fonts'
+import type { ConnectionFailure } from '../controller'
 import { type NerdFontIcon } from '../fonts/nerd-font-icons'
 import { ActionButtonLabel } from './ActionButtonLabel'
 import { NerdFontIconPicker } from './NerdFontIconPicker'
@@ -51,6 +53,7 @@ import {
   resolveActionButtonLabelColor,
   resolveActionButtonStyles
 } from './style'
+import type { ActionPadNotice, ActionPadOperation } from './store'
 
 export interface ActionPadEditorProps {
   readonly config: ActionPadConfig
@@ -60,10 +63,16 @@ export interface ActionPadEditorProps {
   readonly dirty: boolean
   readonly sourcePath: string
   readonly message: string
+  readonly operation?: ActionPadOperation | null
+  readonly notice?: ActionPadNotice | null
+  readonly recoveryNotice?: ActionPadNotice | null
+  readonly connectionFailure?: ConnectionFailure | null
   readonly onLoad: (path: string) => Promise<void>
   readonly onSave: (path: string) => Promise<void>
   readonly onExport: (path: string) => Promise<void>
   readonly onCancel: () => void
+  readonly onStopWaiting?: () => void
+  readonly onReconnectAndCheck?: () => void
   readonly initialButton?: ActionPadButtonTarget
   readonly onPendingEditsChange?: (pending: boolean) => void
   readonly initialIdDrafts?: Readonly<Record<string, string>>
@@ -127,10 +136,16 @@ export function ActionPadEditor({
   dirty,
   sourcePath,
   message,
+  operation = null,
+  notice: operationNotice,
+  recoveryNotice,
+  connectionFailure,
   onLoad,
   onSave,
   onExport,
   onCancel,
+  onStopWaiting,
+  onReconnectAndCheck,
   initialButton,
   onPendingEditsChange,
   initialIdDrafts,
@@ -272,6 +287,10 @@ export function ActionPadEditor({
     )
   )
   const destinationExists = destinations.some((candidate) => candidate.value === moveDestination)
+  const legacyNotice = operationNotice === undefined && message
+    ? { severity: 'info' as const, summary: message }
+    : null
+  const displayedOperationNotice = operationNotice ?? legacyNotice
 
   useEffect(() => {
     if (iconRequest && (busy || !fontLoaded || kind !== 'button' ||
@@ -594,7 +613,17 @@ export function ActionPadEditor({
           ) : null}
           <Text style={styles.muted}>Paths are on the Neovim host. Use an absolute path or ~/. Save activates the draft only after the file is written.</Text>
           {!connected ? <Text style={styles.notice}>You can edit offline. Reconnect to load, save, or export; drafts are never uploaded automatically.</Text> : null}
-          {message ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{message}</Text> : null}
+          {operation ? <OperationStatusCard operation={operation} onStopWaiting={onStopWaiting} /> : null}
+          {displayedOperationNotice ? (
+            <NoticeStatusCard notice={displayedOperationNotice} onReconnectAndCheck={onReconnectAndCheck} />
+          ) : null}
+          {recoveryNotice ? <NoticeStatusCard notice={recoveryNotice} /> : null}
+          {connectionFailure ? (
+            <NoticeStatusCard
+              notice={connectionFailureNotice(connectionFailure)}
+              onReconnectAndCheck={onReconnectAndCheck}
+            />
+          ) : null}
           {targetNotice ? <Text accessibilityLiveRegion="polite" style={styles.notice} testID="action-pad-editor-target-notice">{targetNotice}</Text> : null}
           {operationError ? <Text accessibilityLiveRegion="polite" style={styles.error}>{operationError}</Text> : null}
         </View>
@@ -1432,6 +1461,157 @@ function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded
   )
 }
 
+function OperationStatusCard({
+  operation,
+  onStopWaiting
+}: {
+  readonly operation: ActionPadOperation
+  readonly onStopWaiting?: () => void
+}) {
+  const elapsedMs = useOperationElapsed(operation)
+  const status = `${operationLabel(operation.kind)} · ${phaseLabel(operation.phase)} · ${formatDuration(elapsedMs)}`
+  return (
+    <View style={[styles.statusCard, operation.slow && styles.warningCard]} testID="action-pad-operation-progress">
+      <View
+        accessible
+        accessibilityLiveRegion="polite"
+        accessibilityRole="progressbar"
+        accessibilityValue={{ text: status }}
+        style={styles.statusHeader}
+      >
+        <ActivityIndicator accessibilityElementsHidden color="#73daca" size="small" />
+        <View style={styles.statusCopy}>
+          <Text style={styles.sectionTitle}>{operationLabel(operation.kind)}</Text>
+          <Text style={styles.muted}>{phaseLabel(operation.phase)} · {formatDuration(elapsedMs)}</Text>
+        </View>
+      </View>
+      {operation.slow ? (
+        <>
+          <Text style={styles.notice}>Taking longer than expected. The host request is still pending.</Text>
+          {onStopWaiting ? (
+            <View style={styles.actions}>
+              <EditorButton danger label="Stop waiting and disconnect" onPress={onStopWaiting} />
+            </View>
+          ) : null}
+        </>
+      ) : null}
+    </View>
+  )
+}
+
+function NoticeStatusCard({
+  notice,
+  onReconnectAndCheck
+}: {
+  readonly notice: ActionPadNotice
+  readonly onReconnectAndCheck?: () => void
+}) {
+  const [showDetails, setShowDetails] = useState(false)
+  useEffect(() => { setShowDetails(false) }, [notice])
+  const rows = noticeDetailRows(notice)
+  const alert = notice.severity === 'error' || notice.severity === 'warning'
+  return (
+    <View
+      style={[
+        styles.statusCard,
+        notice.severity === 'error' && styles.errorCard,
+        notice.severity === 'warning' && styles.warningCard,
+        notice.severity === 'success' && styles.successCard
+      ]}
+      testID={`action-pad-${notice.severity}-notice`}
+    >
+      <View
+        accessible
+        accessibilityLiveRegion={notice.severity === 'error' ? 'assertive' : 'polite'}
+        accessibilityRole={alert ? 'alert' : undefined}
+      >
+        <Text style={notice.severity === 'error' ? styles.error : notice.severity === 'warning' ? styles.notice : styles.label}>
+          {notice.summary}
+        </Text>
+        {notice.recommendedAction ? <Text style={styles.muted}>{notice.recommendedAction}</Text> : null}
+      </View>
+      <View style={styles.actions}>
+        {onReconnectAndCheck ? (
+          <EditorButton label="Reconnect & check save" onPress={onReconnectAndCheck} primary />
+        ) : null}
+        {rows.length > 0 ? (
+          <EditorButton
+            accessibilityLabel={showDetails ? 'Hide technical details' : 'Show technical details'}
+            label={showDetails ? 'Hide details' : 'Technical details'}
+            onPress={() => setShowDetails(!showDetails)}
+          />
+        ) : null}
+      </View>
+      {showDetails ? (
+        <View style={styles.technicalDetails} testID="action-pad-technical-details">
+          {rows.map(([label, value]) => (
+            <Text key={label} selectable style={styles.technicalDetail}>{label}: {value}</Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  )
+}
+
+function useOperationElapsed(operation: ActionPadOperation): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(timer)
+  }, [operation.id])
+  return Math.max(0, now - operation.startedAtMs)
+}
+
+function connectionFailureNotice(failure: ConnectionFailure): ActionPadNotice {
+  return {
+    severity: 'error',
+    summary: `Host connection failed: ${failure.message}`,
+    recommendedAction: 'Reconnect before accessing host files. If a save was pending, check it before retrying.',
+    details: {
+      socketCode: failure.nativeCode ?? failure.code,
+      nativeSocketMessage: failure.nativeMessage ?? failure.message
+    }
+  }
+}
+
+function noticeDetailRows(notice: ActionPadNotice): readonly (readonly [string, string])[] {
+  const details = notice.details
+  if (!details) return []
+  const rows: [string, string][] = []
+  if (details.operation) rows.push(['Operation', operationLabel(details.operation)])
+  if (details.phase) rows.push(['Phase', phaseLabel(details.phase)])
+  if (details.durationMs !== undefined) rows.push(['Duration', formatDuration(details.durationMs)])
+  if (details.path) rows.push(['Host path', details.path])
+  if (details.byteCount !== undefined) rows.push(['Serialized bytes', String(details.byteCount)])
+  if (details.hostErrorCode) rows.push(['Host error code', details.hostErrorCode])
+  if (details.hostStage) rows.push(['Host stage', details.hostStage])
+  if (details.socketCode) rows.push(['Native socket code', details.socketCode])
+  if (details.nativeSocketMessage) rows.push(['Native socket message', details.nativeSocketMessage])
+  return rows
+}
+
+function operationLabel(kind: ActionPadOperation['kind']): string {
+  return kind === 'load' ? 'Loading Action Pad'
+    : kind === 'save' ? 'Saving Action Pad'
+      : kind === 'export' ? 'Exporting Action Pad'
+        : 'Checking previous save'
+}
+
+function phaseLabel(phase: ActionPadOperation['phase']): string {
+  switch (phase) {
+    case 'validating': return 'Validating draft'
+    case 'checking-host-file': return 'Checking host file'
+    case 'writing': return 'Writing host file'
+    case 'awaiting-confirmation': return 'Awaiting host confirmation'
+  }
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1_000) return `${Math.round(durationMs)} ms`
+  return `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`
+}
+
 function EditorButton({ accessibilityLabel, label, onPress, disabled = false, selected = false, primary = false, danger = false, testID }: {
   readonly accessibilityLabel?: string
   readonly label: string
@@ -1715,6 +1895,13 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   content: { padding: 16, paddingBottom: 40, gap: 16 },
   card: { gap: 12, padding: 16, borderWidth: 1, borderColor: '#27303a', borderRadius: 12, backgroundColor: '#111419' },
+  statusCard: { gap: 10, padding: 12, borderWidth: 1, borderColor: '#303946', borderRadius: 10, backgroundColor: '#151b22' },
+  statusHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  statusCopy: { flex: 1, gap: 2 },
+  warningCard: { borderColor: '#765f2f', backgroundColor: '#2b271f' },
+  successCard: { borderColor: '#386847', backgroundColor: '#17271d' },
+  technicalDetails: { gap: 5, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#303946' },
+  technicalDetail: { color: '#9eabb8', fontSize: 12, lineHeight: 18, fontFamily: 'monospace' },
   section: { gap: 6 },
   sectionTitle: { color: '#eef4fa', fontSize: 18, fontWeight: '600' },
   label: { color: '#c0caf5', fontSize: 14, fontWeight: '600' },

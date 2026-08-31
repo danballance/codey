@@ -11,6 +11,8 @@
     "start": "expo start --dev-client --lan",
     "android": "expo run:android --device",
     "install:release": "./scripts/install-release.sh",
+    "prepare:nvim:poc": "./scripts/prepare-nvim-poc.sh",
+    "build:poc": "./scripts/build-poc-apk.sh",
     "prebuild:clean": "expo prebuild --clean --platform android",
     "export:android": "expo export --platform android --output-dir dist",
     "doctor": "expo-doctor",
@@ -18,7 +20,7 @@
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit",
-    "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-tcp:testDebugUnitTest :codey-action-label:testDebugUnitTest",
+    "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-tcp:testDebugUnitTest :codey-action-label:testDebugUnitTest :codey-nvim:testDebugUnitTest",
     "assemble:debug": "NODE_ENV=development ./android/gradlew -p android assembleDebug",
     "assemble:release": "NODE_ENV=production ./android/gradlew -p android assembleRelease"
   },

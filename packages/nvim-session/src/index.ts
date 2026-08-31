@@ -17,6 +17,7 @@ export {
   MAX_HOST_DOCUMENT_BYTES,
   type HostDocument,
   type HostDocumentErrorCode,
+  type HostDocumentErrorStage,
   type HostDocumentWrite,
 } from "./host-documents";
 

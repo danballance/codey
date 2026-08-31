@@ -127,7 +127,7 @@ describe.skipIf(!hasNvim || process.platform !== "linux")("isolated Neovim host 
     ].join("\n"));
 
     await expect(save(original, "label: published\n")).rejects.toMatchObject({
-      code: "io", message: expect.stringContaining("result is uncertain"),
+      code: "io", stage: "sync", message: expect.stringContaining("result is uncertain"),
     });
     expect(await readFile(path(), "utf8")).toBe("label: published\n");
     expect((await readdir(directory)).filter((name) => name.startsWith(".codey-action-pad-"))).toEqual([]);
@@ -140,7 +140,7 @@ describe.skipIf(!hasNvim || process.platform !== "linux")("isolated Neovim host 
 
     await expect(session.writeHostDocument({
       path: path("new/nested/pad.yaml"), text: "label: refused\n", expectedRevision: null,
-    })).rejects.toMatchObject({ code: "permission" });
+    })).rejects.toMatchObject({ code: "permission", stage: "sync" });
     await expect(stat(path("new/nested/pad.yaml"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -159,7 +159,7 @@ describe.skipIf(!hasNvim || process.platform !== "linux")("isolated Neovim host 
     ].join("\n"));
 
     await expect(save(original, "label: published\n")).rejects.toMatchObject({
-      code: "io", message: expect.stringContaining("result is uncertain"),
+      code: "io", stage: "read-back", message: expect.stringContaining("result is uncertain"),
     });
     expect(await readFile(path(), "utf8")).toBe("label: published\n");
     expect((await readdir(directory)).filter((name) => name.startsWith(".codey-action-pad-"))).toEqual([]);

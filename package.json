@@ -12,6 +12,8 @@
     "android:metro": "pnpm --filter @codey/android run start",
     "android:install": "pnpm --filter @codey/android run android",
     "android:install:release": "pnpm --filter @codey/android run install:release",
+    "android:poc": "pnpm --filter @codey/android run build:poc",
+    "android:prepare:nvim:poc": "pnpm --filter @codey/android run prepare:nvim:poc",
     "android:doctor": "pnpm --filter @codey/android run doctor",
     "android:bundle": "pnpm --filter @codey/android run export:android",
     "android:prebuild": "pnpm --filter @codey/android run prebuild:clean",

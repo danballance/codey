@@ -16,7 +16,7 @@ describe('action button style utilities', () => {
     expect(ACTION_BUTTON_SIZE_OPTIONS).toEqual([
       { value: '1/1', label: 'Whole', units: 60, width: '100%' },
       { value: '1/2', label: 'Half', units: 30, width: '48%' },
-      { value: '1/3', label: 'Third', units: 20, width: '30.6667%' },
+      { value: '1/3', label: 'Third', units: 20, width: '30.6666%' },
       { value: '1/4', label: 'Quarter', units: 15, width: '22%' },
       { value: '1/5', label: 'Fifth', units: 12, width: '16.8%' }
     ])
@@ -37,7 +37,7 @@ describe('action button style utilities', () => {
 
   it('resolves appearance defaults, explicit overrides and invalid draft fallbacks', () => {
     expect(resolveActionButtonStyles({ size: '1/3' })).toEqual({
-      size: '1/3', units: 20, width: '30.6667%', appearance: 'filled',
+      size: '1/3', units: 20, width: '30.6666%', appearance: 'filled',
       backgroundColor: '#24283b', outlineColor: 'transparent'
     })
     expect(resolveActionButtonStyles({ size: '1/5', appearance: 'outline' })).toEqual({

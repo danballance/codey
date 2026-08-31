@@ -1,0 +1,34 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.codey'
+version = '0.1.0'
+
+android {
+  namespace 'dev.codey.nvim'
+  buildToolsVersion rootProject.ext.buildToolsVersion
+  compileSdk rootProject.ext.compileSdkVersion
+
+  defaultConfig {
+    minSdk 30
+    versionCode 1
+    versionName '0.1.0'
+  }
+
+  testOptions {
+    unitTests.includeAndroidResources = true
+    unitTests.all {
+      testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat 'full'
+      }
+    }
+  }
+}
+
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.robolectric:robolectric:4.16.1'
+}

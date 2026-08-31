@@ -1,6 +1,6 @@
 # Android tablet client
 
-This app is an Android-only Expo SDK 57 development client for Codey. It proves
+This app is an Android-only Expo SDK 57 client for Codey. It proves
 the mobile vertical slice while reusing the existing `transport`, `msgpack-rpc`,
 `nvim-session`, and `editor-core` contracts:
 
@@ -8,10 +8,29 @@ the mobile vertical slice while reusing the existing `transport`, `msgpack-rpc`,
 Skia + Android IME
   -> NvimSessionClient
   -> MessagePackRpcClient
-  -> ExpoTcpTransport
-  -> local Expo Kotlin TCP module
+  -> ExpoNvimProcessTransport -> CodeyNvim -> nvim --clean --embed
+   or ExpoTcpTransport -> CodeyTcp -> remote TCP endpoint
   -> Neovim
 ```
+
+## Local and remote sessions
+
+Fresh installs select **Local**. On arm64 Android 11 or newer, the personal POC
+APK starts one bundled `nvim --clean --embed` process and carries RPC bytes over
+stdin/stdout. Enter an existing writable absolute workspace path. Android's
+all-files settings page is opened explicitly when access has not been granted.
+The process gets a private clean HOME/XDG environment and stops with the app
+session; it is not a background server.
+
+Select **Remote** to retain the existing host/port TCP workflow. A legacy saved
+endpoint is migrated to Remote automatically. The most recent local path and
+remote endpoint are stored independently, and Action Pad recovery uses a stable
+local identity rather than the selected path.
+
+The bundled implementation is intentionally arm64/API-30-only and meant for a
+personal sideloaded APK. See [`native-poc/README.md`](native-poc/README.md) for
+the build command, security boundary, binary lock, and the source-build work
+required before F-Droid.
 
 ## Supported screen contract
 
@@ -164,14 +183,17 @@ Outline buttons default to a transparent background with a `#353b52` outline.
 An incomplete custom value is retained in the recoverable draft and shown as a
 field error, but Save and Export remain disabled until it is valid. The external
 idle **Edit Action Pad** control uses the same set-back transparent treatment;
-**Done editing** remains cyan/tinted and **Connect host** remains filled.
+**Done editing** remains cyan/tinted and **Connect session** remains filled.
 
-The primary YAML file lives on the connected Neovim host, not on Android.
-Choose an absolute host path or a path beginning with `~/`. The suggested path
-is `stdpath("config")/codey/action-pad.yaml`; use a file in your dotfiles or Git
-repository if preferred. The app remembers the active path with its endpoint.
-No additional host service, plugin, SSH connection, or Android storage
-permission is needed.
+The primary YAML file lives in the connected Neovim environment. In Remote mode
+that is the remote host; in Local mode it is the Android process, where `~/`
+resolves inside Codey's private clean HOME. Choose an absolute path or one
+beginning with `~/`. The suggested path is
+`stdpath("config")/codey/action-pad.yaml`; use a file in your dotfiles or Git
+repository if preferred. The app remembers the active path with its connection
+target. File operations need no extra service, plugin, or SSH connection.
+Remote mode needs no Android storage permission; Local mode uses the all-files
+access already required for an external workspace.
 
 - **Load / Reload** validates a file before replacing the active pad and draft.
   Invalid files leave both unchanged. Loading over unsaved edits requires
@@ -194,8 +216,8 @@ Pad and host YAML keep the last activated configuration until a successful
 it; discarding the draft restores the last saved definitions.
 
 The app keeps the last valid configuration and incomplete drafts in local
-recovery storage. Editing works offline; host operations require a connection.
-Use **Connect host** inside the editor to reconnect without discarding edits.
+recovery storage. Editing works offline; file operations require a connection.
+Use **Connect session** inside the editor to reconnect without discarding edits.
 Reconnecting refreshes a clean configuration but never silently replaces an
 unsaved draft or uploads it. If a Save response is lost, the next explicit Save
 reads the host file to reconcile the attempt before writing again.
@@ -407,7 +429,20 @@ plain unauthenticated TCP and must only be used on a trusted private network.
 
 Expo Continuous Native Generation produces `apps/android/android/`; that folder
 is ignored and can be recreated. Kotlin source for the TCP, IME, and rich action
-label modules is tracked under `modules/`.
+label modules, plus the local NeoVim process module, is tracked under `modules/`.
+
+To assemble the standalone local-NeoVim proof of concept without the Expo
+development client:
+
+```sh
+pnpm android:poc
+```
+
+This checksum-verifies and stages the pinned arm64 bundle, performs a clean POC
+prebuild, and assembles
+`android/app/build/outputs/apk/release/app-release.apk`. Generated native
+binaries, runtime data, package downloads, and the native project remain
+untracked.
 
 After changing Expo native configuration (including supported orientations),
 native module registration, or Kotlin code, run a clean prebuild and reinstall
@@ -425,10 +460,9 @@ layout tests. Its Robolectric native-graphics tests explicitly use Android API
 35, which works with the flake's JDK 17, and read the same font assets shipped
 by Metro. Bitmap fixtures are written under
 `modules/codey-action-label/android/build/reports/label-fixtures/` for visual
-inspection. API 24 compatibility tests check API usage and control flow, not
-old-platform raster fidelity: Robolectric's older graphics shadows are not a
-substitute for an API 24 device. Device-specific visual gaps must be reported
-separately from successful JavaScript and native unit tests.
+inspection. The minimum-platform compatibility tests use API 30, matching the
+local NeoVim build's Android 11 floor. Device-specific visual gaps must be
+reported separately from successful JavaScript and native unit tests.
 
 The development profile in `eas.json` produces an installable Android APK. EAS
 CLI is supplied by the flake. A local debug APK can be assembled directly with:

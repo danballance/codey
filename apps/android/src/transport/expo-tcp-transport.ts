@@ -134,7 +134,7 @@ export class ExpoTcpTransport implements DuplexTransport {
       }
     })
     this.#writeTail = operation.catch((reason: unknown) => {
-      const error = toError(reason, 'TCP write failed')
+      const error = withNativeCode(toError(reason, 'TCP write failed'), 'E_TCP_WRITE')
       this.#terminate(this.#explicitClose ? undefined : error)
       if (!this.#explicitClose) void this.#module.close(connectionId).catch(() => undefined)
     })
@@ -204,7 +204,9 @@ export class ExpoTcpTransport implements DuplexTransport {
       return
     }
     if (event.connectionId !== this.#connectionId) return
-    const error = this.#state === 'closing' ? undefined : event.message ? nativeCloseError(event) : undefined
+    const error = this.#state === 'closing'
+      ? undefined
+      : event.message || event.code ? nativeCloseError(event) : undefined
     this.#terminate(error)
   }
 
@@ -238,8 +240,16 @@ export class ExpoTcpTransport implements DuplexTransport {
 }
 
 function nativeCloseError(event: NativeTcpCloseEvent): Error {
-  const error = new Error(event.message)
+  const error = new Error(event.message ?? 'TCP connection closed unexpectedly')
   error.name = event.code ?? 'NativeTcpError'
+  Object.assign(error, { nativeCode: event.code })
+  return error
+}
+
+function withNativeCode(error: Error, code: string): Error {
+  const candidate = error as Error & { nativeCode?: unknown }
+  if (typeof candidate.nativeCode !== 'string') candidate.nativeCode = code
+  if (error.name === 'Error') error.name = code
   return error
 }
 

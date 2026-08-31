@@ -99,14 +99,18 @@
             packages =
               with pkgs;
               [
+                curl
                 git
                 gnumake
                 neovim
                 nodejs_24
+                patchelf
                 pkg-config
                 pnpm
                 python3
                 stdenv.cc
+                xz
+                zip
                 androidSdk
                 androidComposition.platform-tools
                 eas-cli

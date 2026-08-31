@@ -195,7 +195,9 @@ describe('ExpoTcpTransport', () => {
     await transport.close()
 
     expect(closeListener).toHaveBeenCalledTimes(1)
-    expect(closeListener).toHaveBeenCalledWith(expect.objectContaining({ message: 'broken pipe' }))
+    expect(closeListener).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'E_TCP_WRITE', nativeCode: 'E_TCP_WRITE', message: 'broken pipe'
+    }))
     expect(native.close).toHaveBeenCalledTimes(1)
   })
 
@@ -213,6 +215,9 @@ describe('ExpoTcpTransport', () => {
     native.emitClose({ connectionId: 1, message: 'old peer closed', code: 'ECONNRESET' })
     native.emitClose({ connectionId: 1, message: 'duplicate' })
     expect(firstClosed).toHaveBeenCalledTimes(1)
+    expect(firstClosed).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'ECONNRESET', nativeCode: 'ECONNRESET', message: 'old peer closed'
+    }))
     expect(secondClosed).not.toHaveBeenCalled()
 
     native.emitClose({ connectionId: 2 })

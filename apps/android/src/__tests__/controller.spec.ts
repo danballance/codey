@@ -13,7 +13,10 @@ import {
   type FrameScheduler,
   type MobileSession
 } from '../controller'
-import type { Endpoint } from '../endpoint'
+import {
+  actionPadEndpointForTarget,
+  type ConnectionTarget
+} from '../connection-target'
 
 function connectionDouble() {
   let redrawListener: ((batch: RedrawBatch) => void) | undefined
@@ -112,6 +115,25 @@ describe('TabletClientController', () => {
     clearPerformanceRecords()
   })
 
+  it('connects a local target and scopes document RPCs to its stable Action Pad identity', async () => {
+    const double = connectionDouble()
+    const factory = jest.fn((_target: ConnectionTarget) => double)
+    const controller = new TabletClientController(factory)
+    const localTarget = { kind: 'local', workspacePath: '/storage/emulated/0/Code' } as const
+
+    await controller.connect(localTarget)
+
+    expect(factory).toHaveBeenCalledWith(localTarget)
+    expect(controller.getState()).toMatchObject({
+      phase: 'connected',
+      message: 'Running Local (/storage/emulated/0/Code)'
+    })
+    await expect(controller.defaultActionPadPath(actionPadEndpointForTarget(localTarget)))
+      .resolves.toContain('/codey/action-pad.yaml')
+    await expect(controller.defaultActionPadPath(endpoint)).rejects.toThrow('Connect')
+    await controller.dispose()
+  })
+
   it('limits host file access to the current endpoint and keeps document errors nonfatal', async () => {
     const double = connectionDouble()
     const controller = new TabletClientController(() => double)
@@ -149,19 +171,24 @@ describe('TabletClientController', () => {
     await controller.dispose()
   })
 
-  it('times out a document wait without closing the session or replaying a write', async () => {
+  it('keeps awaiting a document response beyond 15 seconds without closing or replaying a write', async () => {
     jest.useFakeTimers()
     const double = connectionDouble()
     const controller = new TabletClientController(() => double)
     try {
       await controller.connect(endpoint)
-      double.session.writeHostDocument.mockReturnValueOnce(new Promise(() => undefined))
+      let finish!: (document: HostDocument) => void
+      double.session.writeHostDocument.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
       const saving = controller.writeHostDocument(endpoint, {
         path: '/config.yaml', text: 'version: 1\n', expectedRevision: null
       })
-      const rejected = expect(saving).rejects.toThrow('timed out')
       await jest.advanceTimersByTimeAsync(15_000)
-      await rejected
+      expect(double.session.writeHostDocument).toHaveBeenCalledTimes(1)
+      expect(controller.getState().phase).toBe('connected')
+      finish({
+        path: '/config.yaml', resolvedPath: '/config.yaml', text: 'version: 1\n', revision: 'saved'
+      })
+      await expect(saving).resolves.toMatchObject({ revision: 'saved' })
       expect(double.session.writeHostDocument).toHaveBeenCalledTimes(1)
       expect(controller.getState().phase).toBe('connected')
     } finally {
@@ -172,7 +199,7 @@ describe('TabletClientController', () => {
 
   it('connects one session, attaches the current grid, sends input, and resizes', async () => {
     const double = connectionDouble()
-    const factory = jest.fn((_endpoint: Endpoint) => double)
+    const factory = jest.fn((_target: ConnectionTarget) => double)
     const controller = new TabletClientController(factory)
     controller.setGridSize({ columns: 100, rows: 30 })
 
@@ -473,7 +500,7 @@ describe('TabletClientController', () => {
     const first = connectionDouble()
     const second = connectionDouble()
     const doubles = [first, second]
-    const factory = jest.fn((_endpoint: Endpoint) => doubles.shift()!)
+    const factory = jest.fn((_target: ConnectionTarget) => doubles.shift()!)
     const controller = new TabletClientController(factory)
 
     await controller.connect(endpoint)
@@ -491,7 +518,7 @@ describe('TabletClientController', () => {
 
   it('lets only the latest simultaneous connect construct a session', async () => {
     const created: ReturnType<typeof connectionDouble>[] = []
-    const factory = jest.fn((_endpoint: Endpoint) => {
+    const factory = jest.fn((_target: ConnectionTarget) => {
       const double = connectionDouble()
       created.push(double)
       return double
@@ -503,7 +530,7 @@ describe('TabletClientController', () => {
     await Promise.all([first, second])
 
     expect(factory).toHaveBeenCalledTimes(1)
-    expect(factory).toHaveBeenCalledWith({ host: '192.168.0.21', port: 7777 })
+    expect(factory).toHaveBeenCalledWith({ kind: 'remote', host: '192.168.0.21', port: 7777 })
     expect(created).toHaveLength(1)
     expect(created[0]!.session.attach).toHaveBeenCalledTimes(1)
     expect(controller.getState().message).toBe('Connected to 192.168.0.21:7777')
@@ -515,9 +542,9 @@ describe('TabletClientController', () => {
     const closeGate = deferredVoid()
     first.session.close.mockImplementationOnce(async () => closeGate.promise)
     const factory = jest
-      .fn((_endpoint: Endpoint) => first)
-      .mockImplementationOnce((_endpoint: Endpoint) => first)
-      .mockImplementationOnce((_endpoint: Endpoint) => latest)
+      .fn((_target: ConnectionTarget) => first)
+      .mockImplementationOnce((_target: ConnectionTarget) => first)
+      .mockImplementationOnce((_target: ConnectionTarget) => latest)
     const controller = new TabletClientController(factory)
     await controller.connect(endpoint)
 
@@ -530,7 +557,7 @@ describe('TabletClientController', () => {
     await Promise.all([supersededReconnect, latestReconnect])
 
     expect(factory).toHaveBeenCalledTimes(2)
-    expect(factory).toHaveBeenLastCalledWith({ host: '192.168.0.22', port: 8888 })
+    expect(factory).toHaveBeenLastCalledWith({ kind: 'remote', host: '192.168.0.22', port: 8888 })
     expect(latest.session.connect).toHaveBeenCalledTimes(1)
     expect(controller.getState().message).toBe('Connected to 192.168.0.22:8888')
   })
@@ -580,6 +607,24 @@ describe('TabletClientController', () => {
     expect(double.removeClose).toHaveBeenCalledTimes(1)
     expect(double.removeRedraw).toHaveBeenCalledTimes(1)
     expect(controller.getState().phase).toBe('disconnected')
+  })
+
+  it.each(['E_TCP_EOF', 'E_TCP_READ', 'E_TCP_WRITE'])('preserves native socket failure %s in controller state', async (code) => {
+    const double = connectionDouble()
+    const controller = new TabletClientController(() => double)
+    await controller.connect(endpoint)
+    const failure = new Error('native socket detail')
+    failure.name = code
+
+    double.remoteClose(failure)
+
+    expect(controller.getState().connectionFailure).toEqual({
+      code,
+      nativeCode: code,
+      message: 'native socket detail',
+      nativeMessage: 'native socket detail'
+    })
+    await controller.dispose()
   })
 
   it('disposes an active session when the supported subtree unmounts', async () => {

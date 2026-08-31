@@ -12,14 +12,14 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-/** API24 really loads these code paths; raster correctness is tested in native graphics on API35. */
+/** API 30 is the bundled-NeoVim POC floor; raster correctness is tested on API 35. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [24])
+@Config(sdk = [30])
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
-class ActionLabelLayoutApi24Test {
+class ActionLabelLayoutApi30Test {
   @Test
-  fun minimumSdkBuildDoesNotInvokeNewerFontMetricsOrFallbackLayoutApis() {
-    assertEquals(24, Build.VERSION.SDK_INT)
+  fun minimumSdkBuildLoadsTheTextLayoutPath() {
+    assertEquals(30, Build.VERSION.SDK_INT)
     val engine = ActionLabelLayoutEngine()
     val style = LabelTextStyle(15f, Typeface.DEFAULT)
     val result = engine.layout(

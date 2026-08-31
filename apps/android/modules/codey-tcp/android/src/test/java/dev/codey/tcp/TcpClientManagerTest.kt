@@ -71,6 +71,8 @@ class TcpClientManagerTest {
     assertArrayEquals(response, sink.receivedBytes())
     assertEquals(connectionId, sink.dataEvents.first().first)
     assertEquals(1, sink.closeEvents.size)
+    assertEquals("E_TCP_EOF", sink.closeEvents.single().code)
+    assertEquals("TCP peer closed the connection", sink.closeEvents.single().message)
   }
 
   @Test

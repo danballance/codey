@@ -23,14 +23,41 @@ import {
 import type { DuplexTransport } from '@codey/transport'
 import { Systrace } from 'react-native'
 
+import {
+  actionPadEndpointForTarget,
+  connectionTargetLabel,
+  createRemoteConnectionTarget,
+  validateConnectionTarget,
+  type ConnectionTarget
+} from './connection-target'
 import type { Endpoint } from './endpoint'
 import { sameGridSize, type GridSize } from './grid'
 
 export type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'error'
 
+export interface ConnectionFailure {
+  /** Stable app/native code suitable for diagnostics and recovery UI. */
+  readonly code: string
+  readonly message: string
+  /** Exact code emitted by the Android socket layer, when one was supplied. */
+  readonly nativeCode?: string
+  readonly nativeMessage?: string
+}
+
+export class ConnectionFailureError extends Error {
+  public constructor(
+    public readonly failure: ConnectionFailure,
+    cause?: unknown
+  ) {
+    super(failure.message, cause === undefined ? undefined : { cause })
+    this.name = 'ConnectionFailureError'
+  }
+}
+
 export interface ClientState {
   readonly phase: ConnectionPhase
   readonly message: string
+  readonly connectionFailure: ConnectionFailure | null
   readonly snapshot: EditorSnapshot | null
   readonly gridSize: GridSize
   readonly performanceSamples: readonly PublishedPerformanceSample[]
@@ -60,7 +87,9 @@ export interface ConnectionResources {
   readonly session: MobileSession
 }
 
-export type ConnectionFactory = (endpoint: Endpoint) => ConnectionResources
+export type ConnectionFactory = (target: ConnectionTarget) => ConnectionResources
+
+export type ConnectionTargetInput = ConnectionTarget | Endpoint
 
 export interface FrameScheduler {
   request(callback: (timestampMs: number) => void): number
@@ -69,7 +98,7 @@ export interface FrameScheduler {
 
 interface ActiveConnection extends ConnectionResources {
   readonly generation: number
-  readonly endpoint: Endpoint
+  readonly target: ConnectionTarget
   editorState: EditorState
   ready: boolean
   closing: boolean
@@ -99,6 +128,7 @@ export class TabletClientController {
   #state: ClientState = {
     phase: 'disconnected',
     message: 'Not connected',
+    connectionFailure: null,
     snapshot: null,
     gridSize: INITIAL_GRID,
     performanceSamples: EMPTY_PERFORMANCE_SAMPLES
@@ -127,8 +157,9 @@ export class TabletClientController {
     return () => this.#listeners.delete(listener)
   }
 
-  public async connect(endpoint: Endpoint): Promise<void> {
+  public async connect(input: ConnectionTargetInput): Promise<void> {
     this.#assertUsable()
+    const target = normalizeConnectionTarget(input)
     const generation = this.#nextGeneration++
     this.#latestConnectRequest = generation
     await this.#closeActive(false)
@@ -136,7 +167,7 @@ export class TabletClientController {
 
     let resources: ConnectionResources
     try {
-      resources = this.#factory(endpoint)
+      resources = this.#factory(target)
     } catch (reason) {
       this.#setError(reason, 'Could not create the Android connection')
       return
@@ -145,7 +176,7 @@ export class TabletClientController {
     const connection: ActiveConnection = {
       ...resources,
       generation,
-      endpoint,
+      target,
       editorState: createEditorState(),
       ready: false,
       closing: false,
@@ -161,7 +192,10 @@ export class TabletClientController {
     this.#active = connection
     this.#replaceState({
       phase: 'connecting',
-      message: `Connecting to ${endpoint.host}:${endpoint.port}…`,
+      message: target.kind === 'local'
+        ? `Starting ${connectionTargetLabel(target)}…`
+        : `Connecting to ${remoteTargetAddress(target)}…`,
+      connectionFailure: null,
       snapshot: null,
       performanceSamples: EMPTY_PERFORMANCE_SAMPLES
     })
@@ -191,7 +225,10 @@ export class TabletClientController {
       connection.ready = true
       this.#replaceState({
         phase: 'connected',
-        message: `Connected to ${endpoint.host}:${endpoint.port}`
+        message: target.kind === 'local'
+          ? `Running ${connectionTargetLabel(target)}`
+          : `Connected to ${remoteTargetAddress(target)}`,
+        connectionFailure: null
       })
 
       const latestGrid = this.#state.gridSize
@@ -278,32 +315,34 @@ export class TabletClientController {
 
   async #documentOperation<T>(endpoint: Endpoint, operation: (session: MobileSession) => Promise<T>): Promise<T> {
     const connection = this.#active
+    const actionPadEndpoint = connection === null
+      ? null
+      : actionPadEndpointForTarget(connection.target)
     if (
       connection === null || !connection.ready || connection.closing ||
-      connection.endpoint.host !== endpoint.host || connection.endpoint.port !== endpoint.port
+      actionPadEndpoint === null ||
+      actionPadEndpoint.host !== endpoint.host || actionPadEndpoint.port !== endpoint.port
     ) {
-      throw new Error('Connect to this configuration’s Neovim host before accessing its files.')
+      throw new Error('Connect to this configuration’s Neovim session before accessing its files.')
     }
 
-    // A document failure is not an editor-session failure. The timeout only
-    // stops waiting locally: a write may still complete, so callers reconcile
-    // the file before retrying rather than automatically replaying the write.
-    let timeout: ReturnType<typeof setTimeout> | undefined
     try {
-      const result = await Promise.race([
-        operation(connection.session),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(() => reject(new Error(
-            'Host file operation timed out. Its result may be uncertain; reload or reconcile before retrying.'
-          )), 15_000)
-        })
-      ])
+      // Document RPCs have no client-side deadline. The Action Pad store marks
+      // a pending request as slow after 15 seconds and lets the user explicitly
+      // disconnect; abandoning a wait must never replay a write.
+      const result = await operation(connection.session)
       if (!this.#isCurrent(connection) || !connection.ready || connection.closing) {
+        const failure = this.#state.connectionFailure
+        if (failure !== null) throw new ConnectionFailureError(failure)
         throw new Error('The connection changed during the file operation. Reconnect and check the file before retrying.')
       }
       return result
-    } finally {
-      if (timeout !== undefined) clearTimeout(timeout)
+    } catch (reason) {
+      const failure = this.#state.connectionFailure
+      if (failure !== null && !(reason instanceof ConnectionFailureError)) {
+        throw new ConnectionFailureError(failure, reason)
+      }
+      throw reason
     }
   }
 
@@ -449,12 +488,14 @@ export class TabletClientController {
 
   #receiveClose(connection: ActiveConnection, error?: Error): void {
     if (!this.#isCurrent(connection)) return
+    const connectionFailure = connectionFailureOf(error, 'Neovim connection closed')
     void this.#closeConnection(connection)
     this.#replaceState({
       phase: 'error',
       message: error?.message
         ? `Neovim connection closed: ${error.message}`
         : 'Neovim connection closed',
+      connectionFailure,
       snapshot: null,
       performanceSamples: EMPTY_PERFORMANCE_SAMPLES
     })
@@ -480,6 +521,7 @@ export class TabletClientController {
       this.#replaceState({
         phase: 'disconnected',
         message: 'Disconnected',
+        connectionFailure: null,
         snapshot: null,
         performanceSamples: EMPTY_PERFORMANCE_SAMPLES
       })
@@ -597,9 +639,11 @@ export class TabletClientController {
 
   #setError(reason: unknown, fallback: string): void {
     const detail = reason instanceof Error && reason.message ? reason.message : fallback
+    const connectionFailure = connectionFailureOf(reason, fallback)
     this.#replaceState({
       phase: 'error',
       message: detail,
+      connectionFailure,
       snapshot: null,
       performanceSamples: EMPTY_PERFORMANCE_SAMPLES
     })
@@ -613,6 +657,17 @@ export class TabletClientController {
   #assertUsable(): void {
     if (this.#disposed) throw new Error('Tablet client controller is disposed')
   }
+}
+
+function normalizeConnectionTarget(input: ConnectionTargetInput): ConnectionTarget {
+  return 'kind' in input
+    ? validateConnectionTarget(input)
+    : createRemoteConnectionTarget(input.host, input.port)
+}
+
+function remoteTargetAddress(target: Extract<ConnectionTarget, { readonly kind: 'remote' }>): string {
+  const host = target.host.includes(':') ? `[${target.host}]` : target.host
+  return `${host}:${target.port}`
 }
 
 function inputSampleFromTags(tags: PerformanceTags): PendingPerformanceSample | null {
@@ -631,4 +686,23 @@ function inputSampleFromTags(tags: PerformanceTags): PendingPerformanceSample | 
 
 function elapsedMilliseconds(startedAtMs: number, endedAtMs: number): number {
   return Math.max(0, endedAtMs - startedAtMs)
+}
+
+function connectionFailureOf(reason: unknown, fallback: string): ConnectionFailure {
+  const error = reason instanceof Error ? reason : undefined
+  const candidate = error as (Error & { readonly nativeCode?: unknown; readonly code?: unknown }) | undefined
+  const namedCode = error?.name && error.name !== 'Error' ? error.name : undefined
+  const nativeCode = typeof candidate?.nativeCode === 'string'
+    ? candidate.nativeCode
+    : typeof candidate?.code === 'string'
+      ? candidate.code
+      : namedCode?.startsWith('E_TCP_') || namedCode?.startsWith('ECONN')
+        ? namedCode
+        : undefined
+  return {
+    code: nativeCode ?? (error === undefined ? 'E_CONNECTION_CLOSED' : 'E_CONNECTION'),
+    message: error?.message || fallback,
+    ...(nativeCode === undefined ? {} : { nativeCode }),
+    ...(error?.message ? { nativeMessage: error.message } : {})
+  }
 }

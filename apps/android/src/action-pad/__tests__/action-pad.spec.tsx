@@ -432,7 +432,7 @@ describe('ActionPad', () => {
     for (const [id, width] of [
       ['whole', '100%'],
       ['half', '48%'],
-      ['third', '30.6667%'],
+      ['third', '30.6666%'],
       ['quarter', '22%'],
       ['fifth', '16.8%']
     ] as const) {
@@ -493,7 +493,14 @@ describe('ActionPad', () => {
       expect(StyleSheet.flatten(screen.getByTestId(`action-pad-${id}`).props.style).width)
         .toBe('22%')
     }
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad-t1').props.style).width).toBe('30.6667%')
+    const thirdsGroupStyle = StyleSheet.flatten(screen.getByTestId('action-pad-thirds-group').props.style)
+    const thirdWidth = Number.parseFloat(String(
+      StyleSheet.flatten(screen.getByTestId('action-pad-t1').props.style).width
+    ))
+    const columnGap = Number.parseFloat(String(thirdsGroupStyle.columnGap))
+    expect(thirdWidth).toBe(30.6666)
+    expect(thirdWidth * 3 + columnGap * 2).toBeLessThanOrEqual(100)
+    expect(thirdsGroupStyle.height).toBe(52)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-f1').props.style).width).toBe('16.8%')
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-mixed-fit-group').props.style).height).toBe(52)
     expect(StyleSheet.flatten(screen.getByTestId('action-pad-mixed-wrap-group').props.style).height).toBe(116)

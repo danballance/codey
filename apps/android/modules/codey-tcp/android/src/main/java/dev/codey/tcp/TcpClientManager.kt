@@ -167,7 +167,7 @@ private class TcpConnection(
           val byteCount = traceSection("Codey/TCP/SocketRead") { input.read(buffer) }
           val readFinishedAtUptimeMs = uptimeMillis()
           if (byteCount < 0) {
-            finish()
+            finish("E_TCP_EOF", "TCP peer closed the connection")
             return@execute
           }
           if (byteCount > 0 && !terminal.get()) {

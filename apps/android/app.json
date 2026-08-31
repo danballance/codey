@@ -17,6 +17,7 @@
     },
     "plugins": [
       "./plugins/with-dark-android-splash",
+      "./plugins/with-codey-nvim-poc",
       "expo-system-ui",
       [
         "expo-status-bar",

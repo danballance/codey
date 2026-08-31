@@ -18,14 +18,14 @@ Android tablet
     -> app-local connection/editor controller
     -> NvimSessionClient
     -> MessagePackRpcClient
-    -> ExpoTcpTransport
-    -> local Expo Kotlin TCP module
-    -> headless Neovim
+    -> ExpoNvimProcessTransport -> CodeyNvim -> bundled nvim --clean --embed
+     or ExpoTcpTransport -> CodeyTcp -> remote headless Neovim
 ```
 
 The Electron renderer has no Node.js access; its TCP socket remains in the main
-process. On Android, the JavaScript adapter satisfies the same byte-stream
-contract while socket ownership and blocking I/O remain in the Kotlin module.
+process. On Android, both JavaScript adapters satisfy the same byte-stream
+contract. Socket ownership or child-process blocking I/O remains in its Kotlin
+module, and the RPC/session/editor layers do not distinguish the transport.
 Platform orchestration stays inside each app, so proving the mobile path does
 not require an Electron refactor.
 
@@ -71,6 +71,21 @@ This slice opts into `ext_linegrid` and `rgb`, but not multigrid or externalized
 command-line, popup-menu, or message UIs.
 
 ## Android platform boundary
+
+`ConnectionTarget` is the persisted discriminated union for Local workspace and
+Remote endpoint settings. The controller receives only a normalized target and
+the runtime factory selects the transport. Local Action Pad recovery uses one
+reserved identity independent of workspace path; remote recovery retains the
+legacy host/port keys.
+
+The POC native process module admits one session, launches the executable
+directly from Android's extracted native-library directory, and never invokes a
+shell or opens a loopback listener. Stdout is exclusively RPC data. Stderr is
+drained concurrently into a 16 KiB tail; an exit event carries that tail and a
+stable native error code. Runtime data is SHA-256 checked, extracted with path
+traversal protection into a versioned private directory, and never marked
+executable. Local startup also gates API level, ABI, bundle presence, workspace
+access, and Android all-files permission.
 
 The app evaluates the active Android window before constructing any editor
 resource. Expo requests landscape in the generated manifest, and the runtime
@@ -247,8 +262,10 @@ migration or implicit size for older documents, and older builds reject the new
 size values, style/colour fields, and rich labels even though legacy strings
 remain valid.
 
-The configuration store owns the active document, editable draft, host-file
-identity/revision, and endpoint-specific recovery cache. The separate editor
+The configuration store owns the active document, editable draft, session-file
+identity/revision, and target-specific recovery cache. Local recovery keeps one
+stable identity across workspace changes; Remote recovery retains the endpoint
+identity used by earlier builds. The separate editor
 does not mount an interactive action pad; its button-label form reuses the
 production text renderer in a noninteractive Normal/Compact preview. Entering
 the editor settles the prior IME composition, blurs the Neovim input target,
@@ -269,20 +286,25 @@ reconciled by reading the file.
 
 User-selected configurations are executable input configuration, not a safe
 command sandbox. Loading or editing does not dispatch their inputs, but active
-input buttons may execute arbitrary Neovim commands. The existing
-trusted-private-network requirement applies to both input and host file access.
-There is no Android file backend, cloud/Git synchronization, or remote file
-browser; Load/Save/Export use explicit host paths.
+input buttons may execute arbitrary Neovim commands. Remote connections retain
+the trusted-private-network requirement for both input and file access. In
+Local mode those commands execute under the Android app UID and can reach files
+allowed by all-files access. There is no separate Android document-provider
+backend, cloud/Git synchronization, or remote file browser; Load/Save/Export
+use explicit paths interpreted by the selected Neovim process.
 
 Expo Continuous Native Generation owns the ignored `apps/android/android/`
 directory. Native module source remains tracked under `apps/android/modules/`.
 
 ## Current limitations
 
-- One configured endpoint and one active connection per client.
+- One selected target and one active connection per client; Local and Remote
+  details are both retained.
 - One basic Neovim grid.
-- Manual host process startup and manual reconnect.
-- Android requires a landscape tablet-sized window and a development build.
+- Remote mode requires manual host process startup; all modes require manual
+  reconnect.
+- Android requires a landscape tablet-sized window. Local mode is currently a
+  personal POC release, not an F-Droid-ready production build.
 - No TLS, authentication, discovery, daemon, or remote-access relay.
 - Mouse gestures beyond a single left-button tap, clipboard integration, iOS,
   emulator support, advanced UI extensions, and Android phone layouts are out

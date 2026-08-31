@@ -6,6 +6,7 @@ import { ActionPadEditor, type ActionPadEditorProps } from '../ActionPadEditor'
 import { ActionPad } from '../ActionPad'
 import { NerdFontIconPicker } from '../NerdFontIconPicker'
 import { resolveActionPadConfig, type ActionPadConfig } from '../document'
+import type { ActionPadNotice, ActionPadOperation } from '../store'
 import { type ActionButtonLabel } from '../types'
 
 const mockUseCodeyNerdFontFaces = jest.fn((): [boolean, Error | null] => [true, null])
@@ -492,7 +493,7 @@ describe('ActionPadEditor', () => {
       size: '1/3', appearance: 'outline', backgroundColor: '#9ece6a', outlineColor: '#ABCDEF'
     })
     expect(StyleSheet.flatten(screen.getByTestId('action-button-label-preview-button', { includeHiddenElements: true }).props.style)).toMatchObject({
-      width: '30.6667%', backgroundColor: '#9ece6a', borderColor: '#ABCDEF'
+      width: '30.6666%', backgroundColor: '#9ece6a', borderColor: '#ABCDEF'
     })
 
     fireEvent.press(screen.getByRole('button', { name: 'Button size: Whole' }))
@@ -1509,6 +1510,74 @@ describe('ActionPadEditor', () => {
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
     await waitFor(() => expect(screen.getByText('Host file changed. Reload or export your draft.')).toBeTruthy())
     expect(screen.getByLabelText('Button label').props.value).toBe('Keep this draft')
+  })
+
+  it('shows an accessible slow-operation card and exposes explicit stop waiting', () => {
+    const onStopWaiting = jest.fn()
+    const operation: ActionPadOperation = {
+      id: 7,
+      kind: 'save',
+      phase: 'awaiting-confirmation',
+      startedAtMs: Date.now() - 16_000,
+      path: '/host/action-pad.yaml',
+      byteCount: 431,
+      slow: true,
+      writeStarted: true
+    }
+    const screen = renderEditor({ busy: true, operation, onStopWaiting })
+
+    const progress = screen.getByRole('progressbar')
+    expect(progress.props.accessibilityLiveRegion).toBe('polite')
+    expect(screen.getByText('Taking longer than expected. The host request is still pending.')).toBeTruthy()
+    expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Stop waiting and disconnect' }))
+    expect(onStopWaiting).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders severity-aware notices with collapsed technical details and recovery action', () => {
+    const onReconnectAndCheck = jest.fn()
+    const notice: ActionPadNotice = {
+      severity: 'error',
+      summary: 'The save response was lost.',
+      recommendedAction: 'Reconnect and check before retrying.',
+      details: {
+        operation: 'save',
+        phase: 'awaiting-confirmation',
+        durationMs: 15_200,
+        path: '/host/action-pad.yaml',
+        byteCount: 431,
+        hostErrorCode: 'io',
+        hostStage: 'read-back',
+        socketCode: 'E_TCP_EOF',
+        nativeSocketMessage: 'peer closed'
+      }
+    }
+    const screen = renderEditor({ notice, onReconnectAndCheck })
+
+    const alert = screen.getByRole('alert')
+    expect(alert.props.accessibilityLiveRegion).toBe('assertive')
+    expect(screen.queryByTestId('action-pad-technical-details')).toBeNull()
+    fireEvent.press(screen.getByRole('button', { name: 'Reconnect & check save' }))
+    expect(onReconnectAndCheck).toHaveBeenCalledTimes(1)
+    fireEvent.press(screen.getByRole('button', { name: 'Show technical details' }))
+    expect(screen.getByText('Native socket code: E_TCP_EOF')).toBeTruthy()
+    expect(screen.getByText('Host stage: read-back')).toBeTruthy()
+    expect(screen.getByText('Serialized bytes: 431')).toBeTruthy()
+  })
+
+  it('shows the controller connection failure inside the full-screen editor', () => {
+    const screen = renderEditor({
+      connectionFailure: {
+        code: 'E_TCP_READ',
+        nativeCode: 'E_TCP_READ',
+        message: 'connection reset',
+        nativeMessage: 'ECONNRESET'
+      }
+    })
+    expect(screen.getByText('Host connection failed: connection reset')).toBeTruthy()
+    fireEvent.press(screen.getByRole('button', { name: 'Show technical details' }))
+    expect(screen.getByText('Native socket code: E_TCP_READ')).toBeTruthy()
+    expect(screen.getByText('Native socket message: ECONNRESET')).toBeTruthy()
   })
 
   it('adapts across supported landscape widths without losing selected fields and keeps controls at least 48dp', () => {

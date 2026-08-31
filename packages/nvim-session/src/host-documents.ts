@@ -25,10 +25,20 @@ export type HostDocumentErrorCode =
   | "too-large"
   | "io";
 
+export type HostDocumentErrorStage =
+  | "validation"
+  | "filesystem"
+  | "conflict"
+  | "permission"
+  | "publication"
+  | "sync"
+  | "read-back";
+
 export class HostDocumentError extends Error {
   public constructor(
     public readonly code: HostDocumentErrorCode,
     message: string,
+    public readonly stage?: HostDocumentErrorStage,
   ) {
     super(message);
     this.name = "HostDocumentError";
@@ -46,9 +56,13 @@ local max_bytes = 1048576
 local descriptors = {}
 local temporary_path
 local published = false
+local current_stage = "validation"
 
-local function fail(code, message)
-  error({ code = code, message = message, host_document_error = true }, 0)
+local function fail(code, message, stage)
+  error({
+    code = code, message = message, stage = stage or current_stage,
+    host_document_error = true,
+  }, 0)
 end
 
 local function io_error(message, detail, code)
@@ -193,6 +207,7 @@ local function valid_utf8(text)
 end
 
 local function read_document(path)
+  if current_stage ~= "read-back" then current_stage = "filesystem" end
   local resolved = resolve_path(path)
   local stat, detail, code = uv.fs_lstat(resolved)
   if not stat then
@@ -245,6 +260,7 @@ local function public_document(document)
 end
 
 local function check_baseline(document, expected_revision, expected_path)
+  current_stage = "conflict"
   if expected_path and expected_path ~= vim.NIL and document.resolvedPath ~= expected_path then
     fail("conflict", "The host path now resolves to a different file. Reload it before saving.")
   end
@@ -256,6 +272,7 @@ local function check_baseline(document, expected_revision, expected_path)
 end
 
 local function check_modified_buffers(document)
+  current_stage = "conflict"
   for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(buffer)
       and vim.api.nvim_get_option_value("modified", { buf = buffer }) then
@@ -272,6 +289,7 @@ local function check_modified_buffers(document)
 end
 
 local function check_writable(path)
+  current_stage = "permission"
   -- luv's access check returns false without an errno for denied access.
   if not uv.fs_access(path, "W") then
     fail("permission", "The selected host file is not writable.")
@@ -279,6 +297,8 @@ local function check_writable(path)
 end
 
 local function sync_directory(path)
+  local previous_stage = current_stage
+  current_stage = "sync"
   local flags = bit.bor(uv.constants.O_RDONLY, uv.constants.O_NONBLOCK, uv.constants.O_DIRECTORY or 0)
   local fd = checked(uv.fs_open(path, flags, 0))
   descriptors[fd] = true
@@ -288,9 +308,11 @@ local function sync_directory(path)
   end
   checked(uv.fs_fsync(fd))
   close_descriptor(fd)
+  current_stage = previous_stage
 end
 
 local function ensure_directory(path)
+  current_stage = "filesystem"
   local stat, detail, code = uv.fs_stat(path)
   if stat then
     if stat.type ~= "directory" then fail("invalid-path", "The host parent is not a directory.") end
@@ -314,17 +336,20 @@ local function ensure_directory(path)
 end
 
 local function write_document(path, input)
+  current_stage = "validation"
   if type(input.text) ~= "string" then fail("io", "Host document text must be a string.") end
   if #input.text > max_bytes then fail("too-large", "The host YAML file exceeds 1 MiB.") end
   if not valid_utf8(input.text) then fail("io", "The host document is not valid UTF-8.") end
   local expected = input.expectedRevision
   if expected == nil then expected = vim.NIL end
   if expected ~= vim.NIL and type(expected) ~= "string" then fail("io", "Invalid host revision.") end
+  current_stage = "filesystem"
   local original = read_document(path)
   check_baseline(original, expected, input.expectedResolvedPath)
   check_modified_buffers(original)
   if original.stat then check_writable(original.resolvedPath) end
 
+  current_stage = "filesystem"
   local parent = split_path(original.resolvedPath)
   -- A read never creates directories. This is reached only by an explicit write.
   ensure_directory(parent)
@@ -341,6 +366,7 @@ local function write_document(path, input)
 
   -- Recheck after preparing the replacement, including symlink identity. External
   -- writers do not share a lock with Nvim, so existing-file comparison is best effort.
+  current_stage = "filesystem"
   local current = read_document(path)
   check_baseline(current, expected, original.resolvedPath)
   check_modified_buffers(current)
@@ -350,9 +376,11 @@ local function write_document(path, input)
     -- remain those of the newly created replacement file.
     checked(uv.fs_fchmod(fd, bit.band(current.stat.mode, 4095)))
   end
+  current_stage = "filesystem"
   checked(uv.fs_fsync(fd))
   close_descriptor(fd)
 
+  current_stage = "publication"
   if expected == vim.NIL then
     -- link publishes the complete temporary file without ever replacing a file
     -- created after the baseline check. rename alone cannot provide create-only.
@@ -369,6 +397,7 @@ local function write_document(path, input)
   -- File fsync cannot persist the link/rename or removal of the temporary
   -- directory entry. Confirm those before acknowledging the completed save.
   sync_directory(parent)
+  current_stage = "read-back"
   local saved = read_document(path)
   if saved.resolvedPath ~= current.resolvedPath or saved.text ~= input.text then
     fail("conflict", "The host file changed immediately after saving. Reload to verify its contents.")
@@ -377,6 +406,7 @@ local function write_document(path, input)
 end
 
 local ok, result = pcall(function()
+  current_stage = "validation"
   if operation == "default-path" then
     return { path = absolute_path(vim.fn.stdpath("config") .. "/codey/action-pad.yaml") }
   end
@@ -395,14 +425,18 @@ if published then
   local detail = type(result) == "table" and result.message or tostring(result)
   return {
     ok = false, code = "io",
+    stage = type(result) == "table" and result.stage or current_stage,
     message = "The host file was published, but the save could not be confirmed. "
       .. "Its result is uncertain; reload or reconcile before retrying. " .. tostring(detail),
   }
 end
 if type(result) == "table" and result.host_document_error then
-  return { ok = false, code = result.code, message = result.message }
+  return { ok = false, code = result.code, message = result.message, stage = result.stage }
 end
-return { ok = false, code = "io", message = "Host document operation failed: " .. tostring(result) }
+return {
+  ok = false, code = "io", stage = current_stage,
+  message = "Host document operation failed: " .. tostring(result),
+}
 `;
 
 export async function defaultActionPadPath(rpc: DocumentRpc): Promise<string> {
@@ -430,13 +464,13 @@ export async function writeHostDocument(
     assertPath(request.expectedResolvedPath);
   }
   if (typeof request.text !== "string") {
-    throw new HostDocumentError("io", "Host document text must be a string.");
+    throw new HostDocumentError("io", "Host document text must be a string.", "validation");
   }
   if (utf8ByteLength(request.text) > MAX_HOST_DOCUMENT_BYTES) {
-    throw new HostDocumentError("too-large", "The host YAML file exceeds 1 MiB.");
+    throw new HostDocumentError("too-large", "The host YAML file exceeds 1 MiB.", "validation");
   }
   if (request.expectedRevision !== null && typeof request.expectedRevision !== "string") {
-    throw new HostDocumentError("io", "A host revision or explicit create-only null is required.");
+    throw new HostDocumentError("io", "A host revision or explicit create-only null is required.", "validation");
   }
   return documentResult(await execute(rpc, "write", {
     path: request.path,
@@ -459,7 +493,11 @@ async function execute(
   ]);
   if (!isRecord(result)) throw invalidResponse();
   if (result.ok === false && isErrorCode(result.code) && typeof result.message === "string") {
-    throw new HostDocumentError(result.code, result.message);
+    throw new HostDocumentError(
+      result.code,
+      result.message,
+      isErrorStage(result.stage) ? result.stage : undefined,
+    );
   }
   if (result.ok !== true) throw invalidResponse();
   return result;
@@ -478,7 +516,7 @@ function documentResult(result: Record<string, unknown>): HostDocument {
     throw invalidResponse();
   }
   if (typeof value.text === "string" && utf8ByteLength(value.text) > MAX_HOST_DOCUMENT_BYTES) {
-    throw new HostDocumentError("too-large", "The host YAML file exceeds 1 MiB.");
+    throw new HostDocumentError("too-large", "The host YAML file exceeds 1 MiB.", "filesystem");
   }
   return {
     path: value.path,
@@ -496,6 +534,7 @@ function assertPath(path: string): void {
     throw new HostDocumentError(
       "invalid-path",
       "Enter an absolute host file path or a path starting with ~/.",
+      "validation",
     );
   }
 }
@@ -517,6 +556,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isErrorCode(value: unknown): value is HostDocumentErrorCode {
   return typeof value === "string" &&
     ["conflict", "modified-buffer", "invalid-path", "not-found", "permission", "too-large", "io"]
+      .includes(value);
+}
+
+function isErrorStage(value: unknown): value is HostDocumentErrorStage {
+  return typeof value === "string" &&
+    ["validation", "filesystem", "conflict", "permission", "publication", "sync", "read-back"]
       .includes(value);
 }
 

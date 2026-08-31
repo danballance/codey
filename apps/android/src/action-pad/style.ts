@@ -9,7 +9,7 @@ export const ACTION_BUTTON_LAYOUT_UNITS = 60
 export const ACTION_BUTTON_SIZE_OPTIONS = [
   { value: '1/1', label: 'Whole', units: 60, width: '100%' },
   { value: '1/2', label: 'Half', units: 30, width: '48%' },
-  { value: '1/3', label: 'Third', units: 20, width: '30.6667%' },
+  { value: '1/3', label: 'Third', units: 20, width: '30.6666%' },
   { value: '1/4', label: 'Quarter', units: 15, width: '22%' },
   { value: '1/5', label: 'Fifth', units: 12, width: '16.8%' }
 ] as const satisfies readonly {

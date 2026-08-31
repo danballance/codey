@@ -1,5 +1,5 @@
 import { act } from 'react'
-import { Alert, BackHandler, StyleSheet } from 'react-native'
+import { Alert, AppState, BackHandler, StyleSheet, type AppStateStatus } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react-native'
 import type { HostDocument, HostDocumentWrite, RedrawBatch } from '@codey/nvim-session'
@@ -14,9 +14,19 @@ import { TabletClient } from '../TabletClient'
 import { DEFAULT_ACTION_PAD_CONFIG } from '../action-pad/config'
 import { parseActionPadConfig, serializeActionPadConfig, type ActionPadConfig } from '../action-pad/document'
 import { actionPadStorageKey } from '../action-pad/store'
+import {
+  CONNECTION_SETTINGS_STORAGE_KEY,
+  DEFAULT_CONNECTION_SETTINGS,
+  LEGACY_ENDPOINT_STORAGE_KEY
+} from '../connection-settings-store'
+import {
+  actionPadEndpointForTarget,
+  DEFAULT_CONNECTION_TARGET,
+  type ConnectionTarget
+} from '../connection-target'
 import type { MobileSession } from '../controller'
 import { createRuntimeConnection } from '../runtime-connection'
-import { DEFAULT_ENDPOINT } from '../endpoint'
+import { getNativeNvimStatus, openNativeNvimAllFilesSettings } from '../native/nvim'
 import { tabletCapability } from '../tablet'
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -131,8 +141,17 @@ jest.mock('../runtime-connection', () => ({
   createRuntimeConnection: jest.fn()
 }))
 
+jest.mock('../native/nvim', () => ({
+  getNativeNvimStatus: jest.fn(),
+  openNativeNvimAllFilesSettings: jest.fn()
+}))
+
 const mockedConnectionFactory = jest.mocked(createRuntimeConnection)
+const mockedNativeNvimStatus = jest.mocked(getNativeNvimStatus)
+const mockedOpenAllFilesSettings = jest.mocked(openNativeNvimAllFilesSettings)
+const mockedAppStateAddEventListener = jest.mocked(AppState.addEventListener)
 const getItem = jest.mocked(AsyncStorage.getItem)
+const DEFAULT_ACTION_PAD_ENDPOINT = actionPadEndpointForTarget(DEFAULT_CONNECTION_TARGET)
 
 interface ConnectionDouble {
   readonly transport: DuplexTransport
@@ -189,6 +208,16 @@ function recoveryRecord(config: ActionPadConfig): string {
   })
 }
 
+function storedSettings(target: ConnectionTarget): string {
+  return JSON.stringify({
+    ...DEFAULT_CONNECTION_SETTINGS,
+    selectedKind: target.kind,
+    ...(target.kind === 'local'
+      ? { local: { workspacePath: target.workspacePath } }
+      : { remote: { host: target.host, port: target.port } })
+  })
+}
+
 function openManagedButton(editor: ReturnType<typeof within>, menu = 'Home (home)') {
   fireEvent.press(editor.getByRole('button', { name: `Edit ${menu}` }))
   fireEvent.press(editor.getByRole('button', { name: 'Button settings' }))
@@ -202,8 +231,18 @@ afterEach(async () => {
 })
 
 beforeEach(() => {
+  mockedAppStateAddEventListener.mockReset()
+  mockedAppStateAddEventListener.mockReturnValue({ remove: jest.fn() })
   getItem.mockResolvedValue(null)
   mockedConnectionFactory.mockReset()
+  mockedNativeNvimStatus.mockReset()
+  mockedNativeNvimStatus.mockResolvedValue({
+    supported: true,
+    running: false,
+    allFilesAccess: true
+  })
+  mockedOpenAllFilesSettings.mockReset()
+  mockedOpenAllFilesSettings.mockResolvedValue()
   const nativeIme = jest.requireMock('../native/CodeyIme') as {
     __focus: jest.Mock
     __blur: jest.Mock
@@ -219,17 +258,109 @@ beforeEach(() => {
 })
 
 describe('tablet client shell', () => {
-  it('does not replace a newly connected host when stored endpoint loading finishes late', async () => {
-    let restoreEndpoint!: (value: string) => void
-    const pending = new Promise<string>((resolve) => { restoreEndpoint = resolve })
-    getItem.mockImplementation((key) => key === 'codey.android.endpoint.v1' ? pending : Promise.resolve(null))
+  it('routes local all-files permission recovery through Android settings', async () => {
+    mockedNativeNvimStatus.mockResolvedValue({
+      supported: true,
+      running: false,
+      allFilesAccess: false
+    })
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+
+    await waitFor(() => expect(screen.getByText('Grant files')).toBeTruthy())
+    expect(screen.getByRole('tab', { name: 'Use local Neovim' }).props.accessibilityState.selected).toBe(true)
+    expect(screen.getByLabelText('Local workspace path').props.value).toBe('/storage/emulated/0')
+    fireEvent.press(screen.getByText('Grant files'))
+    expect(mockedOpenAllFilesSettings).toHaveBeenCalledTimes(1)
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('routes the offline Action Pad connection through local file-access settings', async () => {
+    mockedNativeNvimStatus.mockResolvedValue({
+      supported: true,
+      running: false,
+      allFilesAccess: false
+    })
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+
+    await waitFor(() => expect(screen.getByText('Grant files')).toBeTruthy())
+    await act(async () => {
+      fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
+    })
+    const grant = screen.getByRole('button', { name: 'Grant local workspace file access' })
+    fireEvent.press(grant)
+
+    expect(mockedOpenAllFilesSettings).toHaveBeenCalledTimes(1)
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('keeps the newest native status when an earlier refresh finishes late', async () => {
+    let resolveFirstStatus!: (status: Awaited<ReturnType<typeof getNativeNvimStatus>>) => void
+    const firstStatus = new Promise<Awaited<ReturnType<typeof getNativeNvimStatus>>>((resolve) => {
+      resolveFirstStatus = resolve
+    })
+    mockedNativeNvimStatus
+      .mockImplementationOnce(() => firstStatus)
+      .mockResolvedValueOnce({
+        supported: false,
+        running: false,
+        allFilesAccess: false,
+        unavailableReason: 'Newest device status'
+      })
+    let appStateListener: ((state: AppStateStatus) => void) | undefined
+    mockedAppStateAddEventListener.mockImplementation((type, listener) => {
+      if (type === 'change') appStateListener = listener
+      return { remove: jest.fn() }
+    })
+
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await waitFor(() => expect(mockedNativeNvimStatus).toHaveBeenCalledTimes(1))
+    await act(async () => { appStateListener?.('active') })
+    await waitFor(() => expect(screen.getByText('Newest device status')).toBeTruthy())
+
+    await act(async () => {
+      resolveFirstStatus({ supported: true, running: false, allFilesAccess: true })
+    })
+    expect(screen.getByText('Newest device status')).toBeTruthy()
+  })
+
+  it('keeps Disconnect available when local file access is revoked mid-session', async () => {
+    let appStateListener: ((state: AppStateStatus) => void) | undefined
+    mockedAppStateAddEventListener.mockImplementation((type, listener) => {
+      if (type === 'change') appStateListener = listener
+      return { remove: jest.fn() }
+    })
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await waitFor(() => expect(mockedNativeNvimStatus).toHaveBeenCalledTimes(1))
     await act(async () => { fireEvent.press(screen.getByText('Connect')) })
-    expect(mockedConnectionFactory).toHaveBeenCalledWith(DEFAULT_ENDPOINT)
+    await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
+
+    mockedNativeNvimStatus.mockResolvedValueOnce({
+      supported: true,
+      running: true,
+      allFilesAccess: false
+    })
+    await act(async () => { appStateListener?.('active') })
+    await waitFor(() => expect(mockedNativeNvimStatus).toHaveBeenCalledTimes(2))
+
+    expect(screen.getByText('Disconnect')).toBeTruthy()
+    fireEvent.press(screen.getByText('Disconnect'))
+    await waitFor(() => expect(double.session.close).toHaveBeenCalledTimes(1))
+    expect(mockedOpenAllFilesSettings).not.toHaveBeenCalled()
+  })
+
+  it('does not replace a newly connected target when legacy endpoint loading finishes late', async () => {
+    let restoreEndpoint!: (value: string) => void
+    const pending = new Promise<string>((resolve) => { restoreEndpoint = resolve })
+    getItem.mockImplementation((key) => key === LEGACY_ENDPOINT_STORAGE_KEY ? pending : Promise.resolve(null))
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    fireEvent.press(screen.getByText('Connect'))
+    await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(DEFAULT_CONNECTION_TARGET))
     await act(async () => { restoreEndpoint(JSON.stringify({ host: 'previous.test', port: 7777 })) })
-    expect(screen.getByLabelText('Neovim host').props.value).toBe(DEFAULT_ENDPOINT.host)
+    expect(screen.getByLabelText('Local workspace path').props.value).toBe('/storage/emulated/0')
     await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
     const editor = within(screen.getByTestId('action-pad-editor'))
     expect(editor.getByLabelText('Host YAML path').props.value).toBe('/home/test/.config/nvim/codey/action-pad.yaml')
@@ -242,7 +373,12 @@ describe('tablet client shell', () => {
     let restoreConfig!: (value: string) => void
     const endpointRead = new Promise<string>((resolve) => { restoreEndpoint = resolve })
     const configRead = new Promise<string>((resolve) => { restoreConfig = resolve })
-    getItem.mockImplementation((key) => key === actionPadStorageKey(endpoint) ? configRead : endpointRead)
+    getItem.mockImplementation((key) => {
+      if (key === CONNECTION_SETTINGS_STORAGE_KEY) return Promise.resolve(null)
+      if (key === LEGACY_ENDPOINT_STORAGE_KEY) return endpointRead
+      if (key === actionPadStorageKey(endpoint)) return configRead
+      return Promise.resolve(null)
+    })
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
     expect(screen.queryByTestId('action-pad-editor')).toBeNull()
@@ -307,7 +443,7 @@ describe('tablet client shell', () => {
 
     fireEvent.press(screen.getByRole('button', { name: 'Done editing' }))
     await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
-    expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Connect configuration host' }).props.style)).toMatchObject({
+    expect(StyleSheet.flatten(screen.getByRole('button', { name: 'Connect configuration session' }).props.style)).toMatchObject({
       backgroundColor: '#1b2030',
       borderColor: '#353b52'
     })
@@ -410,7 +546,7 @@ describe('tablet client shell', () => {
 
   it('keeps the general editor accessible without a hold and from an empty pad', async () => {
     const empty: ActionPadConfig = { version: 1, rootMenuId: 'empty', menus: [{ id: 'empty', label: 'Empty', groups: [] }] }
-    getItem.mockImplementation(async (key) => key === actionPadStorageKey(DEFAULT_ENDPOINT) ? recoveryRecord(empty) : null)
+    getItem.mockImplementation(async (key) => key === actionPadStorageKey(DEFAULT_ACTION_PAD_ENDPOINT) ? recoveryRecord(empty) : null)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     await act(async () => { await Promise.resolve() })
     expect(within(screen.getByTestId('action-pad')).queryAllByRole('button')).toHaveLength(0)
@@ -439,7 +575,7 @@ describe('tablet client shell', () => {
       return { remove }
     })
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
-    getItem.mockImplementation(async (key) => key === actionPadStorageKey(DEFAULT_ENDPOINT)
+    getItem.mockImplementation(async (key) => key === actionPadStorageKey(DEFAULT_ACTION_PAD_ENDPOINT)
       ? JSON.stringify({ ...JSON.parse(recoveryRecord(DEFAULT_ACTION_PAD_CONFIG)), draft: DEFAULT_ACTION_PAD_CONFIG, idDrafts: { 'menus[0].groups[0].buttons[0].id': '' } })
       : null)
     try {
@@ -462,11 +598,11 @@ describe('tablet client shell', () => {
   })
 
   it.each([
-    { endpoint: DEFAULT_ENDPOINT, control: 'Done editing', changed: 'configuration' },
-    { endpoint: { host: 'another.test', port: 7777 }, control: 'Edit Action Pad', changed: 'endpoint' }
-  ])('rejects a targeted opening when recovery changes the $changed', async ({ endpoint, control }) => {
-    let finishEndpoint!: (value: string) => void
-    const endpointRead = new Promise<string>((resolve) => { finishEndpoint = resolve })
+    { target: DEFAULT_CONNECTION_TARGET, control: 'Done editing', changed: 'configuration' },
+    { target: { kind: 'remote', host: 'another.test', port: 7777 } as const, control: 'Edit Action Pad', changed: 'endpoint' }
+  ])('rejects a targeted opening when recovery changes the $changed', async ({ target, control }) => {
+    let finishSettings!: (value: string) => void
+    const settingsRead = new Promise<string>((resolve) => { finishSettings = resolve })
     const replacement: ActionPadConfig = {
       version: 1, rootMenuId: 'home', menus: [{ id: 'home', label: 'Home', groups: [{
         id: 'leading', buttons: [{
@@ -475,11 +611,13 @@ describe('tablet client shell', () => {
         }]
       }] }]
     }
-    getItem.mockImplementation((key) => key === 'codey.android.endpoint.v1' ? endpointRead : Promise.resolve(recoveryRecord(replacement)))
+    getItem.mockImplementation((key) => key === CONNECTION_SETTINGS_STORAGE_KEY
+      ? settingsRead
+      : Promise.resolve(recoveryRecord(replacement)))
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
     fireEvent.press(screen.getByRole('button', { name: 'Edit Esc' }))
-    await act(async () => { finishEndpoint(JSON.stringify(endpoint)) })
+    await act(async () => { finishSettings(storedSettings(target)) })
     expect(screen.queryByTestId('action-pad-editor')).toBeNull()
     expect(screen.getByText('The Action Pad changed before the button editor opened. Select the button again.')).toBeTruthy()
     expect(screen.getByRole('button', { name: control })).toBeTruthy()
@@ -487,14 +625,14 @@ describe('tablet client shell', () => {
   })
 
   it('cancels a pending targeted opening when selection mode is switched off', async () => {
-    let finishEndpoint!: (value: string) => void
-    const endpointRead = new Promise<string>((resolve) => { finishEndpoint = resolve })
-    getItem.mockImplementation((key) => key === 'codey.android.endpoint.v1' ? endpointRead : Promise.resolve(null))
+    let finishSettings!: (value: string) => void
+    const settingsRead = new Promise<string>((resolve) => { finishSettings = resolve })
+    getItem.mockImplementation((key) => key === CONNECTION_SETTINGS_STORAGE_KEY ? settingsRead : Promise.resolve(null))
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
     fireEvent.press(screen.getByRole('button', { name: 'Edit Esc' }))
     fireEvent.press(screen.getByRole('button', { name: 'Done editing' }))
-    await act(async () => { finishEndpoint(JSON.stringify(DEFAULT_ENDPOINT)) })
+    await act(async () => { finishSettings(storedSettings(DEFAULT_CONNECTION_TARGET)) })
     expect(screen.queryByTestId('action-pad-editor')).toBeNull()
     expect(screen.getByRole('button', { name: 'Edit Action Pad' })).toBeTruthy()
   })
@@ -539,10 +677,10 @@ describe('tablet client shell', () => {
       const reopened = within(screen.getByTestId('action-pad-editor'))
       openManagedButton(reopened)
       expect(reopened.getByLabelText('Button label').props.value).toBe('Offline edit')
-      await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Connect configuration host' })) })
+      await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Connect configuration session' })) })
       expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
       expect(double.session.connect).toHaveBeenCalledTimes(1)
-      await waitFor(() => expect(screen.queryByRole('button', { name: 'Connect configuration host' })).toBeNull())
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Connect configuration session' })).toBeNull())
       expect(within(screen.getByTestId('action-pad-editor')).getByLabelText('Button label').props.value).toBe('Offline edit')
       expect(double.session.writeHostDocument).not.toHaveBeenCalled()
       expect(double.session.close).not.toHaveBeenCalled()
@@ -657,7 +795,7 @@ describe('tablet client shell', () => {
     expect(within(screen.getByTestId('action-pad')).getByText('001 λ')).toBeTruthy()
     expect(double.session.input).not.toHaveBeenCalled()
     expect(double.session.close).not.toHaveBeenCalled()
-  })
+  }, 15_000)
 
   it('uses the same fixed right rail in condensed and expanded landscape layouts', async () => {
     const landscape = render(<TabletClient capability={tabletCapability(800, 600)} />)
@@ -729,6 +867,7 @@ describe('tablet client shell', () => {
     await act(async () => {
       await Promise.resolve()
     })
+    fireEvent.press(screen.getByRole('tab', { name: 'Use remote Neovim' }))
     fireEvent.changeText(screen.getByLabelText('Neovim host'), '192.168.0.42')
     fireEvent.changeText(screen.getByLabelText('Neovim port'), '7777')
     fireEvent(screen.getByTestId('mock-editor-canvas'), 'layout', {
@@ -752,6 +891,9 @@ describe('tablet client shell', () => {
     expect(screen.getByLabelText('Neovim host').props.value).toBe('192.168.0.42')
     expect(screen.getByLabelText('Neovim port').props.value).toBe('7777')
     expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
+    expect(mockedConnectionFactory).toHaveBeenCalledWith({
+      kind: 'remote', host: '192.168.0.42', port: 7777
+    })
     expect(double.session.attach).toHaveBeenCalledTimes(1)
     expect(double.session.close).not.toHaveBeenCalled()
 

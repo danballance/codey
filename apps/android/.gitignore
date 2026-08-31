@@ -1,4 +1,5 @@
 .expo/
+.cache/
 /android/
 /ios/
 /dist/

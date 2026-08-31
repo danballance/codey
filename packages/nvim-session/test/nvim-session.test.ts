@@ -179,6 +179,18 @@ describe("NvimSessionClient", () => {
     expect(double.rpc.close).not.toHaveBeenCalled();
   });
 
+  it("preserves the optional host failure stage", async () => {
+    const double = createRpcDouble();
+    const session = createNvimSession(double.rpc as never);
+    double.rpc.request.mockResolvedValue({
+      ok: false, code: "io", stage: "read-back", message: "Save confirmation failed",
+    });
+
+    await expect(session.readHostDocument("/tmp/pad.yaml")).rejects.toMatchObject({
+      name: "HostDocumentError", code: "io", stage: "read-back",
+    });
+  });
+
   it.each(["pad.yaml", "", "/", "~/", "~someone/pad.yaml", "/tmp/pad\0.yaml", "/tmp/"])(
     "rejects invalid host path %j before RPC",
     async (path) => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   BackHandler,
   KeyboardAvoidingView,
   Modal,
@@ -27,10 +28,25 @@ import { ACTION_PAD_LONG_PRESS_MS, ActionPad, type ActionPadButtonTarget } from 
 import { ActionPadEditor } from './action-pad/ActionPadEditor'
 import { resolveActionPadConfig, type ActionPadConfig } from './action-pad/document'
 import { ActionPadConfigStore } from './action-pad/store'
+import {
+  connectionSettingsStore,
+  selectedConnectionTarget,
+  validateConnectionSettings,
+  type ConnectionSettings
+} from './connection-settings-store'
+import {
+  actionPadEndpointForTarget,
+  connectionTargetLabel,
+  createLocalConnectionTarget,
+  createRemoteConnectionTarget,
+  DEFAULT_CONNECTION_TARGET,
+  DEFAULT_LOCAL_WORKSPACE_PATH,
+  DEFAULT_REMOTE_TARGET,
+  type ConnectionTarget,
+  type ConnectionTargetKind
+} from './connection-target'
 import { TabletClientController } from './controller'
 import { EditorCanvas } from './editor/EditorCanvas'
-import { endpointStore } from './endpoint-store'
-import { DEFAULT_ENDPOINT, validateEndpoint } from './endpoint'
 import { gridSizeForBounds, type GridCellPosition } from './grid'
 import {
   committedTextToNvimInput,
@@ -43,6 +59,11 @@ import {
   type CodeyImeKeyEvent,
   type CodeyImeOrderedInputEvent
 } from './native/CodeyIme'
+import {
+  getNativeNvimStatus,
+  openNativeNvimAllFilesSettings,
+  type NativeNvimStatus
+} from './native/nvim'
 import { createRuntimeConnection } from './runtime-connection'
 import type { TabletCapability } from './tablet'
 
@@ -86,7 +107,11 @@ const ACTION_PAD_WIDTH = 336
 export function TabletClient({ capability }: TabletClientProps) {
   const [controller] = useState(() => new TabletClientController(createRuntimeConnection))
   const client = useSyncExternalStore(controller.subscribe, controller.getState, controller.getState)
-  const [actionPadStore] = useState(() => new ActionPadConfigStore(controller))
+  const [actionPadStore] = useState(() => new ActionPadConfigStore(
+    controller,
+    undefined,
+    actionPadEndpointForTarget(DEFAULT_CONNECTION_TARGET)
+  ))
   const actionPadState = useSyncExternalStore(actionPadStore.subscribe, actionPadStore.getState, actionPadStore.getState)
   const rootMenu = useMemo(() => resolveActionPadConfig(actionPadState.activeConfig), [actionPadState.activeConfig])
   const [selectingActionPad, setSelectingActionPad] = useState(false)
@@ -98,10 +123,15 @@ export function TabletClient({ capability }: TabletClientProps) {
   const openingActionPadEditor = useRef(false)
   const editControlLongPressTriggered = useRef(false)
   const clientMountedRef = useRef(true)
+  const nativeNvimStatusRequest = useRef(0)
   const actionPadInitialization = useRef<Promise<void>>(Promise.resolve())
-  const endpointSelectionStarted = useRef(false)
-  const [host, setHost] = useState(DEFAULT_ENDPOINT.host)
-  const [port, setPort] = useState(String(DEFAULT_ENDPOINT.port))
+  const targetSelectionStarted = useRef(false)
+  const [selectedKind, setSelectedKind] = useState<ConnectionTargetKind>('local')
+  const [workspacePath, setWorkspacePath] = useState(DEFAULT_LOCAL_WORKSPACE_PATH)
+  const [host, setHost] = useState('192.168.1.20')
+  const [port, setPort] = useState('6666')
+  const [actionPadTarget, setActionPadTarget] = useState<ConnectionTarget>(DEFAULT_CONNECTION_TARGET)
+  const [nativeNvimStatus, setNativeNvimStatus] = useState<NativeNvimStatus | null>(null)
   const [formError, setFormError] = useState('')
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds>({ width: 0, height: 0 })
   const [screenHeight, setScreenHeight] = useState(capability.height)
@@ -114,13 +144,17 @@ export function TabletClient({ capability }: TabletClientProps) {
   useEffect(() => {
     let mounted = true
     clientMountedRef.current = true
-    actionPadInitialization.current = endpointStore.load().then(async (endpoint) => {
-      // A connection chosen during startup owns its endpoint and recovery data;
-      // a slower storage read must not replace it with the previous host.
-      if (!mounted || endpointSelectionStarted.current) return
-      setHost(endpoint.host)
-      setPort(String(endpoint.port))
-      await actionPadStore.selectEndpoint(endpoint)
+    actionPadInitialization.current = connectionSettingsStore.load().then(async (settings) => {
+      // A connection chosen during startup owns its target and recovery data;
+      // a slower storage read must not replace it with the previous selection.
+      if (!mounted || targetSelectionStarted.current) return
+      const target = selectedConnectionTarget(settings)
+      setSelectedKind(settings.selectedKind)
+      setWorkspacePath(settings.local.workspacePath)
+      setHost(settings.remote.host)
+      setPort(String(settings.remote.port))
+      setActionPadTarget(target)
+      await actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
     })
     return () => {
       mounted = false
@@ -131,6 +165,30 @@ export function TabletClient({ capability }: TabletClientProps) {
       void controller.dispose()
     }
   }, [actionPadStore, controller])
+
+  const refreshNativeNvimStatus = useCallback(async () => {
+    const request = ++nativeNvimStatusRequest.current
+    try {
+      const status = await getNativeNvimStatus()
+      if (clientMountedRef.current && request === nativeNvimStatusRequest.current) {
+        setNativeNvimStatus(status)
+      }
+    } catch {
+      // Unit tests, Expo Go, and an ungenerated native project do not have the
+      // optional module. Connection startup will still publish a useful error.
+      if (clientMountedRef.current && request === nativeNvimStatusRequest.current) {
+        setNativeNvimStatus(null)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshNativeNvimStatus()
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshNativeNvimStatus()
+    })
+    return () => subscription.remove()
+  }, [refreshNativeNvimStatus])
 
   const setActionPadSelection = useCallback((selecting: boolean) => {
     selectingActionPadRef.current = selecting
@@ -175,15 +233,19 @@ export function TabletClient({ capability }: TabletClientProps) {
     }
 
     try {
-      const endpoint = validateEndpoint(host, port)
-      endpointSelectionStarted.current = true
-      void endpointStore.save(endpoint).catch(() => undefined)
-      void actionPadStore.selectEndpoint(endpoint)
-      void controller.connect(endpoint)
+      const target = selectedKind === 'local'
+        ? createLocalConnectionTarget(workspacePath)
+        : createRemoteConnectionTarget(host, port)
+      const settings = settingsForTarget(target, workspacePath, host, port)
+      targetSelectionStarted.current = true
+      setActionPadTarget(target)
+      void connectionSettingsStore.save(settings).catch(() => undefined)
+      void actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
+      void controller.connect(target)
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : 'Invalid connection details')
     }
-  }, [actionPadStore, client.phase, controller, host, port])
+  }, [actionPadStore, client.phase, controller, host, port, selectedKind, workspacePath])
 
   const submitControllerInput = useCallback(
     (keys: string, tags: PerformanceTags): Promise<void> => {
@@ -360,6 +422,45 @@ export function TabletClient({ capability }: TabletClientProps) {
   const expanded = capability.layout === 'expanded'
   const compactControls = capability.height - screenHeight >= KEYBOARD_COMPACT_THRESHOLD
   const mode = client.snapshot?.mode.name.toUpperCase() || '—'
+  const localNeedsFilesAccess = !connected && selectedKind === 'local' &&
+    nativeNvimStatus?.supported === true &&
+    !nativeNvimStatus.allFilesAccess
+  const localUnavailable = !connected && selectedKind === 'local' && nativeNvimStatus?.supported === false
+    ? nativeNvimStatus.unavailableReason ?? 'Bundled NeoVim is unavailable on this device'
+    : ''
+  const actionPadLocalNeedsFilesAccess = !connected && actionPadTarget.kind === 'local' &&
+    nativeNvimStatus?.supported === true &&
+    !nativeNvimStatus.allFilesAccess
+  const actionPadLocalUnavailable = !connected && actionPadTarget.kind === 'local' &&
+    nativeNvimStatus?.supported === false
+    ? nativeNvimStatus.unavailableReason ?? 'Bundled NeoVim is unavailable on this device'
+    : ''
+
+  const selectConnectionKind = useCallback((kind: ConnectionTargetKind) => {
+    if (connected || connecting || kind === selectedKind) return
+    setFormError('')
+    try {
+      const target = kind === 'local'
+        ? createLocalConnectionTarget(workspacePath)
+        : createRemoteConnectionTarget(host, port)
+      const settings = settingsForTarget(target, workspacePath, host, port)
+      targetSelectionStarted.current = true
+      setSelectedKind(kind)
+      setActionPadTarget(target)
+      void connectionSettingsStore.save(settings).catch(() => undefined)
+      void actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : 'Invalid connection details')
+    }
+  }, [actionPadStore, connected, connecting, host, port, selectedKind, workspacePath])
+
+  const grantAllFilesAccess = useCallback(() => {
+    setFormError('')
+    void openNativeNvimAllFilesSettings()
+      .catch((reason: unknown) => {
+        setFormError(reason instanceof Error ? reason.message : 'Could not open Android file access settings')
+      })
+  }, [])
 
   useEffect(() => {
     void actionPadStore.setConnected(connected)
@@ -469,12 +570,32 @@ export function TabletClient({ capability }: TabletClientProps) {
   }, [actionPadStore])
 
   const connectActionPadHost = useCallback(() => {
-    const endpoint = actionPadStore.getState().endpoint
-    setHost(endpoint.host)
-    setPort(String(endpoint.port))
-    void endpointStore.save(endpoint).catch(() => undefined)
-    void controller.connect(endpoint)
-  }, [actionPadStore, controller])
+    const target = actionPadTarget
+    if (target.kind === 'local' && nativeNvimStatus?.supported === false) {
+      setFormError(
+        nativeNvimStatus.unavailableReason ?? 'Bundled NeoVim is unavailable on this device'
+      )
+      return
+    }
+    if (
+      target.kind === 'local' &&
+      nativeNvimStatus?.supported === true &&
+      !nativeNvimStatus.allFilesAccess
+    ) {
+      grantAllFilesAccess()
+      return
+    }
+    setSelectedKind(target.kind)
+    if (target.kind === 'local') setWorkspacePath(target.workspacePath)
+    else {
+      setHost(target.host)
+      setPort(String(target.port))
+    }
+    void connectionSettingsStore
+      .save(settingsForTarget(target, workspacePath, host, port))
+      .catch(() => undefined)
+    void controller.connect(target)
+  }, [actionPadTarget, controller, grantAllFilesAccess, host, nativeNvimStatus, port, workspacePath])
 
   const loadActionPad = useCallback(async (path: string) => {
     if (actionPadStore.getState().dirty && !await confirmAction(
@@ -493,6 +614,29 @@ export function TabletClient({ capability }: TabletClientProps) {
     `Export will replace ${destination}. Your active file and unsaved status will stay unchanged.`,
     'Replace'
   )), [actionPadStore])
+  const stopWaitingForActionPad = useCallback(() => {
+    actionPadStore.stopWaiting()
+    void controller.disconnect()
+  }, [actionPadStore, controller])
+  const reconnectAndCheckActionPadSave = useCallback(() => {
+    void (async () => {
+      const target = actionPadTarget
+      setSelectedKind(target.kind)
+      if (target.kind === 'local') setWorkspacePath(target.workspacePath)
+      else {
+        setHost(target.host)
+        setPort(String(target.port))
+      }
+      await actionPadStore.setConnected(false)
+      await connectionSettingsStore
+        .save(settingsForTarget(target, workspacePath, host, port))
+        .catch(() => undefined)
+      await controller.connect(target)
+      if (controller.getState().phase !== 'connected') return
+      await actionPadStore.setConnected(true)
+      await actionPadStore.reconcilePendingSave()
+    })()
+  }, [actionPadStore, actionPadTarget, controller, host, port, workspacePath])
 
   return (
     <KeyboardAvoidingView
@@ -510,44 +654,87 @@ export function TabletClient({ capability }: TabletClientProps) {
           <Text style={styles.brand}>CODEY</Text>
           <View style={[styles.statusDot, statusDotStyle(client.phase)]} />
         </View>
-        <TextInput
-          accessibilityLabel="Neovim host"
-          autoCapitalize="none"
-          autoCorrect={false}
-          editable={!connecting && !connected}
-          onChangeText={setHost}
-          placeholder="Host"
-          placeholderTextColor="#65717e"
-          style={[styles.input, styles.hostInput]}
-          value={host}
-        />
-        <TextInput
-          accessibilityLabel="Neovim port"
-          editable={!connecting && !connected}
-          keyboardType="number-pad"
-          maxLength={5}
-          onChangeText={setPort}
-          placeholder="Port"
-          placeholderTextColor="#65717e"
-          style={[styles.input, styles.portInput]}
-          value={port}
-        />
+        <View accessibilityRole="tablist" style={styles.targetPicker}>
+          {(['local', 'remote'] as const).map((kind) => (
+            <Pressable
+              accessibilityLabel={`Use ${kind} Neovim`}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: selectedKind === kind, disabled: connecting || connected }}
+              disabled={connecting || connected}
+              key={kind}
+              onPress={() => selectConnectionKind(kind)}
+              style={[
+                styles.targetButton,
+                selectedKind === kind && styles.targetButtonSelected
+              ]}
+            >
+              <Text style={[
+                styles.targetButtonText,
+                selectedKind === kind && styles.targetButtonTextSelected
+              ]}>
+                {kind === 'local' ? 'Local' : 'Remote'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {selectedKind === 'local' ? (
+          <TextInput
+            accessibilityLabel="Local workspace path"
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!connecting && !connected}
+            onChangeText={setWorkspacePath}
+            placeholder="/storage/emulated/0"
+            placeholderTextColor="#65717e"
+            style={[styles.input, styles.workspaceInput]}
+            value={workspacePath}
+          />
+        ) : (
+          <>
+            <TextInput
+              accessibilityLabel="Neovim host"
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!connecting && !connected}
+              onChangeText={setHost}
+              placeholder="Host"
+              placeholderTextColor="#65717e"
+              style={[styles.input, styles.hostInput]}
+              value={host}
+            />
+            <TextInput
+              accessibilityLabel="Neovim port"
+              editable={!connecting && !connected}
+              keyboardType="number-pad"
+              maxLength={5}
+              onChangeText={setPort}
+              placeholder="Port"
+              placeholderTextColor="#65717e"
+              style={[styles.input, styles.portInput]}
+              value={port}
+            />
+          </>
+        )}
         <Pressable
           accessibilityRole="button"
-          disabled={connecting}
-          onPress={toggleConnection}
+          disabled={connecting || localUnavailable.length > 0}
+          onPress={connected || !localNeedsFilesAccess ? toggleConnection : grantAllFilesAccess}
           style={({ pressed }) => [
             styles.connectionButton,
             connected && styles.disconnectButton,
             pressed && styles.pressed,
-            connecting && styles.disabled
+            (connecting || localUnavailable.length > 0) && styles.disabled
           ]}
         >
           {connecting ? <ActivityIndicator color="#0b0e12" size="small" /> : null}
-          <Text style={styles.connectionButtonText}>{connected ? 'Disconnect' : 'Connect'}</Text>
+          <Text style={styles.connectionButtonText}>
+            {connected ? 'Disconnect' : localNeedsFilesAccess ? 'Grant files' : 'Connect'}
+          </Text>
         </Pressable>
         <Text numberOfLines={1} style={[styles.statusMessage, client.phase === 'error' && styles.error]}>
-          {formError || client.message}
+          {formError || localUnavailable || (localNeedsFilesAccess
+            ? 'Allow all-files access for the local workspace'
+            : client.message)}
         </Text>
       </View>
 
@@ -579,7 +766,9 @@ export function TabletClient({ capability }: TabletClientProps) {
               <Text style={styles.emptyCopy}>
                 {connecting
                   ? 'Waiting for the initial redraw frame'
-                  : 'Enter a trusted LAN endpoint above'}
+                  : selectedKind === 'local'
+                    ? 'Start the bundled editor in a local workspace above'
+                    : 'Enter a trusted LAN endpoint above'}
               </Text>
             </View>
           ) : null}
@@ -653,34 +842,57 @@ export function TabletClient({ capability }: TabletClientProps) {
         <SafeAreaView style={styles.configScreen}>
           <View style={styles.configHostBar}>
             <Text style={styles.configHost}>
-              {actionPadState.endpoint.host}:{actionPadState.endpoint.port} · {connected ? 'Connected' : 'Offline editing'}
+              {connectionTargetLabel(actionPadTarget)} · {connected ? 'Connected' : 'Offline editing'}
             </Text>
             {!connected ? (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Connect configuration host"
-                disabled={connecting}
+                accessibilityLabel={actionPadLocalNeedsFilesAccess
+                  ? 'Grant local workspace file access'
+                  : 'Connect configuration session'}
+                disabled={connecting || actionPadLocalUnavailable.length > 0}
                 onPress={connectActionPadHost}
-                style={[styles.actionPadControlButton, styles.connectActionPadButton, connecting && styles.disabled]}
+                style={[
+                  styles.actionPadControlButton,
+                  styles.connectActionPadButton,
+                  (connecting || actionPadLocalUnavailable.length > 0) && styles.disabled
+                ]}
               >
-                <Text style={styles.editActionPadText}>{connecting ? 'Connecting…' : 'Connect host'}</Text>
+                <Text style={styles.editActionPadText}>
+                  {connecting
+                    ? 'Connecting…'
+                    : actionPadLocalNeedsFilesAccess
+                      ? 'Grant files'
+                      : 'Connect session'}
+                </Text>
               </Pressable>
             ) : null}
           </View>
+          {actionPadLocalUnavailable ? (
+            <Text accessibilityRole="alert" style={styles.actionPadNotice}>
+              {actionPadLocalUnavailable}
+            </Text>
+          ) : null}
           {editingActionPad ? <ActionPadEditor
             busy={actionPadState.busy}
+            connectionFailure={client.connectionFailure}
             config={actionPadState.draft}
             connected={connected}
             dirty={actionPadState.dirty}
             initialButton={initialActionPadButton}
             initialIdDrafts={actionPadState.idDrafts}
-            message={[actionPadState.message, actionPadState.recoveryWarning].filter(Boolean).join('\n')}
+            message=""
+            notice={actionPadState.notice}
             onCancel={closeActionPadEditor}
             onChange={changeActionPad}
             onIdDraftsChange={changeActionPadIds}
             onExport={exportActionPad}
             onLoad={loadActionPad}
+            onReconnectAndCheck={actionPadState.pendingSavePath === null ? undefined : reconnectAndCheckActionPadSave}
             onSave={saveActionPad}
+            onStopWaiting={stopWaitingForActionPad}
+            operation={actionPadState.operation}
+            recoveryNotice={actionPadState.recoveryNotice}
             sourcePath={actionPadState.pendingSavePath ?? actionPadState.sourcePath}
           /> : null}
         </SafeAreaView>
@@ -696,6 +908,42 @@ function confirmAction(title: string, message: string, action: string): Promise<
       { text: action, style: 'destructive', onPress: () => resolve(true) }
     ], { cancelable: true, onDismiss: () => resolve(false) })
   })
+}
+
+function settingsForTarget(
+  target: ConnectionTarget,
+  workspacePath: string,
+  host: string,
+  port: string
+): ConnectionSettings {
+  const local = target.kind === 'local'
+    ? target
+    : safeLocalTarget(workspacePath)
+  const remote = target.kind === 'remote'
+    ? target
+    : safeRemoteTarget(host, port)
+  return validateConnectionSettings({
+    version: 2,
+    selectedKind: target.kind,
+    local: { workspacePath: local.workspacePath },
+    remote: { host: remote.host, port: remote.port }
+  })
+}
+
+function safeLocalTarget(workspacePath: string) {
+  try {
+    return createLocalConnectionTarget(workspacePath)
+  } catch {
+    return createLocalConnectionTarget(DEFAULT_LOCAL_WORKSPACE_PATH)
+  }
+}
+
+function safeRemoteTarget(host: string, port: string) {
+  try {
+    return createRemoteConnectionTarget(host, port)
+  } catch {
+    return DEFAULT_REMOTE_TARGET
+  }
 }
 
 function orderedBatchToNvimInput(event: CodeyImeOrderedInputEvent): string {
@@ -903,6 +1151,26 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
     fontSize: 14
   },
+  targetPicker: {
+    height: 38,
+    flexDirection: 'row',
+    padding: 2,
+    borderWidth: 1,
+    borderColor: '#303946',
+    borderRadius: 8,
+    backgroundColor: '#151b22'
+  },
+  targetButton: {
+    minWidth: 62,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 5
+  },
+  targetButtonSelected: { backgroundColor: '#293442' },
+  targetButtonText: { color: '#8c99a8', fontSize: 12, fontWeight: '600' },
+  targetButtonTextSelected: { color: '#eef4fa' },
+  workspaceInput: { width: 272 },
   hostInput: { width: 190 },
   portInput: { width: 82 },
   connectionButton: {

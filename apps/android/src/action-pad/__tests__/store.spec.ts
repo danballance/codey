@@ -264,6 +264,125 @@ describe('ActionPadConfigStore', () => {
     expect(restored.getState()).toMatchObject({ activeConfig: fixture, draft, dirty: true })
   })
 
+  it('rejects duplicate menu, group, and button IDs before any host read or write', async () => {
+    const test = setup()
+    await test.connect()
+    const menu = fixture.menus[0]!
+    const group = menu.groups[0]!
+    const button = group.buttons[0]!
+    const invalidDrafts: ActionPadConfig[] = [
+      { ...fixture, menus: [menu, { ...menu }] },
+      { ...fixture, menus: [{ ...menu, groups: [group, { ...group }] }] },
+      { ...fixture, menus: [{ ...menu, groups: [{ ...group, buttons: [button, { ...button }] }] }] }
+    ]
+
+    for (const draft of invalidDrafts) {
+      test.store.setDraft(draft)
+      test.documents.readHostDocument.mockClear()
+      test.documents.writeHostDocument.mockClear()
+      await test.store.save(sourcePath)
+      expect(test.documents.readHostDocument).not.toHaveBeenCalled()
+      expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
+      expect(test.store.getState()).toMatchObject({ dirty: true, busy: false })
+    }
+  })
+
+  it('marks a host request slow after 15 seconds but accepts its later response', async () => {
+    jest.useFakeTimers()
+    const test = setup()
+    try {
+      await test.connect()
+      const draft = editLabel(fixture)
+      test.store.setDraft(draft)
+      const read = deferred<HostDocument>()
+      test.documents.readHostDocument.mockImplementationOnce(() => read.promise)
+      const saving = test.store.save(sourcePath)
+      while (test.documents.readHostDocument.mock.calls.length < 2) await Promise.resolve()
+
+      expect(test.store.getState().operation).toMatchObject({
+        kind: 'save', phase: 'checking-host-file', slow: false
+      })
+      await jest.advanceTimersByTimeAsync(15_000)
+      expect(test.store.getState().operation).toMatchObject({ slow: true })
+
+      read.resolve(test.files.get(sourcePath)!)
+      await saving
+      expect(test.store.getState()).toMatchObject({ activeConfig: draft, busy: false, operation: null })
+      expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('stops a pending wait immediately and records uncertainty only after writing starts', async () => {
+    const beforeWrite = setup()
+    await beforeWrite.connect()
+    const draft = editLabel(fixture)
+    beforeWrite.store.setDraft(draft)
+    const read = deferred<HostDocument>()
+    beforeWrite.documents.readHostDocument.mockImplementationOnce(() => read.promise)
+    const checking = beforeWrite.store.save(sourcePath)
+    while (beforeWrite.documents.readHostDocument.mock.calls.length < 2) await Promise.resolve()
+    beforeWrite.store.stopWaiting()
+    await checking
+    expect(beforeWrite.store.getState()).toMatchObject({
+      busy: false, operation: null, pendingSavePath: null, draft, dirty: true
+    })
+    read.resolve(beforeWrite.files.get(sourcePath)!)
+    await Promise.resolve()
+
+    const afterWrite = setup()
+    await afterWrite.connect()
+    afterWrite.store.setDraft(draft)
+    const write = deferred<HostDocument>()
+    afterWrite.documents.writeHostDocument.mockImplementationOnce(() => write.promise)
+    const awaiting = afterWrite.store.save(sourcePath)
+    while (afterWrite.documents.writeHostDocument.mock.calls.length === 0) await Promise.resolve()
+    afterWrite.store.stopWaiting()
+    await awaiting
+    expect(afterWrite.store.getState()).toMatchObject({
+      busy: false, operation: null, pendingSavePath: sourcePath, draft, dirty: true
+    })
+    expect(afterWrite.store.getState().notice?.recommendedAction).toContain('Reconnect & check save')
+    write.resolve(afterWrite.put(sourcePath, serializeActionPadConfig(draft)))
+    await Promise.resolve()
+  })
+
+  it('reports socket codes with different certainty guidance before and during a write', async () => {
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const beforeWrite = setup()
+      await beforeWrite.connect()
+      beforeWrite.store.setDraft(editLabel(fixture))
+      const readFailure = new Error('connection reset while reading')
+      readFailure.name = 'E_TCP_READ'
+      beforeWrite.documents.readHostDocument.mockRejectedValueOnce(readFailure)
+      await beforeWrite.store.save(sourcePath)
+      expect(beforeWrite.store.getState().notice).toMatchObject({
+        recommendedAction: expect.stringContaining('No write started'),
+        details: { phase: 'checking-host-file', socketCode: 'E_TCP_READ' }
+      })
+      expect(beforeWrite.store.getState().pendingSavePath).toBeNull()
+
+      const duringWrite = setup()
+      await duringWrite.connect()
+      duringWrite.store.setDraft(editLabel(fixture))
+      const writeFailure = new Error('broken pipe')
+      writeFailure.name = 'E_TCP_WRITE'
+      duringWrite.documents.writeHostDocument.mockRejectedValueOnce(writeFailure)
+      await duringWrite.store.save(sourcePath)
+      expect(duringWrite.store.getState().notice).toMatchObject({
+        recommendedAction: expect.stringContaining('may have completed'),
+        details: { phase: 'awaiting-confirmation', socketCode: 'E_TCP_WRITE' }
+      })
+      expect(duringWrite.store.getState().pendingSavePath).toBe(sourcePath)
+      expect(warning).toHaveBeenCalledTimes(2)
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(serializeActionPadConfig(editLabel(fixture)))
+    } finally {
+      warning.mockRestore()
+    }
+  })
+
   it('retains drafts offline and never uploads them when reconnecting', async () => {
     const test = setup()
     await test.connect()
@@ -291,7 +410,7 @@ describe('ActionPadConfigStore', () => {
       return test.files.get(path)!
     })
     const oldRefresh = test.store.setConnected(true)
-    await Promise.resolve()
+    while (test.documents.readHostDocument.mock.calls.length < 2) await Promise.resolve()
     await test.store.setConnected(false)
     await test.store.setConnected(true)
     stale.reject(new Error('Old connection closed'))
@@ -355,9 +474,66 @@ describe('ActionPadConfigStore', () => {
     await restored.selectEndpoint(endpoint)
     await restored.setConnected(true)
     expect(restored.getState().dirty).toBe(true)
-    await restored.save(sourcePath)
+    await restored.reconcilePendingSave()
     expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
     expect(restored.getState()).toMatchObject({ activeConfig: draft, dirty: false, error: false })
+  })
+
+  it('activates confirmed attempted bytes while preserving newer local edits', async () => {
+    const test = setup()
+    await test.connect()
+    const attempted = editLabel(fixture, 'Attempted')
+    const newer = editLabel(fixture, 'Newer local edit')
+    test.store.setDraft(attempted)
+    test.documents.writeHostDocument.mockImplementationOnce(async (_endpoint, request) => {
+      test.put(request.path, request.text)
+      throw new Error('Acknowledgement lost')
+    })
+    await test.store.save(sourcePath)
+    test.store.setDraft(newer)
+
+    await test.store.reconcilePendingSave()
+
+    expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: attempted, draft: newer, dirty: true, pendingSavePath: null
+    })
+  })
+
+  it('clears uncertainty for the original or missing target and requires an explicit retry', async () => {
+    for (const missing of [false, true]) {
+      const test = setup()
+      await test.connect()
+      const draft = editLabel(fixture, missing ? 'Missing retry' : 'Original retry')
+      test.store.setDraft(draft)
+      test.documents.writeHostDocument.mockRejectedValueOnce(new Error('Write response lost'))
+      await test.store.save(sourcePath)
+      if (missing) test.files.delete(sourcePath)
+
+      await test.store.reconcilePendingSave()
+
+      expect(test.store.getState()).toMatchObject({ pendingSavePath: null, draft, dirty: true })
+      expect(test.store.getState().notice?.recommendedAction).toContain('choose Save to retry explicitly')
+      expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
+      await test.store.save(sourcePath)
+      expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(2)
+    }
+  })
+
+  it('keeps uncertainty blocked when reconciliation finds external content', async () => {
+    const test = setup()
+    await test.connect()
+    const draft = editLabel(fixture)
+    test.store.setDraft(draft)
+    test.documents.writeHostDocument.mockRejectedValueOnce(new Error('Write response lost'))
+    await test.store.save(sourcePath)
+    test.put(sourcePath, serializeActionPadConfig(editLabel(fixture, 'External version')))
+
+    await test.store.reconcilePendingSave()
+
+    expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
+    expect(test.store.getState()).toMatchObject({ pendingSavePath: sourcePath, draft, dirty: true, error: true })
+    expect(test.store.getState().message).toContain('external changes')
   })
 
   it('keeps the first save destination through recovery and refuses to redirect an uncertain save', async () => {
@@ -381,7 +557,7 @@ describe('ActionPadConfigStore', () => {
     expect(restored.getState().message).toContain('was not confirmed')
     expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
     expect(test.files.has(sourcePath)).toBe(false)
-    await restored.save(restored.getState().pendingSavePath!)
+    await restored.reconcilePendingSave()
     expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
     expect(restored.getState()).toMatchObject({ sourcePath: destination, pendingSavePath: null, dirty: false })
   })
@@ -395,10 +571,10 @@ describe('ActionPadConfigStore', () => {
     await test.store.save(path)
     expect(test.store.getState().pendingSavePath).toBe(path)
     test.files.set(path, { path, resolvedPath: '/second/action-pad.yaml', text: null, revision: null })
-    await test.store.save(path)
+    await test.store.reconcilePendingSave()
     expect(test.documents.writeHostDocument).toHaveBeenCalledTimes(1)
     expect(test.store.getState()).toMatchObject({ pendingSavePath: path, error: true })
-    expect(test.store.getState().message).toContain('now points to a different file')
+    expect(test.store.getState().message).toContain('now resolves to a different target')
   })
 
   it('preserves edits made while a save is in progress', async () => {

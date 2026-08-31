@@ -1,0 +1,15 @@
+# Temporary arm64-v8a proof-of-concept inputs.
+#
+# This is intentionally a binary lock, not the eventual source-build recipe.
+# Format: package|version|url|sha256
+neovim|0.12.5|https://packages.termux.dev/apt/termux-main/pool/main/n/neovim/neovim_0.12.5_aarch64.deb|fafd4a9ff83d5252c362b61d3e296b4bb79c579d916936506164075fbc9fcf8c
+libandroid-support|29-1|https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-support/libandroid-support_29-1_aarch64.deb|f2f145d6135ad4843ac9670153be3e3944dc1e6f1736d46d2306c28f2b86f517
+libiconv|1.18-1|https://packages.termux.dev/apt/termux-main/pool/main/libi/libiconv/libiconv_1.18-1_aarch64.deb|b19e6f348034bb48d2a5590b5cb242769f682c476717374d134d004cc663dc84
+libunibilium|2.1.4|https://packages.termux.dev/apt/termux-main/pool/main/libu/libunibilium/libunibilium_2.1.4_aarch64.deb|998bd50f035d0722cb5b3abe314ea87ed00eeb5a6942a37a5586fada65349c02
+libuv|1.52.1|https://packages.termux.dev/apt/termux-main/pool/main/libu/libuv/libuv_1.52.1_aarch64.deb|874f556fddccf3f5cfc6c6be18c1cd927c94771bac7c1c660522aa90576b7b45
+lua51-lpeg|1.1.0-6|https://packages.termux.dev/apt/termux-main/pool/main/l/lua51-lpeg/lua51-lpeg_1.1.0-6_aarch64.deb|0cfbb76ba375e9e89d53599d59698359a58ee9b8eb4bc204a967403ee8fbb988
+luajit|2.1.1787165859-g1ee778a|https://packages.termux.dev/apt/termux-main/pool/main/l/luajit/luajit_1%3A2.1.1787165859%2Bg1ee778a_aarch64.deb|9b332d02579ba90e666e81952c2af40e5362d5bb855af63817e721e3f5ca7bef
+luv|1.52.1-0-0|https://packages.termux.dev/apt/termux-main/pool/main/l/luv/luv_1.52.1-0-0_aarch64.deb|a414fc96e977ccc987222799e325a9edc50f3906d09bd39a40de4e2ed1c10a13
+tree-sitter|0.26.13|https://packages.termux.dev/apt/termux-main/pool/main/t/tree-sitter/tree-sitter_0.26.13_aarch64.deb|8c6d7740d989c0605a71bb547b1ec2cbb6c1f34e125ce3ec7f2c13a2f6be0207
+utf8proc|2.11.3|https://packages.termux.dev/apt/termux-main/pool/main/u/utf8proc/utf8proc_2.11.3_aarch64.deb|375c4fdde5ec0ea0176d73d688604ae2934f9ffda85ee5d6256109ffedab9bdc
+termux-licenses|2.2|https://packages.termux.dev/apt/termux-main/pool/main/t/termux-licenses/termux-licenses_2.2_all.deb|a3265cd1cf7d04754f2fb683eaf5b21918263792fd714457127900c1d6d9bcd9
