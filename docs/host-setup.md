@@ -72,16 +72,18 @@ Neovim connection. No host plugin is required. The suggested file is
 `stdpath("config")/codey/action-pad.yaml`; the path field also accepts an absolute
 path into a Git checkout or a path beginning with `~/`.
 
-Load/Save/Export require a connection. The tablet retains cached configuration
-and recovery drafts for offline editing. Only explicit Save or Export writes a
-file; startup never creates one. External modifications and matching unsaved
-Neovim buffers prevent an overwrite; reload or export the draft to another file
-to resolve the conflict.
-The app preserves symlinks and permission mode bits, so symlinked dotfiles work,
-but immutable files such as Nix-store targets need an editable destination.
-Atomic replacement does not retain owner/group, ACLs, extended attributes, or
-other hard links. Use an ordinary user-owned YAML file. Saves normalize
-formatting and discard YAML comments.
+Load and Save require a connection. The tablet remembers one YAML path for each
+endpoint, but unsaved edits exist only in memory while the editor remains open.
+The first successful connection loads that path; later reconnects preserve the
+in-memory copy until **Load / Reload** is chosen. Only explicit Save writes a
+file; startup and reads never create one.
+
+Save is last-writer-wins. It writes the selected path directly without checking
+external revisions or matching unsaved Neovim buffers, and ordinary filesystem
+symlinks are followed. Immutable files such as Nix-store targets need an
+editable destination. A failed write may leave a truncated or partial file, so
+keep a manual backup or Git history and reload, retry, or restore it as needed.
+Saves normalize formatting and discard YAML comments.
 
 Configuration inputs can execute Neovim commands. Only load files you trust;
 loading or editing the document never sends its inputs to the host. Every button

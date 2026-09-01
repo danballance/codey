@@ -74,9 +74,8 @@ command-line, popup-menu, or message UIs.
 
 `ConnectionTarget` is the persisted discriminated union for Local workspace and
 Remote endpoint settings. The controller receives only a normalized target and
-the runtime factory selects the transport. Local Action Pad recovery uses one
-reserved identity independent of workspace path; remote recovery retains the
-legacy host/port keys.
+the runtime factory selects the transport. The Action Pad persists one selected
+YAML path for Local mode and one for each Remote endpoint.
 
 The POC native process module admits one session, launches the executable
 directly from Android's extracted native-library directory, and never invokes a
@@ -262,27 +261,30 @@ migration or implicit size for older documents, and older builds reject the new
 size values, style/colour fields, and rich labels even though legacy strings
 remain valid.
 
-The configuration store owns the active document, editable draft, session-file
-identity/revision, and target-specific recovery cache. Local recovery keeps one
-stable identity across workspace changes; Remote recovery retains the endpoint
-identity used by earlier builds. The separate editor
+The configuration store owns the active document, in-memory working copy, and
+one remembered path per endpoint. The separate editor
 does not mount an interactive action pad; its button-label form reuses the
 production text renderer in a noninteractive Normal/Compact preview. Entering
 the editor settles the prior IME composition, blurs the Neovim input target,
 and suspends active pad input; ordinary form text cannot enter the session.
 Editor access sits outside user configuration so an empty or unusable pad can
-always be repaired. Recoverable editor drafts may temporarily retain incomplete
-custom colour text, but validation blocks Save and Export and preview resolution
-falls back to the selected appearance default until the value is valid.
+always be repaired. The mounted editor may temporarily retain incomplete custom
+colour or ID text, but validation blocks Save and preview resolution falls back
+to the selected appearance default until the value is valid. Closing the editor
+discards unsaved work; only the YAML path survives a restart. The store loads
+that path on the endpoint's first successful connection, while later reconnects
+leave the in-memory active and working copies alone until an explicit Load /
+Reload.
 
 Host document operations are typed `nvim-session` methods implemented by fixed
 `nvim_exec_lua` chunks with paths/content passed as RPC arguments. Reads do not
-create files. Saves compare content revisions and resolved targets, protect
-modified buffers, and publish a sibling temporary file without replacing a
-dotfile symlink. Controller checks bind results to the endpoint and connection
-generation. File failures and local wait timeouts do not tear down the editor
-session. A timed-out write is not automatically replayed: its outcome must be
-reconciled by reading the file.
+create files. Saves create missing parent directories, open the destination
+directly, truncate it, write all bytes, and sync the file before returning.
+They are last-writer-wins, follow ordinary symlink behavior, and do not create
+temporary files, hard links, or rename publications. Controller checks bind
+results to the endpoint and connection generation. File failures and local wait
+timeouts do not tear down the editor session; a failure after opening may leave
+the destination incomplete and recovery is manual.
 
 User-selected configurations are executable input configuration, not a safe
 command sandbox. Loading or editing does not dispatch their inputs, but active
@@ -290,7 +292,7 @@ input buttons may execute arbitrary Neovim commands. Remote connections retain
 the trusted-private-network requirement for both input and file access. In
 Local mode those commands execute under the Android app UID and can reach files
 allowed by all-files access. There is no separate Android document-provider
-backend, cloud/Git synchronization, or remote file browser; Load/Save/Export
+backend, cloud/Git synchronization, or remote file browser; Load and Save
 use explicit paths interpreted by the selected Neovim process.
 
 Expo Continuous Native Generation owns the ignored `apps/android/android/`

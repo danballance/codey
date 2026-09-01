@@ -150,7 +150,7 @@ export function groupDeletionReason(config: ActionPadConfig, location: GroupLoca
   return undefined
 }
 
-/** Incomplete drafts are allowed; referentially ambiguous edits are not. */
+/** Incomplete editor states are allowed; referentially ambiguous edits are not. */
 export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): ActionPadConfig {
   switch (edit.type) {
     case 'add-menu':
@@ -170,7 +170,7 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
         throw new ActionPadEditError(`A menu with ID “${newId}” already exists. Choose a unique ID.`)
       }
       const renamed = replaceMenu(config, edit.menuIndex, { ...menu, ...edit.patch })
-      // Recovery drafts may contain duplicate IDs. In that case links cannot
+      // Incomplete editor states may contain duplicate IDs. In that case links cannot
       // identify which definition they meant, so leave them on the remaining
       // old ID while the user repairs the selected definition.
       if (newId === menu.id || !sourceIdIsUnique) return renamed

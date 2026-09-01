@@ -123,9 +123,10 @@ function menuManagerConfig(): ActionPadConfig {
 function props(overrides: Partial<ActionPadEditorProps> = {}): ActionPadEditorProps {
   return {
     config: config(), onChange: jest.fn(), connected: true, busy: false, dirty: false,
-    sourcePath: '~/.config/nvim/codey/action-pad.yaml', message: '',
+    initialLoadPending: false,
+    sourcePath: '~/.config/nvim/codey/action-pad.yaml',
     onLoad: jest.fn().mockResolvedValue(undefined), onSave: jest.fn().mockResolvedValue(undefined),
-    onExport: jest.fn().mockResolvedValue(undefined), onCancel: jest.fn(), onOpenLogs: jest.fn(),
+    onCancel: jest.fn(), onOpenLogs: jest.fn(),
     initialButton: { menuId: 'home', groupId: 'actions', buttonId: 'input' },
     ...overrides
   }
@@ -339,7 +340,7 @@ describe('ActionPadEditor', () => {
     { menuId: 'home', groupId: 'missing', buttonId: 'input' },
     { menuId: 'home', groupId: 'actions', buttonId: 'missing' },
     { menuId: 'child', groupId: 'actions', buttonId: 'input' }
-  ])('keeps the general editor and draft when target $menuId/$groupId/$buttonId is missing', (initialButton) => {
+  ])('keeps the general editor and working copy when target $menuId/$groupId/$buttonId is missing', (initialButton) => {
     const screen = renderEditor({ initialButton })
     expect(screen.getByTestId('action-pad-menu-manager')).toBeTruthy()
     expect(screen.queryByTestId('action-pad-button-form')).toBeNull()
@@ -349,7 +350,7 @@ describe('ActionPadEditor', () => {
     expect(screen.props.onChange).not.toHaveBeenCalled()
   })
 
-  it('does not guess between ambiguous accepted ID tuples in an incomplete draft', () => {
+  it('does not guess between ambiguous accepted ID tuples in an incomplete edit', () => {
     const draft = config()
     const child = draft.menus[1]!
     const group = child.groups[0]!
@@ -360,30 +361,6 @@ describe('ActionPadEditor', () => {
     expect(screen.getByTestId('action-pad-menu-manager')).toBeTruthy()
     expect(screen.getByTestId('action-pad-editor-target-notice')).toBeTruthy()
     expect(screen.props.onChange).not.toHaveBeenCalled()
-  })
-
-  it('matches accepted IDs rather than colliding recovered text and keeps those raw edits', () => {
-    const initialIdDrafts = { 'menus[0].groups[0].buttons[0].id': 'open', 'menus[0].groups[0].buttons[1].id': 'keyboard' }
-    const onIdDraftsChange = jest.fn()
-    const screen = renderEditor({ initialButton: { menuId: 'home', groupId: 'actions', buttonId: 'open' }, initialIdDrafts, onIdDraftsChange })
-    expect(screen.getByLabelText('Button label').props.value).toBe('Open child')
-    expect(screen.getByLabelText('Button ID').props.value).toBe('keyboard')
-    expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
-    expect(screen.props.onChange).not.toHaveBeenCalled()
-    expect(onIdDraftsChange).toHaveBeenLastCalledWith(initialIdDrafts)
-    screen.unmount()
-    expect(onIdDraftsChange).toHaveBeenLastCalledWith(initialIdDrafts)
-  })
-
-  it('preserves recovery when only a raw menu ID matches the requested target', () => {
-    const initialIdDrafts = { 'menus[1].id': 'renamed' }
-    const onIdDraftsChange = jest.fn()
-    const screen = renderEditor({ initialButton: { menuId: 'renamed', groupId: 'target', buttonId: 'back' }, initialIdDrafts, onIdDraftsChange })
-    expect(screen.getByTestId('action-pad-menu-manager')).toBeTruthy()
-    expect(screen.getByTestId('action-pad-editor-target-notice')).toBeTruthy()
-    expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
-    expect(screen.draft()).toEqual(config())
-    expect(onIdDraftsChange).toHaveBeenLastCalledWith(initialIdDrafts)
   })
 
   it('keeps the targeted button selected through ID renames, reordering and moving', () => {
@@ -522,7 +499,7 @@ describe('ActionPadEditor', () => {
     })
   })
 
-  it('keeps incomplete button colours recoverable, blocks save and previews appearance defaults', () => {
+  it('keeps incomplete button colours while mounted, blocks save and previews appearance defaults', () => {
     const screen = renderEditor()
     fireEvent.press(screen.getByRole('button', { name: 'Button appearance: Outline' }))
     fireEvent.changeText(screen.getByLabelText('Button background color custom hex'), '#12')
@@ -1179,7 +1156,7 @@ describe('ActionPadEditor', () => {
     expect(screen.getByRole('button', { name: 'Duplicate button' })).toBeDisabled()
   })
 
-  it('does not apply a stale Delete confirmation after a host document replaces the draft', () => {
+  it('does not apply a stale Delete confirmation after a host document replaces the working copy', () => {
     const alert = jest.spyOn(Alert, 'alert')
     const initial = props()
     const screen = render(<ActionPadEditor {...initial} />)
@@ -1237,7 +1214,7 @@ describe('ActionPadEditor', () => {
     expect(within(screen.getByRole('button', { name: 'Choose menu' })).getByText('Child (child)')).toBeTruthy()
   })
 
-  it('clamps Menu settings selection when repairing a root-missing draft by deleting its only menu', () => {
+  it('clamps Menu settings selection when repairing a root-missing working copy by deleting its only menu', () => {
     const alert = jest.spyOn(Alert, 'alert')
     const screen = renderEditor({
       config: { version: 1, rootMenuId: 'missing', menus: [{ id: 'only', label: 'Only', groups: [] }] },
@@ -1276,13 +1253,19 @@ describe('ActionPadEditor', () => {
 
   it.each([
     { name: 'a semantic error', overrides: { config: { ...menuManagerConfig(), rootMenuId: 'missing' } } },
-    { name: 'host work', overrides: { config: menuManagerConfig(), busy: true } },
-    {
-      name: 'a pending ID edit',
-      overrides: { config: menuManagerConfig(), initialIdDrafts: { 'menus[0].id': 'child' } }
-    }
+    { name: 'host work', overrides: { config: menuManagerConfig(), busy: true } }
   ])('disables unused-menu cleanup during $name', ({ overrides }) => {
     const screen = renderEditor({ ...overrides, initialButton: undefined })
+    expect(screen.getByTestId('action-pad-remove-unused-menus')).toBeDisabled()
+    fireEvent.press(screen.getByTestId('action-pad-remove-unused-menus'))
+    expect(screen.queryByTestId('action-pad-cleanup-confirmation')).toBeNull()
+  })
+
+  it('disables unused-menu cleanup during a local pending ID edit', () => {
+    const screen = renderEditor({ config: menuManagerConfig(), initialButton: undefined })
+    fireEvent.press(screen.getByRole('button', { name: 'Menu settings' }))
+    fireEvent.changeText(screen.getByLabelText('Menu ID'), 'child')
+    fireEvent.press(screen.getByRole('button', { name: 'Manage menus' }))
     expect(screen.getByTestId('action-pad-remove-unused-menus')).toBeDisabled()
     fireEvent.press(screen.getByTestId('action-pad-remove-unused-menus'))
     expect(screen.queryByTestId('action-pad-cleanup-confirmation')).toBeNull()
@@ -1382,9 +1365,8 @@ describe('ActionPadEditor', () => {
   })
 
   it('buffers colliding ID prefixes without rewriting another menu’s references', () => {
-    const onIdDraftsChange = jest.fn()
     const onPendingEditsChange = jest.fn()
-    const screen = renderEditor({ onIdDraftsChange, onPendingEditsChange })
+    const screen = renderEditor({ onPendingEditsChange })
     fireEvent.press(screen.getByRole('button', { name: 'Menu settings' }))
     fireEvent.changeText(screen.getByLabelText('Menu ID'), '')
     fireEvent.changeText(screen.getByLabelText('Menu ID'), 'chil')
@@ -1393,14 +1375,12 @@ describe('ActionPadEditor', () => {
     expect(screen.draft().rootMenuId).toBe('chil')
     expect(screen.draft().menus[1]?.id).toBe('child')
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
-    expect(onIdDraftsChange).toHaveBeenLastCalledWith({ 'menus[0].id': 'child' })
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith(true)
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: true, pathEdit: false })
     fireEvent.changeText(screen.getByLabelText('Menu ID'), 'child-new')
     expect(screen.draft().rootMenuId).toBe('child-new')
     expect(screen.draft().menus[0]?.groups[0]?.buttons[1]?.tap).toMatchObject({ menuId: 'child' })
     expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
-    expect(onIdDraftsChange).toHaveBeenLastCalledWith({})
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith(false)
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: false })
   })
 
   it('keeps a pending ID across other edits and navigation, with structure guarded until undo', () => {
@@ -1445,15 +1425,28 @@ describe('ActionPadEditor', () => {
     expect(screen.queryByText('A menu with ID “home” already exists. Choose a unique ID.')).toBeNull()
   })
 
-  it('restores raw ID drafts and leaves them available for recovery when the editor closes', () => {
-    const onIdDraftsChange = jest.fn()
-    const screen = renderEditor({ initialIdDrafts: { 'menus[0].groups[0].buttons[0].id': 'open' }, onIdDraftsChange })
+  it('keeps incomplete ID text only while the editor remains mounted', () => {
+    const onPendingEditsChange = jest.fn()
+    const screen = renderEditor({ onPendingEditsChange })
+    fireEvent.changeText(screen.getByLabelText('Button ID'), 'open')
     expect(screen.getByLabelText('Button ID').props.value).toBe('open')
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
     expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
-    expect(onIdDraftsChange).toHaveBeenLastCalledWith({ 'menus[0].groups[0].buttons[0].id': 'open' })
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: true, pathEdit: false })
     screen.unmount()
-    expect(onIdDraftsChange).toHaveBeenLastCalledWith({ 'menus[0].groups[0].buttons[0].id': 'open' })
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: false })
+  })
+
+  it('treats a changed host path as an in-memory edit until it is selected', () => {
+    const onPendingEditsChange = jest.fn()
+    const screen = renderEditor({ onPendingEditsChange })
+
+    fireEvent.changeText(screen.getByLabelText('Host YAML path'), '/home/test/another.yaml')
+
+    expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: true })
+    screen.unmount()
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: false })
   })
 
   it('serializes file requests while waiting for the parent’s confirmation', async () => {
@@ -1470,7 +1463,7 @@ describe('ActionPadEditor', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
   })
 
-  it('passes host paths and file commands to the parent without activating or saving implicitly', async () => {
+  it('passes load and save paths to the parent without activating or saving implicitly', async () => {
     const screen = renderEditor({ dirty: true })
     expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
     fireEvent.changeText(screen.getByLabelText('Host YAML path'), '/repo/config/action pad.yaml')
@@ -1478,14 +1471,25 @@ describe('ActionPadEditor', () => {
     await waitFor(() => expect(screen.props.onLoad).toHaveBeenCalledWith('/repo/config/action pad.yaml'))
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
     await waitFor(() => expect(screen.props.onSave).toHaveBeenCalledWith('/repo/config/action pad.yaml'))
-    fireEvent.press(screen.getByRole('button', { name: 'Export copy…' }))
-    fireEvent.changeText(screen.getByLabelText('Export YAML path'), '~/repo/copy.yaml')
-    fireEvent.press(screen.getByRole('button', { name: 'Write exported copy' }))
-    await waitFor(() => expect(screen.props.onExport).toHaveBeenCalledWith('~/repo/copy.yaml'))
+    expect(screen.queryByRole('button', { name: 'Export copy…' })).toBeNull()
     expect(screen.props.onChange).not.toHaveBeenCalled()
     expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
     fireEvent.press(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.props.onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps Save disabled while a clean editor is waiting for its first load', () => {
+    const clean = renderEditor({ initialLoadPending: true })
+    expect(clean.getByTestId('action-pad-editor-save')).toBeDisabled()
+    clean.unmount()
+
+    const dirty = renderEditor({ dirty: true, initialLoadPending: true })
+    expect(dirty.getByTestId('action-pad-editor-save')).toBeEnabled()
+    dirty.unmount()
+
+    const pathEdit = renderEditor({ initialLoadPending: true })
+    fireEvent.changeText(pathEdit.getByLabelText('Host YAML path'), '/home/test/new-action-pad.yaml')
+    expect(pathEdit.getByTestId('action-pad-editor-save')).toBeEnabled()
   })
 
   it('allows offline edits but blocks file operations, and disables editing while busy', () => {
@@ -1493,14 +1497,10 @@ describe('ActionPadEditor', () => {
     expect(screen.getByText('No unsaved changes · Offline editing')).toBeTruthy()
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
     fireEvent.press(screen.getByRole('button', { name: 'Load / Reload' }))
-    fireEvent.press(screen.getByRole('button', { name: 'Export copy…' }))
-    fireEvent.changeText(screen.getByLabelText('Export YAML path'), '~/copy.yaml')
-    expect(screen.getByRole('button', { name: 'Write exported copy' })).toBeDisabled()
     fireEvent.changeText(screen.getByLabelText('Button label'), 'Offline change')
     expect(screen.props.onChange).toHaveBeenCalledTimes(1)
     expect(screen.props.onSave).not.toHaveBeenCalled()
     expect(screen.props.onLoad).not.toHaveBeenCalled()
-    expect(screen.props.onExport).not.toHaveBeenCalled()
     screen.unmount()
 
     const busy = renderEditor({ busy: true })
@@ -1516,12 +1516,12 @@ describe('ActionPadEditor', () => {
     expect(busy.getByRole('button', { name: 'Cancel' })).toBeDisabled()
   })
 
-  it('retains a draft when a host callback fails and shows the actionable error', async () => {
-    const screen = renderEditor({ onSave: jest.fn().mockRejectedValue(new Error('Host file changed. Reload or export your draft.')) })
-    fireEvent.changeText(screen.getByLabelText('Button label'), 'Keep this draft')
+  it('retains in-memory edits when a host callback fails and shows the actionable error', async () => {
+    const screen = renderEditor({ onSave: jest.fn().mockRejectedValue(new Error('Permission denied. Reload, retry, or restore your backup.')) })
+    fireEvent.changeText(screen.getByLabelText('Button label'), 'Keep this edit')
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
-    await waitFor(() => expect(screen.getByText('Host file changed. Reload or export your draft.')).toBeTruthy())
-    expect(screen.getByLabelText('Button label').props.value).toBe('Keep this draft')
+    await waitFor(() => expect(screen.getByText('Permission denied. Reload, retry, or restore your backup.')).toBeTruthy())
+    expect(screen.getByLabelText('Button label').props.value).toBe('Keep this edit')
   })
 
   it('shows an accessible slow-operation card and exposes explicit stop waiting', () => {
@@ -1529,7 +1529,7 @@ describe('ActionPadEditor', () => {
     const operation: ActionPadOperation = {
       id: 7,
       kind: 'save',
-      phase: 'awaiting-confirmation',
+      phase: 'writing',
       startedAtMs: Date.now() - 16_000,
       path: '/host/action-pad.yaml',
       byteCount: 431,
@@ -1546,34 +1546,30 @@ describe('ActionPadEditor', () => {
     expect(onStopWaiting).toHaveBeenCalledTimes(1)
   })
 
-  it('renders severity-aware notices with collapsed technical details and recovery action', () => {
-    const onReconnectAndCheck = jest.fn()
+  it('renders severity-aware notices with collapsed technical details', () => {
     const notice: ActionPadNotice = {
       severity: 'error',
-      summary: 'The save response was lost.',
-      recommendedAction: 'Reconnect and check before retrying.',
+      summary: 'The host write failed.',
+      recommendedAction: 'Reload, retry, or restore your backup.',
       details: {
         operation: 'save',
-        phase: 'awaiting-confirmation',
+        phase: 'writing',
         durationMs: 15_200,
         path: '/host/action-pad.yaml',
         byteCount: 431,
         hostErrorCode: 'io',
-        hostStage: 'read-back',
         socketCode: 'E_TCP_EOF',
         nativeSocketMessage: 'peer closed'
       }
     }
-    const screen = renderEditor({ notice, onReconnectAndCheck })
+    const screen = renderEditor({ notice })
 
     const alert = screen.getByRole('alert')
     expect(alert.props.accessibilityLiveRegion).toBe('assertive')
     expect(screen.queryByTestId('action-pad-technical-details')).toBeNull()
-    fireEvent.press(screen.getByRole('button', { name: 'Reconnect & check save' }))
-    expect(onReconnectAndCheck).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Reconnect & check save' })).toBeNull()
     fireEvent.press(screen.getByRole('button', { name: 'Show technical details' }))
     expect(screen.getByText('Native socket code: E_TCP_EOF')).toBeTruthy()
-    expect(screen.getByText('Host stage: read-back')).toBeTruthy()
     expect(screen.getByText('Serialized bytes: 431')).toBeTruthy()
   })
 

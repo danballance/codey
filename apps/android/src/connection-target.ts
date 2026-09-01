@@ -99,19 +99,9 @@ export function connectionTargetLabel(target: ConnectionTarget): string {
 }
 
 /**
- * Identity used to partition Action Pad recovery. Local recovery intentionally
- * follows the local engine when its workspace changes. Remote identities retain
- * the legacy endpoint suffix so existing recovery keys can be reused.
- */
-export function actionPadIdentityForTarget(target: ConnectionTarget): string {
-  if (target.kind === 'local') return 'local'
-  return `${encodeURIComponent(target.host)}:${target.port}`
-}
-
-/**
- * Compatibility identity for the existing Action Pad store. The sentinel host
+ * Compatibility identity for the Action Pad path preference. The sentinel host
  * contains a character rejected by remote endpoint validation, so it cannot
- * collide with a user-configured TCP endpoint. Local recovery intentionally
+ * collide with a user-configured TCP endpoint. The Local path intentionally
  * remains stable when the workspace path changes.
  */
 export function actionPadEndpointForTarget(target: ConnectionTarget): Endpoint {

@@ -30,10 +30,8 @@ function connectionDouble() {
     inputMouse: jest.fn(async () => undefined),
     resize: jest.fn(async (_width: number, _height: number): Promise<void> => undefined),
     defaultActionPadPath: jest.fn(async () => '/home/test/.config/nvim/codey/action-pad.yaml'),
-    readHostDocument: jest.fn(async (path: string): Promise<HostDocument> => ({ path, resolvedPath: path, text: null, revision: null })),
-    writeHostDocument: jest.fn(async (request: HostDocumentWrite): Promise<HostDocument> => ({
-      path: request.path, resolvedPath: request.path, text: request.text, revision: 'saved'
-    })),
+    readHostDocument: jest.fn(async (path: string): Promise<HostDocument> => ({ path, text: null })),
+    writeHostDocument: jest.fn(async (_request: HostDocumentWrite): Promise<void> => undefined),
     onRedraw: jest.fn((listener: (batch: RedrawBatch) => void) => {
       redrawListener = listener
       return removeRedraw
@@ -149,10 +147,10 @@ describe('TabletClientController', () => {
     expect(controller.getState().phase).toBe('connected')
     expect(double.session.close).not.toHaveBeenCalled()
     await controller.writeHostDocument(endpoint, {
-      path: '/config.yaml', text: 'version: 1\n', expectedRevision: null
+      path: '/config.yaml', text: 'version: 1\n'
     })
     expect(double.session.writeHostDocument).toHaveBeenCalledWith({
-      path: '/config.yaml', text: 'version: 1\n', expectedRevision: null
+      path: '/config.yaml', text: 'version: 1\n'
     })
     expect(double.session.input).not.toHaveBeenCalled()
     await controller.dispose()
@@ -168,7 +166,7 @@ describe('TabletClientController', () => {
     await controller.connect(endpoint)
     const reading = controller.readHostDocument(endpoint, '/old.yaml')
     await controller.connect(endpoint)
-    finish({ path: '/old.yaml', resolvedPath: '/old.yaml', text: 'old', revision: '1' })
+    finish({ path: '/old.yaml', text: 'old' })
     await expect(reading).rejects.toThrow('connection changed')
     expect(controller.getState().phase).toBe('connected')
     await controller.dispose()
@@ -180,18 +178,16 @@ describe('TabletClientController', () => {
     const controller = new TabletClientController(() => double)
     try {
       await controller.connect(endpoint)
-      let finish!: (document: HostDocument) => void
+      let finish!: () => void
       double.session.writeHostDocument.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
       const saving = controller.writeHostDocument(endpoint, {
-        path: '/config.yaml', text: 'version: 1\n', expectedRevision: null
+        path: '/config.yaml', text: 'version: 1\n'
       })
       await jest.advanceTimersByTimeAsync(15_000)
       expect(double.session.writeHostDocument).toHaveBeenCalledTimes(1)
       expect(controller.getState().phase).toBe('connected')
-      finish({
-        path: '/config.yaml', resolvedPath: '/config.yaml', text: 'version: 1\n', revision: 'saved'
-      })
-      await expect(saving).resolves.toMatchObject({ revision: 'saved' })
+      finish()
+      await expect(saving).resolves.toBeUndefined()
       expect(double.session.writeHostDocument).toHaveBeenCalledTimes(1)
       expect(controller.getState().phase).toBe('connected')
     } finally {

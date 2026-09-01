@@ -35,8 +35,8 @@ session; it is not a background server.
 
 Select **Remote** to retain the existing host/port TCP workflow. A legacy saved
 endpoint is migrated to Remote automatically. The most recent local path and
-remote endpoint are stored independently, and Action Pad recovery uses a stable
-local identity rather than the selected path.
+remote endpoint are stored independently. The Action Pad remembers one YAML
+path for Local mode and one for each Remote endpoint.
 
 The bundled implementation is intentionally arm64/API-30-only and meant for a
 personal sideloaded APK. See [`native-poc/README.md`](native-poc/README.md) for
@@ -166,15 +166,15 @@ IDs are shown with labels where duplicate labels would otherwise be ambiguous.
 Removing a visible launcher button, group, or interaction does not implicitly
 delete its destination menu definition. The destination therefore remains in
 menu and destination dropdowns until it is deleted explicitly. After an
-individual deletion in a valid draft, the manager, dropdowns, move destinations,
+individual deletion in a valid working copy, the manager, dropdowns, move destinations,
 and status counts update immediately. Field validation is shown directly in the
-form and prevents Save until the draft is valid.
+form and prevents Save until the working copy is valid.
 
 When one or more menus are Unused, **Remove unused menus** offers a confirmation
 that lists the affected definitions and their aggregate group/button counts. A
-confirmed cleanup removes the complete root-unreachable set atomically,
+confirmed cleanup removes the complete root-unreachable set as one editor change,
 including references between menus in that set, while preserving Root and every
-Reachable menu. Cleanup is unavailable while the draft is invalid or another
+Reachable menu. Cleanup is unavailable while the working copy is invalid or another
 edit is pending.
 
 The general editor also includes groups, buttons, duplication, ordering/move
@@ -191,8 +191,8 @@ colours additionally support Transparent, and a custom value accepts exactly
 `#RRGGBB` (case-insensitive). Default removes the override so the appearance
 controls the colour. Filled buttons default to `#24283b` with no visible outline;
 Outline buttons default to a transparent background with a `#353b52` outline.
-An incomplete custom value is retained in the recoverable draft and shown as a
-field error, but Save and Export remain disabled until it is valid. The external
+An incomplete custom value is retained while the editor stays open and shown as
+a field error, but Save remains disabled until it is valid. The external
 idle **Edit Action Pad** control uses the same set-back transparent treatment;
 **Done editing** remains cyan/tinted and **Connect session** remains filled.
 
@@ -206,42 +206,40 @@ target. File operations need no extra service, plugin, or SSH connection.
 Remote mode needs no Android storage permission; Local mode uses the all-files
 access already required for an external workspace.
 
-- **Load / Reload** validates a file before replacing the active pad and draft.
+- **Load / Reload** validates a file before replacing the active pad and working copy.
   Invalid files leave both unchanged. Loading over unsaved edits requires
   confirmation.
-- **Save** validates the draft, updates the active host file, and only then
-  activates the configuration. The first Save creates a missing file and its
-  parent directories; startup and reads never create files. Once a file is
-  active, Load another file to switch or Export to create a separate copy.
-- **Export copy** writes the current valid draft to another host path. Existing
-  destinations require confirmation. Export does not change the active file,
-  activate the draft, or mark the draft saved.
-- **Cancel** offers to discard edits, keep editing, or **Keep draft & close**.
-  Keeping a draft lets you return later without changing the active pad.
-  Neither closing nor discarding writes a host file.
+- **Save** validates the working copy, writes the selected host file directly,
+  and only then activates the configuration. The first Save creates a missing
+  file and its parent directories; startup and reads never create files.
+  Changing the path before Save writes that path and remembers it after success.
+- **Cancel** offers **Keep editing** or **Discard and close** when edits are
+  unsaved. Closing discards the in-memory working copy and never writes a host
+  file.
 
-Menu deletions and unused-menu cleanup follow the same draft lifecycle as every
+Menu deletions and unused-menu cleanup follow the same working-copy lifecycle as every
 other edit. They disappear from editor pickers immediately, but the live Action
 Pad and host YAML keep the last activated configuration until a successful
-**Save**. **Keep draft & close** preserves the cleanup locally without activating
-it; discarding the draft restores the last saved definitions.
+**Save**. Discarding and closing restores the last activated definitions.
 
-The app keeps the last valid configuration and incomplete drafts in local
-recovery storage. Editing works offline; file operations require a connection.
-Use **Connect session** inside the editor to reconnect without discarding edits.
-Reconnecting refreshes a clean configuration but never silently replaces an
-unsaved draft or uploads it. If a Save response is lost, the next explicit Save
-reads the host file to reconcile the attempt before writing again.
+The app persists only the selected YAML path for each endpoint. Unsaved edits,
+including incomplete field text, live in memory while the editor remains open;
+closing the editor or restarting the app loses them. Editing works offline while
+the screen stays open, and **Connect session** reconnects without discarding the
+current working copy. The remembered file is loaded automatically on the first
+successful connection for an endpoint; reconnecting later does not reload it.
+Use **Load / Reload** when you want to read the host file again. File operations
+require a connection.
 
-External changes cause a conflict instead of an overwrite: Reload the host
-version or Export your draft elsewhere. Saves preserve ordinary file
-permission mode bits and symlinks and refuse to overwrite a matching Neovim buffer with
-unsaved changes. Files in read-only locations such as the Nix store need an
-editable destination. Operations run with the Neovim process user's permissions.
-Atomic replacement creates a new inode; owner/group, ACLs, extended attributes,
-and other hard links are not preserved. Use an ordinary user-owned YAML file.
+Save is last-writer-wins: it does not compare revisions or inspect matching
+Neovim buffers. It opens the selected path directly, truncates it, writes the
+new YAML, and follows ordinary filesystem symlink behavior. Files in read-only
+locations such as the Nix store need an editable destination. Operations run
+with the Neovim process user's permissions. If a write fails after truncation,
+the file may be incomplete; keep backups or Git history and reload, retry, or
+restore the file manually.
 
-Save and Export normalize YAML formatting and remove handwritten comments.
+Save normalizes YAML formatting and removes handwritten comments.
 Keep a Git history if comments or earlier versions matter. The format is:
 
 ```yaml
@@ -339,7 +337,7 @@ accessibility label remains available in every case. Use the editor's shared
 Normal/Compact preview to check large or multi-line treatments at either button
 width. Colour, italics, custom font families, manual vertical offsets, and
 per-run alignment controls are not part of this format. This rendering change
-does not change YAML fields, version numbers, or recovery storage.
+does not change YAML fields, version numbers, or remembered file paths.
 
 This prototype evolves schema version 1 in place. It provides no migration or
 implicit size for older YAML: a button without `styles.size` is invalid and must
@@ -515,8 +513,8 @@ the clean prebuild first when invoking those commands independently. No Android
 Studio, emulator, or system image is required or included in the Nix shell.
 
 The Android suite includes frozen baselines for all 12 starter menus,
-YAML validation/round trips, editing operations, recovery and conflict cases,
-input isolation, and the complete Load → Edit → Save → Reload → Export UI flow.
+YAML validation/round trips, editing operations, in-memory discard and direct
+write cases, input isolation, and the complete Load → Edit → Save → Reload UI flow.
 The shared host-document suite launches isolated `nvim --embed --headless`
 processes and uses temporary files. It runs when `nvim` is on `PATH`, or when
 `CODEY_NVIM_BIN` names a Neovim binary:
@@ -551,10 +549,11 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
    **Remove unused menus**, inspect and cancel the first confirmation, then
    confirm it on the second attempt. Verify the complete disconnected set is
    removed together while Root and all Reachable menus and links are unchanged.
-6. Before saving menu deletions, close with **Keep draft & close** and confirm the
-   live pad and host YAML still use the previous definitions while the editor
-   recovers the cleaned draft. Save, reload, and reopen the app; confirm deleted
-   menus remain absent from the YAML, manager, all pickers, and live Action Pad.
+6. Before saving menu deletions, choose **Discard and close** and confirm the live
+   pad and host YAML still use the previous definitions. Reopen the editor and
+   confirm the discarded cleanup is gone. Repeat the cleanup, Save, reload, and
+   reopen the app; confirm deleted menus remain absent from the YAML, manager,
+   all pickers, and live Action Pad.
 7. Load the starter and build a mixed label with a size-22 icon plus bold and
    regular text runs, giving individual runs Green and Yellow font colours.
    Insert an icon at a cursor and over selected text in an
@@ -565,19 +564,22 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
    Outline appearances and custom/transparent button colours; then Save and
    reload. Confirm the YAML retains every run and the active pad renders the
    same treatment in ordinary and selection modes. Confirm invalid custom hex
-   remains recoverable but blocks Save/Export. Check a size-22 icon beside
+   remains visible while the editor stays open but blocks Save. Check a size-22 icon beside
    size-10/12/15 text
    in both orders: their font-box centres should align. Check word wrapping
    across runs, explicit newlines, and height-aware ellipsis without partial
    second lines or shrunken text. Increase Android font scaling, test fallback
    fonts, and check that TalkBack announces the complete button label exactly
    once even when the visible label is shortened.
-8. Reload, then Export to a different path. Confirm the source stays linked;
-   exporting a later unsaved edit must not activate it or clear its dirty state.
-9. Change the source outside Codey and try Save. Confirm the app offers Reload
-   or Export without overwriting the external change.
-10. Disconnect, edit, and choose **Keep draft & close**. Reopen/restart and
-   reconnect; the draft must remain local until an explicit Save.
+8. Change the path and Save. Confirm the new file is created, becomes the
+   remembered path, and activates only after the write succeeds. Load the prior
+   path explicitly to switch back.
+9. Change the selected file outside Codey and Save. Confirm Codey overwrites it
+   as last writer. Simulate a write failure and confirm the working copy remains
+   open while recovery is left to Reload, retry, or restoring a manual backup.
+10. Disconnect, edit, and reconnect from inside the still-open editor. Confirm
+    the in-memory edits remain and are not written until Save. Then discard and
+    close, reopen, and restart; confirm the discarded edits do not return.
 11. Repeat at the `800x600dp` condensed and `1280x800dp` expanded landscape
    baselines, including the software keyboard. Confirm forms remain reachable
    and typing in them never changes the Neovim buffer. After leaving the editor,

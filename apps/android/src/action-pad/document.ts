@@ -75,7 +75,7 @@ export class ActionPadConfigError extends Error {
   }
 }
 
-/** Also accepts incomplete editor drafts, but never malformed stored objects. */
+/** Also accepts incomplete working configurations, but never malformed stored objects. */
 export function isActionPadConfigShape(value: unknown): value is ActionPadConfig {
   return inspectConfig(value, false).length === 0
 }

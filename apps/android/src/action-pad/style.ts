@@ -68,12 +68,12 @@ export function isActionButtonLabelColor(value: string): boolean {
   return isActionButtonHexColor(value)
 }
 
-/** Invalid recovery-draft values never reach native or React Native colour parsing. */
+/** Invalid incomplete-editor values never reach native or React Native colour parsing. */
 export function resolveActionButtonStyleColor(value: string | undefined, fallback: string): string {
   return value !== undefined && isActionButtonStyleColor(value) ? value : fallback
 }
 
-/** Invalid recovery-draft values render like an uncoloured run until repaired. */
+/** Invalid incomplete-editor values render like an uncoloured run until repaired. */
 export function resolveActionButtonLabelColor(value: string | undefined): string {
   return value !== undefined && isActionButtonLabelColor(value) ? value : DEFAULT_ACTION_BUTTON_LABEL_COLOR
 }

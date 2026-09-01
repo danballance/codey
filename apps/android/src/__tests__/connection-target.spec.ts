@@ -4,7 +4,6 @@ import {
   DEFAULT_LOCAL_WORKSPACE_PATH,
   DEFAULT_REMOTE_TARGET,
   actionPadEndpointForTarget,
-  actionPadIdentityForTarget,
   connectionTargetLabel,
   createLocalConnectionTarget,
   createRemoteConnectionTarget,
@@ -59,13 +58,7 @@ describe('connection targets', () => {
     )
   })
 
-  it('keeps local Action Pad recovery stable across workspace changes', () => {
-    expect(actionPadIdentityForTarget({ kind: 'local', workspacePath: '/first' })).toBe('local')
-    expect(actionPadIdentityForTarget({ kind: 'local', workspacePath: '/second' })).toBe('local')
-    expect(actionPadIdentityForTarget({ kind: 'remote', host: 'host name', port: 6666 })).toBe(
-      'host%20name:6666'
-    )
-
+  it('keeps the local Action Pad path preference stable across workspace changes', () => {
     expect(actionPadEndpointForTarget({ kind: 'local', workspacePath: '/first' })).toEqual({
       host: '@local',
       port: 1

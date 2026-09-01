@@ -62,16 +62,9 @@ function connectionDouble() {
     defaultActionPadPath: jest.fn(async () => '/tmp/action-pad.yaml'),
     readHostDocument: jest.fn(async (path: string): Promise<HostDocument> => ({
       path,
-      resolvedPath: path,
-      text: null,
-      revision: null
+      text: null
     })),
-    writeHostDocument: jest.fn(async (request: HostDocumentWrite): Promise<HostDocument> => ({
-      path: request.path,
-      resolvedPath: request.path,
-      text: request.text,
-      revision: 'saved'
-    })),
+    writeHostDocument: jest.fn(async (_request: HostDocumentWrite): Promise<void> => undefined),
     onRedraw: jest.fn((listener: (batch: RedrawBatch) => void) => {
       redrawListener = listener
       return removeRedraw

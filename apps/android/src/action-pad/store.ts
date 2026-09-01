@@ -1,49 +1,25 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import type {
-  HostDocument,
-  HostDocumentErrorCode,
-  HostDocumentErrorStage,
-  HostDocumentWrite
-} from '@codey/nvim-session'
+import type { HostDocument, HostDocumentErrorCode, HostDocumentWrite } from '@codey/nvim-session'
 
+import { diagnosticLogger, type DiagnosticLogger, type DiagnosticOperation } from '../diagnostics/logger'
 import { DEFAULT_ENDPOINT, type Endpoint } from '../endpoint'
-import {
-  diagnosticLogger,
-  type DiagnosticLogger,
-  type DiagnosticOperation
-} from '../diagnostics/logger'
 import { DEFAULT_ACTION_PAD_CONFIG } from './config'
 import {
   ACTION_PAD_CONFIG_MAX_BYTES,
   isActionPadConfigShape,
   parseActionPadConfig,
   serializeActionPadConfig,
-  validateActionPadConfig,
   type ActionPadConfig
 } from './document'
 
 export interface ActionPadHostDocuments {
   defaultActionPadPath(endpoint: Endpoint): Promise<string>
   readHostDocument(endpoint: Endpoint, path: string): Promise<HostDocument>
-  writeHostDocument(endpoint: Endpoint, request: HostDocumentWrite): Promise<HostDocument>
+  writeHostDocument(endpoint: Endpoint, request: HostDocumentWrite): Promise<void>
 }
 
-interface DocumentBaseline {
-  readonly path: string
-  readonly resolvedPath: string
-  readonly revision: string | null
-}
-
-interface PendingSave extends DocumentBaseline {
-  readonly text: string
-}
-
-export type ActionPadOperationKind = 'load' | 'save' | 'export' | 'reconcile'
-export type ActionPadOperationPhase =
-  | 'validating'
-  | 'checking-host-file'
-  | 'writing'
-  | 'awaiting-confirmation'
+export type ActionPadOperationKind = 'load' | 'save'
+export type ActionPadOperationPhase = 'validating' | 'reading' | 'writing'
 
 export interface ActionPadOperation {
   readonly id: number
@@ -65,7 +41,6 @@ export interface ActionPadNoticeDetails {
   readonly path?: string
   readonly byteCount?: number
   readonly hostErrorCode?: HostDocumentErrorCode
-  readonly hostStage?: HostDocumentErrorStage
   readonly socketCode?: string
   readonly nativeSocketMessage?: string
 }
@@ -80,33 +55,24 @@ export interface ActionPadNotice {
 export interface ActionPadStoreState {
   readonly endpoint: Endpoint
   readonly sourcePath: string
-  readonly pendingSavePath: string | null
   readonly activeConfig: ActionPadConfig
-  readonly draft: ActionPadConfig
-  readonly idDrafts: Readonly<Record<string, string>>
+  readonly workingConfig: ActionPadConfig
   readonly dirty: boolean
   readonly busy: boolean
   readonly connected: boolean
+  readonly initialLoadPending: boolean
   readonly operation: ActionPadOperation | null
   readonly notice: ActionPadNotice | null
-  readonly recoveryNotice: ActionPadNotice | null
-  /** Compatibility projections for consumers that have not moved to notices yet. */
   readonly message: string
   readonly error: boolean
-  readonly recoveryWarning: string
 }
 
-interface RecoveryRecord {
-  readonly version: 1
-  readonly sourcePath: string
-  readonly activeConfig: ActionPadConfig
-  readonly draft: ActionPadConfig | null
-  readonly idDrafts: Readonly<Record<string, string>>
-  readonly baseline: DocumentBaseline | null
-  readonly pendingSave: PendingSave | null
+export interface ActionPadConnectionPreservation {
+  readonly fieldEdits: boolean
+  readonly pathEdit: boolean
 }
 
-type RecoveryStorage = Pick<typeof AsyncStorage, 'getItem' | 'setItem'>
+type PathStorage = Pick<typeof AsyncStorage, 'getItem' | 'setItem' | 'removeItem'>
 
 interface OperationContext {
   readonly id: number
@@ -130,40 +96,47 @@ type OperationOutcome =
   | { readonly status: 'cancelled' }
 
 const SLOW_OPERATION_MS = 15_000
+const NO_CONNECTION_PRESERVATION: ActionPadConnectionPreservation = Object.freeze({
+  fieldEdits: false,
+  pathEdit: false
+})
 const HOST_ERROR_CODES: readonly HostDocumentErrorCode[] = [
-  'conflict', 'modified-buffer', 'invalid-path', 'not-found', 'permission', 'too-large', 'io'
-]
-const HOST_ERROR_STAGES: readonly HostDocumentErrorStage[] = [
-  'validation', 'filesystem', 'conflict', 'permission', 'publication', 'sync', 'read-back'
+  'conflict', 'invalid-path', 'not-found', 'permission', 'too-large', 'io'
 ]
 
-export function actionPadStorageKey(endpoint: Endpoint): string {
+/** Current path-only preference. The stored value is the selected path as plain text. */
+export function actionPadPathStorageKey(endpoint: Endpoint): string {
+  return `codey.android.action-pad-path.v1.${encodeURIComponent(endpoint.host)}:${endpoint.port}`
+}
+
+/** Removed recovery journal key, retained only for one-way sourcePath migration. */
+export function legacyActionPadStorageKey(endpoint: Endpoint): string {
   return `codey.android.action-pad.v1.${encodeURIComponent(endpoint.host)}:${endpoint.port}`
 }
 
-/** Owns drafts, file identity, operation diagnostics, and uncertain-save recovery. */
+/** Keeps edits in memory; the selected YAML file is the only durable configuration. */
 export class ActionPadConfigStore {
   readonly #listeners = new Set<() => void>()
   readonly #documents: ActionPadHostDocuments
-  readonly #storage: RecoveryStorage
+  readonly #storage: PathStorage
   readonly #logger: DiagnosticLogger
   #state: ActionPadStoreState
-  #baseline: DocumentBaseline | null = null
-  #pendingSave: PendingSave | null = null
   #generation = 0
   #connectionGeneration = 0
   #operationSequence = 0
   #activeRun: ActiveRun | null = null
   #slowTimer: ReturnType<typeof setTimeout> | null = null
   #refreshRequested = false
+  #connectionPreservation = NO_CONNECTION_PRESERVATION
+  #initialLoadCompleted = false
   #editVersion = 0
   #hydrated = false
   #hydration: Promise<void> = Promise.resolve()
-  #writeTail: Promise<void> = Promise.resolve()
+  #pathWriteTail: Promise<void> = Promise.resolve()
 
   constructor(
     documents: ActionPadHostDocuments,
-    storage: RecoveryStorage = AsyncStorage,
+    storage: PathStorage = AsyncStorage,
     initialEndpoint: Endpoint = DEFAULT_ENDPOINT,
     logger: DiagnosticLogger = diagnosticLogger
   ) {
@@ -185,74 +158,84 @@ export class ActionPadConfigStore {
     this.#cancelActiveRunWithoutNotice()
     const generation = ++this.#generation
     this.#refreshRequested = false
+    this.#connectionPreservation = NO_CONNECTION_PRESERVATION
+    this.#initialLoadCompleted = false
     this.#editVersion = 0
-    this.#baseline = null
-    this.#pendingSave = null
     this.#hydrated = true
     this.#state = { ...initialState(endpoint), busy: true }
     this.#emit()
-    this.#hydration = this.#restore(endpoint, generation)
+    this.#hydration = this.#restoreSelectedPath(endpoint, generation)
     return this.#hydration
   }
 
-  async #restore(endpoint: Endpoint, generation: number): Promise<void> {
+  async #restoreSelectedPath(endpoint: Endpoint, generation: number): Promise<void> {
+    const pathKey = actionPadPathStorageKey(endpoint)
+    const legacyKey = legacyActionPadStorageKey(endpoint)
     const operation = this.#logger.operation({
       category: 'action-pad',
-      event: 'action_pad.recovery_restore',
-      message: 'Restoring the local Action Pad recovery record',
-      details: { endpoint, generation, storageKey: actionPadStorageKey(endpoint) }
+      event: 'action_pad.path_restore',
+      message: 'Restoring the selected Action Pad path',
+      details: { endpoint, generation, pathKey, legacyKey }
     })
     try {
-      await this.#writeTail
-      const raw = await this.#storage.getItem(actionPadStorageKey(endpoint))
+      await this.#pathWriteTail
+      const storedPath = await this.#storage.getItem(pathKey)
       if (generation !== this.#generation) {
         operation.cancellation({
-          message: 'Ignored Action Pad recovery from a superseded endpoint',
-          details: { endpoint, generation, currentGeneration: this.#generation, raw }
+          message: 'Ignored an Action Pad path from a superseded endpoint',
+          details: { endpoint, generation, currentGeneration: this.#generation, storedPath }
         })
         return
       }
-      if (raw === null || raw === undefined) {
+      if (storedPath !== null && storedPath !== undefined) {
+        const sourcePath = requirePath(storedPath)
+        this.#set({ sourcePath })
+        await this.#removeLegacyRecord(endpoint, generation)
         operation.success({
-          message: 'No local Action Pad recovery record was present',
-          details: { endpoint, generation, found: false }
+          message: 'Restored the selected Action Pad path',
+          details: { endpoint, generation, source: 'path-preference', sourcePath }
         })
         return
       }
-      // Several bounded representations may coexist in the recovery envelope.
-      if (raw.length > ACTION_PAD_CONFIG_MAX_BYTES * 5) throw new Error('Recovery data is too large')
-      const record = parseRecovery(JSON.parse(raw))
-      this.#baseline = record.baseline
-      this.#pendingSave = record.pendingSave
-      const draft = record.draft ?? record.activeConfig
-      const dirty = !sameConfig(draft, record.activeConfig) || Object.keys(record.idDrafts).length > 0
-      this.#set({
-        sourcePath: record.sourcePath,
-        activeConfig: record.activeConfig,
-        draft,
-        idDrafts: record.idDrafts,
-        dirty,
-        notice: record.pendingSave !== null
-          ? notice('warning',
-              'A previous save was not confirmed.',
-              'Reconnect & check save before retrying. The draft is still local.',
-              { operation: 'reconcile', path: record.pendingSave.path })
-          : dirty
-            ? notice('info', 'Recovered unsaved edits.', 'Save when connected, or Cancel to keep or discard them.')
-            : notice('info', 'Using the cached configuration until the host is connected.')
-      })
+
+      const rawLegacy = await this.#storage.getItem(legacyKey)
+      if (generation !== this.#generation) {
+        operation.cancellation({
+          message: 'Ignored Action Pad migration from a superseded endpoint',
+          details: { endpoint, generation, currentGeneration: this.#generation, rawLegacy }
+        })
+        return
+      }
+      if (rawLegacy === null || rawLegacy === undefined) {
+        operation.success({
+          message: 'No selected Action Pad path was present',
+          details: { endpoint, generation, source: 'none' }
+        })
+        return
+      }
+      if (rawLegacy.length > ACTION_PAD_CONFIG_MAX_BYTES * 5) {
+        throw new Error('The legacy Action Pad record is too large to migrate')
+      }
+      const sourcePath = legacySourcePath(JSON.parse(rawLegacy))
+      if (!await this.#persistSelectedPath(endpoint, sourcePath, generation)) {
+        throw new Error('Could not store the migrated Action Pad path')
+      }
+      await this.#removeLegacyRecord(endpoint, generation)
+      if (generation !== this.#generation) return
+      this.#set({ sourcePath })
       operation.success({
-        message: 'Restored the local Action Pad recovery record',
-        details: { endpoint, generation, raw, record, dirty }
+        message: 'Migrated only the selected path from the legacy Action Pad recovery record',
+        details: { endpoint, generation, source: 'legacy-recovery', sourcePath }
       })
     } catch (reason) {
       operation.failure(reason, {
-        message: 'Could not restore the local Action Pad recovery record',
+        message: 'Could not restore the selected Action Pad path',
         details: { endpoint, generation }
       })
       if (generation === this.#generation) {
         this.#set({
-          notice: notice('error', `Could not restore the local configuration. Using the starter. ${messageOf(reason)}`)
+          notice: notice('warning', `Could not restore the selected Action Pad path. ${messageOf(reason)}`,
+            'Connect to use the default path for this endpoint.')
         })
       }
     } finally {
@@ -260,7 +243,11 @@ export class ActionPadConfigStore {
     }
   }
 
-  async setConnected(connected: boolean): Promise<void> {
+  async setConnected(
+    connected: boolean,
+    preservation: ActionPadConnectionPreservation = NO_CONNECTION_PRESERVATION
+  ): Promise<void> {
+    this.#connectionPreservation = { ...preservation }
     const changed = connected !== this.#state.connected
     if (changed) {
       this.#connectionGeneration += 1
@@ -281,354 +268,242 @@ export class ActionPadConfigStore {
     if (!connected && this.#activeRun !== null) {
       this.#cancelActiveOperation(
         this.#state.operation?.writeStarted
-          ? 'The connection closed after writing began. The result is uncertain.'
+          ? 'The connection closed while a direct save was in progress.'
           : 'The connection closed before any write began.',
         this.#state.operation?.writeStarted
-          ? 'Reconnect & check save before retrying.'
+          ? 'The destination may be incomplete or the save may still finish. Reload it before retrying.'
           : 'Reconnect, then retry the operation.'
       )
     }
     this.#set({ connected })
     if (!connected) {
       this.#refreshRequested = false
+      this.#connectionPreservation = NO_CONNECTION_PRESERVATION
       return
     }
-    if (!changed) return
+    if (!changed || this.#initialLoadCompleted) {
+      this.#resumeDeferredInitialLoadIfReady()
+      return
+    }
     this.#refreshRequested = true
     await this.#hydration
     await this.#refreshIfNeeded()
   }
 
-  /** Stops only the local wait. The caller is responsible for disconnecting the controller. */
+  setConnectionPreservation(preservation: ActionPadConnectionPreservation): void {
+    this.#connectionPreservation = { ...preservation }
+    this.#resumeDeferredInitialLoadIfReady()
+  }
+
+  /** Stops only the local wait. A host write cannot be cancelled once begun. */
   stopWaiting(): void {
     if (this.#activeRun === null || this.#state.operation === null) return
     const writeStarted = this.#state.operation.writeStarted
     this.#cancelActiveOperation(
       writeStarted
-        ? 'Stopped waiting after writing began. The save result is uncertain.'
+        ? 'Stopped waiting while a direct save was in progress.'
         : 'Stopped waiting before any write began.',
       writeStarted
-        ? 'Reconnect & check save before retrying.'
-        : 'Reconnect, then retry when ready.'
+        ? 'The destination may be incomplete or the save may still finish. Reload it before retrying.'
+        : 'Retry when ready.'
     )
   }
 
   async #refreshIfNeeded(): Promise<void> {
     if (!this.#refreshRequested || !this.#state.connected || this.#state.busy) return
+    if (this.#initialLoadCompleted) {
+      this.#refreshRequested = false
+      return
+    }
     this.#refreshRequested = false
     await this.#run('load', this.#state.sourcePath, async (context) => {
       let path = this.#state.sourcePath
-      if (path.length === 0) {
-        this.#updateOperation(context, { phase: 'checking-host-file' })
-        path = await this.#documents.defaultActionPadPath(context.endpoint)
+      if (path.length === 0 && !this.#connectionPreservation.pathEdit) {
+        path = requirePath(await this.#documents.defaultActionPadPath(context.endpoint))
         context.rawLifecycle.defaultActionPadPath = path
         this.#assertCurrent(context)
+        if (this.#connectionPreservation.pathEdit) {
+          this.#set({
+            notice: notice('info', 'Connected. Your unsaved edits are unchanged.',
+              'Save them, or use Load / Reload after confirming that they can be discarded.')
+          })
+          return
+        }
         this.#set({ sourcePath: path })
         this.#updateOperation(context, { path })
-        void this.#persist()
+        await this.#persistSelectedPath(context.endpoint, path, context.generation)
+        this.#assertCurrent(context)
       }
-      // Reconnection never replaces a draft or checks/retries an unacknowledged write.
-      if (this.#state.dirty || this.#pendingSave !== null) {
+      const preservation = this.#connectionPreservation
+      if (this.#state.dirty || preservation.fieldEdits || preservation.pathEdit) {
         this.#set({
-          notice: this.#pendingSave === null
-            ? notice('info', 'Connected. Your draft is unchanged.', 'Save checks the host file before writing.')
-            : notice('warning', 'Connected. A previous save is still unconfirmed.', 'Use Reconnect & check save; no write will be replayed.', {
-                operation: 'reconcile', path: this.#pendingSave.path
-              })
+          notice: notice('info', 'Connected. Your unsaved edits are unchanged.',
+            'Save them, or use Load / Reload after confirming that they can be discarded.')
         })
         return
       }
-      const editVersion = this.#editVersion
-      this.#updateOperation(context, { phase: 'checking-host-file', path })
-      const document = await this.#documents.readHostDocument(context.endpoint, path)
-      context.rawLifecycle.readDocument = document
-      this.#assertCurrent(context)
-      if (editVersion !== this.#editVersion) return
-      if (document.text === null) {
-        if (this.#baseline?.revision) {
-          throw new Error('The host file is missing. The cached configuration is unchanged; Export a copy to recover it.')
-        }
-        this.#baseline = baselineOf(document)
-        this.#set({
-          sourcePath: document.path,
-          notice: notice('info', 'Using the starter configuration. Save will create the selected host file.')
-        })
-        void this.#persist()
-        return
-      }
-      const config = parseActionPadConfig(document.text)
-      this.#accept(document, config, editVersion)
-      this.#set({ notice: notice('success', `Loaded ${document.path}`) })
+      await this.#loadDocument(context, path, false)
     })
   }
 
-  setDraft(config: ActionPadConfig): void {
+  setWorkingConfig(config: ActionPadConfig): void {
     if (!isActionPadConfigShape(config)) {
       this.#set({ notice: notice('error', 'This edit has an invalid document structure.') })
       return
     }
     this.#editVersion += 1
-    const draft = cloneConfig(config)
-    this.#set({
-      draft,
-      dirty: !sameConfig(draft, this.#state.activeConfig) || Object.keys(this.#state.idDrafts).length > 0
-    })
-    void this.#persist()
+    const workingConfig = cloneConfig(config)
+    this.#set({ workingConfig, dirty: !sameConfig(workingConfig, this.#state.activeConfig) })
+    this.#resumeDeferredInitialLoadIfReady()
   }
 
-  setIdDrafts(idDrafts: Readonly<Record<string, string>>): void {
-    if (!isIdDrafts(idDrafts)) return
-    if (JSON.stringify(idDrafts) === JSON.stringify(this.#state.idDrafts)) return
-    this.#editVersion += 1
-    this.#set({
-      idDrafts: { ...idDrafts },
-      dirty: !sameConfig(this.#state.draft, this.#state.activeConfig) || Object.keys(idDrafts).length > 0
-    })
-    void this.#persist()
-  }
-
-  discardDraft(): void {
+  discardWorkingConfig(): void {
     if (this.#state.busy) return
     this.#editVersion += 1
     this.#set({
-      draft: cloneConfig(this.#state.activeConfig),
-      idDrafts: {},
+      workingConfig: cloneConfig(this.#state.activeConfig),
       dirty: false,
-      notice: this.#pendingSave !== null
-        ? notice('warning', 'Draft discarded locally, but a previous save is unconfirmed.', 'Reconnect & check save or Load the host file.', {
-            operation: 'reconcile', path: this.#pendingSave.path
-          })
-        : notice('info', 'Unsaved edits discarded.')
+      notice: notice('info', 'Unsaved edits discarded.')
     })
-    void this.#persist()
+    this.#connectionPreservation = NO_CONNECTION_PRESERVATION
+    this.#resumeDeferredInitialLoadIfReady()
   }
 
   /** The screen obtains discard confirmation before calling this method. */
   async load(path: string): Promise<void> {
     await this.#run('load', path, async (context) => {
-      const requiredPath = requirePath(path)
-      const editVersion = this.#editVersion
-      this.#updateOperation(context, { phase: 'checking-host-file', path: requiredPath })
-      const document = await this.#documents.readHostDocument(context.endpoint, requiredPath)
-      context.rawLifecycle.readDocument = document
-      this.#assertCurrent(context)
-      if (document.text === null) throw new Error('That host file does not exist. Use Save to create a file.')
-      const config = parseActionPadConfig(document.text)
-      if (editVersion !== this.#editVersion) throw new Error('The draft changed while loading. Try Load again.')
-      this.#pendingSave = null
-      this.#set({ idDrafts: {} })
-      this.#accept(document, config, editVersion)
-      this.#set({ notice: notice('success', `Loaded ${document.path}`) })
+      await this.#loadDocument(context, requirePath(path), true)
     })
+  }
+
+  async #loadDocument(context: OperationContext, path: string, persistSelection: boolean): Promise<void> {
+    const editVersion = this.#editVersion
+    this.#updateOperation(context, { phase: 'reading', path })
+    const document = await this.#documents.readHostDocument(context.endpoint, path)
+    context.rawLifecycle.readDocument = document
+    this.#assertCurrent(context)
+    const preservation = this.#connectionPreservation
+    if (!persistSelection && (
+      this.#state.dirty || preservation.fieldEdits || preservation.pathEdit
+    )) {
+      this.#set({
+        notice: notice('info', 'Connected. Your unsaved edits are unchanged.',
+          'Save them, or use Load / Reload after confirming that they can be discarded.')
+      })
+      return
+    }
+    if (persistSelection && editVersion !== this.#editVersion) {
+      throw new Error('The working configuration changed while loading. Try Load again.')
+    }
+    const config = document.text === null
+      ? cloneConfig(DEFAULT_ACTION_PAD_CONFIG)
+      : parseActionPadConfig(document.text)
+    const selectedPath = requirePath(document.path)
+    this.#editVersion += 1
+    this.#initialLoadCompleted = true
+    this.#refreshRequested = false
+    this.#set({
+      sourcePath: selectedPath,
+      activeConfig: cloneConfig(config),
+      workingConfig: cloneConfig(config),
+      dirty: false,
+      initialLoadPending: false,
+      notice: document.text === null
+        ? notice('info', 'Using the starter configuration. Save will create the selected host file.')
+        : notice('success', `Loaded ${selectedPath}`)
+    })
+    if (persistSelection && !await this.#persistSelectedPath(context.endpoint, selectedPath, context.generation)) {
+      this.#assertCurrent(context)
+      this.#set({
+        notice: notice('warning', `Loaded ${selectedPath}, but Codey could not remember this path.`,
+          'The file is loaded for this session; select it again after restarting.')
+      })
+    }
   }
 
   async save(path: string): Promise<void> {
-    if (this.#pendingSave !== null) {
-      this.#logger.warn({
-        category: 'action-pad',
-        event: 'action_pad.save_blocked_unconfirmed',
-        message: 'Blocked a save while a previous save remains unconfirmed',
-        details: { requestedPath: path, pendingSave: this.#pendingSave, endpoint: this.#state.endpoint }
-      })
-      this.#set({
-        notice: notice('warning', `A save to ${this.#pendingSave.path} was not confirmed.`,
-          'Use Reconnect & check save before another Save. No write was sent.', {
-            operation: 'reconcile', path: this.#pendingSave.path
-          })
-      })
-      return
-    }
     await this.#run('save', path, async (context) => {
-      this.#assertNoPendingIds()
-      const config = cloneConfig(this.#state.draft)
+      const config = cloneConfig(this.#state.workingConfig)
       const text = serializeActionPadConfig(config)
-      const byteCount = utf8ByteLength(text)
       const editVersion = this.#editVersion
       const requiredPath = requirePath(path)
-      this.#updateOperation(context, {
-        phase: 'checking-host-file', path: requiredPath, byteCount
-      })
-      const current = await this.#documents.readHostDocument(context.endpoint, requiredPath)
-      context.rawLifecycle.readDocument = current
-      this.#assertCurrent(context)
-
-      const baseline = this.#baseline?.path === current.path ? this.#baseline : null
-      if (baseline === null && this.#baseline !== null && this.#baseline.revision !== null) {
-        throw new Error('Save updates the active file. Use Export for another path, or Load that file before editing it.')
-      }
-      if (baseline === null && current.text !== null) {
-        throw new Error('This file already exists. Load it before saving, or Export to another path.')
-      }
-      if (baseline !== null && (
-        baseline.revision !== current.revision || baseline.resolvedPath !== current.resolvedPath
-      )) {
-        throw new Error('The host file changed outside Codey. Load it or Export your draft to another path.')
-      }
-
-      const request: HostDocumentWrite = {
-        path: current.path,
-        text,
-        expectedRevision: baseline?.revision ?? null,
-        expectedResolvedPath: current.resolvedPath
-      }
+      const request: HostDocumentWrite = { path: requiredPath, text }
       context.rawLifecycle.writeRequest = request
-      this.#pendingSave = { ...baselineOf(current), text }
-      await this.#persist()
-      this.#assertCurrent(context)
-      this.#updateOperation(context, { phase: 'writing', writeStarted: true })
-      const writing = this.#documents.writeHostDocument(context.endpoint, request)
-      this.#updateOperation(context, { phase: 'awaiting-confirmation' })
-      const written = await writing
-      context.rawLifecycle.writeDocument = written
-      this.#assertCurrent(context)
-      if (written.text !== text || written.revision === null) {
-        throw new Error('The host did not confirm the complete save. Your draft is retained; reconcile before retrying.')
-      }
-      this.#pendingSave = null
-      this.#accept(written, config, editVersion)
-      this.#set({
-        notice: notice('success', this.#state.dirty
-          ? `Saved ${written.path}. Newer edits are still unsaved.`
-          : `Saved ${written.path}`)
-      })
-    })
-  }
-
-  async export(
-    path: string,
-    confirmOverwrite: (path: string) => Promise<boolean> = async () => false
-  ): Promise<void> {
-    await this.#run('export', path, async (context) => {
-      this.#assertNoPendingIds()
-      const text = serializeActionPadConfig(this.#state.draft)
-      const byteCount = utf8ByteLength(text)
-      const requiredPath = requirePath(path)
       this.#updateOperation(context, {
-        phase: 'checking-host-file', path: requiredPath, byteCount
+        phase: 'writing', path: requiredPath, byteCount: utf8ByteLength(text), writeStarted: true
       })
-      const current = await this.#documents.readHostDocument(context.endpoint, requiredPath)
-      context.rawLifecycle.readDocument = current
+      await this.#documents.writeHostDocument(context.endpoint, request)
+      context.rawLifecycle.writeCompleted = true
       this.#assertCurrent(context)
-      if (
-        current.path === this.#state.sourcePath ||
-        current.resolvedPath === this.#baseline?.resolvedPath
-      ) {
-        throw new Error('Export must use a different file. Use Save to update the active configuration.')
-      }
-      if (current.text !== null) {
-        const confirmed = await confirmOverwrite(current.path)
-        context.rawLifecycle.overwriteConfirmation = { path: current.path, confirmed }
-        if (!confirmed) {
-          this.#assertCurrent(context)
-          context.diagnostics.cancellation({
-            message: 'Action Pad export was cancelled at overwrite confirmation',
-            details: { requestedPath: path, current, rawLifecycle: context.rawLifecycle }
-          })
-          this.#set({ notice: notice('info', 'Export canceled. No file was changed.') })
-          return
-        }
-      }
-      this.#assertCurrent(context)
-      this.#updateOperation(context, { phase: 'writing', writeStarted: true })
-      const request: HostDocumentWrite = {
-        path: current.path,
-        text,
-        expectedRevision: current.revision,
-        expectedResolvedPath: current.resolvedPath
-      }
-      context.rawLifecycle.writeRequest = request
-      const writing = this.#documents.writeHostDocument(context.endpoint, request)
-      this.#updateOperation(context, { phase: 'awaiting-confirmation' })
-      const written = await writing
-      context.rawLifecycle.writeDocument = written
-      this.#assertCurrent(context)
-      if (written.text !== text || written.revision === null) {
-        throw new Error('Export was not confirmed. Check the destination before retrying.')
-      }
+      const workingConfig = editVersion === this.#editVersion ? cloneConfig(config) : this.#state.workingConfig
+      this.#initialLoadCompleted = true
+      this.#refreshRequested = false
       this.#set({
-        notice: notice('success', `Exported ${written.path}. The active file and draft are unchanged.`)
+        sourcePath: requiredPath,
+        activeConfig: cloneConfig(config),
+        workingConfig,
+        dirty: !sameConfig(workingConfig, config),
+        initialLoadPending: false
+      })
+      const persisted = await this.#persistSelectedPath(context.endpoint, requiredPath, context.generation)
+      this.#assertCurrent(context)
+      this.#set({
+        notice: persisted
+          ? notice('success', this.#state.dirty
+            ? `Saved ${requiredPath}. Newer edits are still unsaved.`
+            : `Saved ${requiredPath}`)
+          : notice('warning', `Saved ${requiredPath}, but Codey could not remember this path.`,
+            'The file is saved; select it again after restarting.')
       })
     })
   }
 
-  /** Reads the pending target exactly once and never invokes the write method. */
-  async reconcilePendingSave(): Promise<void> {
-    const pendingAtStart = this.#pendingSave
-    if (pendingAtStart === null) {
-      this.#set({ notice: notice('info', 'There is no unconfirmed save to check.') })
-      return
-    }
-    await this.#run('reconcile', pendingAtStart.path, async (context) => {
-      const pending = this.#pendingSave
-      if (pending === null) return
-      this.#updateOperation(context, { phase: 'checking-host-file', path: pending.path })
-      const current = await this.#documents.readHostDocument(context.endpoint, pending.path)
-      context.rawLifecycle.pendingSave = pending
-      context.rawLifecycle.readDocument = current
-      this.#assertCurrent(context)
-
-      if (current.path !== pending.path) {
-        this.#set({ notice: blockedReconcileNotice(
-          'The unconfirmed save returned a different host path.', pending, current
-        ) })
-        return
-      }
-      if (current.resolvedPath !== pending.resolvedPath) {
-        this.#set({ notice: blockedReconcileNotice(
-          'The unconfirmed save path now resolves to a different target.', pending, current
-        ) })
-        return
-      }
-
-      if (current.text === pending.text) {
-        const savedConfig = parseActionPadConfig(pending.text)
-        this.#baseline = baselineOf(current)
-        this.#pendingSave = null
-        const draft = this.#state.draft
-        const dirty = !sameConfig(draft, savedConfig) || Object.keys(this.#state.idDrafts).length > 0
-        this.#set({
-          sourcePath: current.path,
-          activeConfig: savedConfig,
-          draft,
-          dirty,
-          notice: notice('success', dirty
-            ? 'The previous save was confirmed. Newer local edits remain unsaved.'
-            : 'The previous save was confirmed from the host file.', undefined, {
-              operation: 'reconcile', phase: 'checking-host-file', path: current.path
-            })
-        })
-        void this.#persist()
-        return
-      }
-
-      if (current.text === null || current.revision === pending.revision) {
-        this.#baseline = baselineOf(current)
-        this.#pendingSave = null
-        this.#set({
-          sourcePath: current.path,
-          notice: notice('warning',
-            current.text === null
-              ? 'The attempted save is not present; the target is missing.'
-              : 'The host still contains the original version.',
-            'The uncertainty is cleared. Review the draft and choose Save to retry explicitly.', {
-              operation: 'reconcile', phase: 'checking-host-file', path: current.path
-            })
-        })
-        void this.#persist()
-        return
-      }
-
-      this.#set({
-        notice: notice('error', 'The host file contains different external changes.',
-          'Nothing was written. Load the host version or Export your local draft.', {
-            operation: 'reconcile', phase: 'checking-host-file', path: current.path
-          })
-      })
-    })
+  /** Waits for path preference writes; primarily useful during shutdown and tests. */
+  flushPathStorage(): Promise<void> {
+    return this.#pathWriteTail
   }
 
-  flushRecovery(): Promise<void> {
-    return this.#writeTail
+  async #persistSelectedPath(endpoint: Endpoint, path: string, generation: number): Promise<boolean> {
+    const key = actionPadPathStorageKey(endpoint)
+    let persisted = true
+    this.#pathWriteTail = this.#pathWriteTail.then(async () => {
+      try {
+        await this.#storage.setItem(key, path)
+        this.#logger.debug({
+          category: 'action-pad',
+          event: 'action_pad.path_persisted',
+          message: 'Remembered the selected Action Pad path',
+          details: { endpoint, generation, currentGeneration: this.#generation, key, path }
+        })
+      } catch (reason) {
+        persisted = false
+        this.#logger.error({
+          category: 'action-pad',
+          event: 'action_pad.path_persist_failed',
+          message: 'Could not remember the selected Action Pad path',
+          details: { endpoint, generation, currentGeneration: this.#generation, key, path, reason }
+        })
+      }
+    })
+    await this.#pathWriteTail
+    return persisted
+  }
+
+  async #removeLegacyRecord(endpoint: Endpoint, generation: number): Promise<void> {
+    const key = legacyActionPadStorageKey(endpoint)
+    this.#pathWriteTail = this.#pathWriteTail.then(async () => {
+      try {
+        await this.#storage.removeItem(key)
+      } catch (reason) {
+        this.#logger.warn({
+          category: 'action-pad',
+          event: 'action_pad.legacy_record_remove_failed',
+          message: 'Could not remove the legacy Action Pad recovery record',
+          details: { endpoint, generation, currentGeneration: this.#generation, key, reason }
+        })
+      }
+    })
+    await this.#pathWriteTail
   }
 
   async #run(
@@ -653,8 +528,8 @@ export class ActionPadConfigStore {
         details: { kind, path, endpoint: this.#state.endpoint }
       })
       this.#set({
-        notice: notice('error', 'Connect to the Neovim host to load, save, export, or reconcile.',
-          'Your draft is kept locally.')
+        notice: notice('error', 'Connect to the Neovim host to load or save the Action Pad file.',
+          'Your unsaved edits remain in memory while this screen stays open.')
       })
       return
     }
@@ -671,11 +546,7 @@ export class ActionPadConfigStore {
         generation: this.#generation,
         connectionGeneration: this.#connectionGeneration,
         sourcePath: this.#state.sourcePath,
-        pendingSave: this.#pendingSave,
-        baseline: this.#baseline,
-        activeConfig: this.#state.activeConfig,
-        draft: this.#state.draft,
-        idDrafts: this.#state.idDrafts
+        dirty: this.#state.dirty
       }
     })
     const context: OperationContext = {
@@ -724,6 +595,10 @@ export class ActionPadConfigStore {
     const finalOperation = this.#state.operation?.id === id ? this.#state.operation : operationState
     this.#clearActiveRun(id)
     if (outcome.status === 'failed') {
+      // A preservation-clear notification may have queued an automatic refresh
+      // while this operation was in flight. Do not turn one host failure into an
+      // immediate hidden retry; reconnect or an explicit user action can retry.
+      this.#refreshRequested = false
       const failureNotice = operationFailureNotice(outcome.reason, finalOperation)
       diagnostics.failure(outcome.reason, {
         message: `Action Pad ${kind} failed`,
@@ -731,12 +606,10 @@ export class ActionPadConfigStore {
           operation: finalOperation,
           endpoint: context.endpoint,
           notice: failureNotice,
-          pendingSave: this.#pendingSave,
           rawLifecycle: context.rawLifecycle
         }
       })
       this.#set({ busy: false, operation: null, notice: failureNotice })
-      void this.#persist()
     } else {
       diagnostics.success({
         message: `Action Pad ${kind} completed`,
@@ -744,11 +617,8 @@ export class ActionPadConfigStore {
           operation: finalOperation,
           endpoint: context.endpoint,
           sourcePath: this.#state.sourcePath,
-          pendingSave: this.#pendingSave,
-          baseline: this.#baseline,
           notice: this.#state.notice,
-          activeConfig: this.#state.activeConfig,
-          draft: this.#state.draft,
+          dirty: this.#state.dirty,
           rawLifecycle: context.rawLifecycle
         }
       })
@@ -777,7 +647,6 @@ export class ActionPadConfigStore {
     const operation = this.#state.operation
     const active = this.#activeRun
     if (operation === null || active === null) return
-    if (operation.kind === 'save' && !operation.writeStarted) this.#pendingSave = null
     this.#clearSlowTimer()
     this.#activeRun = null
     active.diagnostics.cancellation({
@@ -795,7 +664,6 @@ export class ActionPadConfigStore {
       operation: null,
       notice: notice('warning', summary, recommendedAction, operationDetails(operation))
     })
-    void this.#persist()
   }
 
   #cancelActiveRunWithoutNotice(): void {
@@ -823,6 +691,15 @@ export class ActionPadConfigStore {
     this.#slowTimer = null
   }
 
+  #resumeDeferredInitialLoadIfReady(): void {
+    if (
+      !this.#state.connected || this.#initialLoadCompleted || this.#state.dirty ||
+      this.#connectionPreservation.fieldEdits || this.#connectionPreservation.pathEdit
+    ) return
+    this.#refreshRequested = true
+    void this.#refreshIfNeeded()
+  }
+
   #assertCurrent(context: OperationContext): void {
     if (
       context.id !== this.#activeRun?.id ||
@@ -830,78 +707,17 @@ export class ActionPadConfigStore {
       context.connectionGeneration !== this.#connectionGeneration ||
       !this.#state.connected
     ) {
-      throw new Error('The host connection changed. Your draft is retained; reconnect and check the file.')
+      throw new Error('The host connection changed. Your unsaved edits remain in memory; reconnect and reload the file.')
     }
-  }
-
-  #assertNoPendingIds(): void {
-    if (Object.keys(this.#state.idDrafts).length > 0) {
-      throw new Error('Finish or undo the incomplete ID edits before saving or exporting.')
-    }
-  }
-
-  #accept(document: HostDocument, config: ActionPadConfig, editVersion: number): void {
-    this.#baseline = baselineOf(document)
-    const draft = editVersion === this.#editVersion ? config : this.#state.draft
-    this.#set({
-      sourcePath: document.path,
-      activeConfig: config,
-      draft,
-      dirty: !sameConfig(draft, config) || Object.keys(this.#state.idDrafts).length > 0
-    })
-    void this.#persist()
-  }
-
-  #persist(): Promise<void> {
-    const generation = this.#generation
-    const key = actionPadStorageKey(this.#state.endpoint)
-    const record: RecoveryRecord = {
-      version: 1,
-      sourcePath: this.#state.sourcePath,
-      activeConfig: this.#state.activeConfig,
-      draft: this.#state.dirty ? this.#state.draft : null,
-      idDrafts: this.#state.idDrafts,
-      baseline: this.#baseline,
-      pendingSave: this.#pendingSave
-    }
-    const encoded = JSON.stringify(record)
-    this.#writeTail = this.#writeTail.then(async () => {
-      try {
-        await this.#storage.setItem(key, encoded)
-        if (generation === this.#generation && this.#state.recoveryNotice !== null) {
-          this.#set({ recoveryNotice: null })
-        }
-      } catch (reason) {
-        this.#logger.error({
-          category: 'action-pad',
-          event: 'action_pad.recovery_persist_failed',
-          message: 'Could not persist the local Action Pad recovery record',
-          details: { generation, currentGeneration: this.#generation, key, record, encoded, reason }
-        })
-        if (generation === this.#generation) {
-          this.#set({
-            recoveryNotice: notice('warning', `Local recovery could not be stored: ${messageOf(reason)}`,
-              'Keep this editor open until local storage is available.')
-          })
-        }
-      }
-    })
-    return this.#writeTail
   }
 
   #set(change: Partial<ActionPadStoreState>): void {
-    const next = {
-      ...this.#state,
-      ...change,
-      pendingSavePath: this.#pendingSave?.path ?? null
-    }
+    const next = { ...this.#state, ...change }
     const projectedNotice = next.notice
-    const projectedRecovery = next.recoveryNotice
     this.#state = {
       ...next,
       message: projectedNotice?.summary ?? '',
-      error: projectedNotice?.severity === 'error',
-      recoveryWarning: projectedRecovery?.summary ?? ''
+      error: projectedNotice?.severity === 'error'
     }
     this.#emit()
   }
@@ -912,23 +728,20 @@ export class ActionPadConfigStore {
 }
 
 function initialState(endpoint: Endpoint): ActionPadStoreState {
-  const initialNotice = notice('info', 'Starter configuration. Connect to a host to choose a YAML file.')
+  const initialNotice = notice('info', 'Starter configuration. Connect to load the selected YAML file.')
   return {
     endpoint,
     sourcePath: '',
-    pendingSavePath: null,
-    activeConfig: DEFAULT_ACTION_PAD_CONFIG,
-    draft: DEFAULT_ACTION_PAD_CONFIG,
-    idDrafts: {},
+    activeConfig: cloneConfig(DEFAULT_ACTION_PAD_CONFIG),
+    workingConfig: cloneConfig(DEFAULT_ACTION_PAD_CONFIG),
     dirty: false,
     busy: false,
     connected: false,
+    initialLoadPending: true,
     operation: null,
     notice: initialNotice,
-    recoveryNotice: null,
     message: initialNotice.summary,
-    error: false,
-    recoveryWarning: ''
+    error: false
   }
 }
 
@@ -946,44 +759,24 @@ function notice(
   }
 }
 
-function blockedReconcileNotice(
-  summary: string,
-  pending: PendingSave,
-  current: HostDocument
-): ActionPadNotice {
-  return notice('error', summary,
-    'Nothing was written. Load the host target or Export your local draft; Save remains blocked.', {
-      operation: 'reconcile',
-      phase: 'checking-host-file',
-      path: current.path || pending.path
-    })
-}
-
 function operationFailureNotice(reason: unknown, operation: ActionPadOperation): ActionPadNotice {
   const host = hostFailureOf(reason)
   const socket = socketFailureOf(reason)
   const details: ActionPadNoticeDetails = {
     ...operationDetails(operation),
     ...(host.code === undefined ? {} : { hostErrorCode: host.code }),
-    ...(host.stage === undefined ? {} : { hostStage: host.stage }),
     ...(socket.code === undefined ? {} : { socketCode: socket.code }),
     ...(socket.message === undefined ? {} : { nativeSocketMessage: socket.message })
   }
   let recommendedAction: string
-  if (operation.writeStarted && operation.kind === 'save') {
-    recommendedAction = 'The save may have completed. Reconnect & check save before retrying.'
-  } else if (operation.writeStarted && operation.kind === 'export') {
-    recommendedAction = 'The export may have completed. Check the destination before retrying.'
+  if (operation.writeStarted) {
+    recommendedAction = 'The YAML may now be complete or incomplete. Reload it before retrying; restore your backup if needed.'
   } else if (socket.code !== undefined) {
     recommendedAction = 'No write started. Reconnect, then retry the operation.'
-  } else if (host.code === 'conflict' || host.code === 'modified-buffer') {
-    recommendedAction = 'Load the host file or Export the local draft; do not overwrite external changes.'
   } else if (host.code === 'permission') {
-    recommendedAction = 'Check host file permissions or Export to a writable path.'
+    recommendedAction = 'Check that Codey can write this host path, then retry or choose another path.'
   } else {
-    recommendedAction = operation.writeStarted
-      ? 'The result may be uncertain. Check the target before retrying.'
-      : 'Review the details and retry when the host issue is resolved.'
+    recommendedAction = 'Review the details and retry after the host issue is resolved.'
   }
   return notice('error', messageOf(reason), recommendedAction, details)
 }
@@ -998,19 +791,13 @@ function operationDetails(operation: ActionPadOperation): ActionPadNoticeDetails
   }
 }
 
-function hostFailureOf(reason: unknown): {
-  readonly code?: HostDocumentErrorCode
-  readonly stage?: HostDocumentErrorStage
-} {
+function hostFailureOf(reason: unknown): { readonly code?: HostDocumentErrorCode } {
   for (const candidate of errorChain(reason)) {
-    const record = candidate as { readonly code?: unknown; readonly stage?: unknown; readonly name?: unknown }
+    const record = candidate as { readonly code?: unknown; readonly name?: unknown }
     const code = typeof record.code === 'string' && HOST_ERROR_CODES.includes(record.code as HostDocumentErrorCode)
       ? record.code as HostDocumentErrorCode
       : undefined
-    const stage = typeof record.stage === 'string' && HOST_ERROR_STAGES.includes(record.stage as HostDocumentErrorStage)
-      ? record.stage as HostDocumentErrorStage
-      : undefined
-    if (code !== undefined || record.name === 'HostDocumentError') return { code, stage }
+    if (code !== undefined || record.name === 'HostDocumentError') return { code }
   }
   return {}
 }
@@ -1063,10 +850,6 @@ function errorChain(reason: unknown): readonly unknown[] {
   return chain
 }
 
-function baselineOf(document: HostDocument): DocumentBaseline {
-  return { path: document.path, resolvedPath: document.resolvedPath, revision: document.revision }
-}
-
 function sameEndpoint(a: Endpoint, b: Endpoint): boolean {
   return a.host === b.host && a.port === b.port
 }
@@ -1080,14 +863,17 @@ function cloneConfig(config: ActionPadConfig): ActionPadConfig {
 }
 
 function requirePath(path: string): string {
-  if (!path.startsWith('/') && !path.startsWith('~/')) {
-    throw new Error('Enter an absolute host path or a path beginning with ~/ .')
+  const selected = path.trim()
+  if (!selected.startsWith('/') && !selected.startsWith('~/')) {
+    throw new Error('Enter an absolute host path or a path beginning with ~/.')
   }
-  return path
+  return selected
 }
 
 function messageOf(reason: unknown): string {
-  return reason instanceof Error ? reason.message : 'The file operation failed.'
+  if (reason instanceof Error) return reason.message
+  if (isRecord(reason) && typeof reason.message === 'string') return reason.message
+  return 'The file operation failed.'
 }
 
 function utf8ByteLength(value: string): number {
@@ -1107,39 +893,13 @@ function utf8ByteLength(value: string): number {
   return bytes
 }
 
-function parseRecovery(value: unknown): RecoveryRecord {
+function legacySourcePath(value: unknown): string {
   if (!isRecord(value) || value.version !== 1 || typeof value.sourcePath !== 'string') {
-    throw new Error('Invalid recovery record')
+    throw new Error('Invalid legacy Action Pad recovery record')
   }
-  if (!isActionPadConfigShape(value.activeConfig) || validateActionPadConfig(value.activeConfig).length > 0) {
-    throw new Error('Invalid cached configuration')
-  }
-  if (value.draft !== null && !isActionPadConfigShape(value.draft)) throw new Error('Invalid cached draft')
-  if (value.idDrafts !== undefined && !isIdDrafts(value.idDrafts)) throw new Error('Invalid cached ID edits')
-  if (value.baseline !== null && !isBaseline(value.baseline)) throw new Error('Invalid cached file identity')
-  if (value.pendingSave !== null && (
-    !isBaseline(value.pendingSave) || !isRecord(value.pendingSave) ||
-    typeof value.pendingSave.text !== 'string' || utf8ByteLength(value.pendingSave.text) > ACTION_PAD_CONFIG_MAX_BYTES
-  )) throw new Error('Invalid cached save attempt')
-  return { ...value, idDrafts: value.idDrafts ?? {} } as unknown as RecoveryRecord
-}
-
-function isIdDrafts(value: unknown): value is Readonly<Record<string, string>> {
-  if (!isRecord(value) || Object.keys(value).length > 10_000) return false
-  let characters = 0
-  for (const [path, text] of Object.entries(value)) {
-    if (!/^menus\[\d+\](?:\.groups\[\d+\](?:\.buttons\[\d+\])?)?\.id$/.test(path) || typeof text !== 'string') return false
-    characters += text.length
-    if (characters > ACTION_PAD_CONFIG_MAX_BYTES) return false
-  }
-  return true
+  return requirePath(value.sourcePath)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isBaseline(value: unknown): value is DocumentBaseline {
-  return isRecord(value) && typeof value.path === 'string' && typeof value.resolvedPath === 'string' &&
-    (value.revision === null || typeof value.revision === 'string')
+  return value !== null && typeof value === 'object'
 }

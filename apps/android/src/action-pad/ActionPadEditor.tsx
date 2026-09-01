@@ -62,23 +62,23 @@ export interface ActionPadEditorProps {
   readonly connected: boolean
   readonly busy: boolean
   readonly dirty: boolean
+  readonly initialLoadPending: boolean
   readonly sourcePath: string
-  readonly message: string
   readonly operation?: ActionPadOperation | null
   readonly notice?: ActionPadNotice | null
-  readonly recoveryNotice?: ActionPadNotice | null
   readonly connectionFailure?: ConnectionFailure | null
   readonly onLoad: (path: string) => Promise<void>
   readonly onSave: (path: string) => Promise<void>
-  readonly onExport: (path: string) => Promise<void>
   readonly onCancel: () => void
   readonly onOpenLogs: () => void
   readonly onStopWaiting?: () => void
-  readonly onReconnectAndCheck?: () => void
   readonly initialButton?: ActionPadButtonTarget
-  readonly onPendingEditsChange?: (pending: boolean) => void
-  readonly initialIdDrafts?: Readonly<Record<string, string>>
-  readonly onIdDraftsChange?: (drafts: Readonly<Record<string, string>>) => void
+  readonly onPendingEditsChange?: (pending: ActionPadEditorPendingEdits) => void
+}
+
+export interface ActionPadEditorPendingEdits {
+  readonly fieldEdits: boolean
+  readonly pathEdit: boolean
 }
 
 type SelectionKind = 'manager' | 'menu' | 'group' | 'button'
@@ -136,23 +136,18 @@ export function ActionPadEditor({
   connected,
   busy: hostBusy,
   dirty,
+  initialLoadPending,
   sourcePath,
-  message,
   operation = null,
   notice: operationNotice,
-  recoveryNotice,
   connectionFailure,
   onLoad,
   onSave,
-  onExport,
   onCancel,
   onOpenLogs,
   onStopWaiting,
-  onReconnectAndCheck,
   initialButton,
-  onPendingEditsChange,
-  initialIdDrafts,
-  onIdDraftsChange
+  onPendingEditsChange
 }: ActionPadEditorProps) {
   const { width } = useWindowDimensions()
   const wide = width >= 900
@@ -174,7 +169,7 @@ export function ActionPadEditor({
   const [buttonSelection, setButtonSelection] = useState(initialButtonLocation?.buttonIndex ?? 0)
   const [selectionKind, setSelectionKind] = useState<SelectionKind>(initialButtonLocation ? 'button' : 'manager')
   const [targetNotice, setTargetNotice] = useState(() => initialButton && !initialButtonLocation
-    ? 'The selected button could not be found uniquely in this draft. It may have been moved, renamed, or removed. Your draft has been kept; choose a button below.'
+    ? 'The selected button could not be found uniquely in these edits. It may have been moved, renamed, or removed. Your edits have been kept; choose a button below.'
     : '')
   const scrollView = useRef<ScrollView>(null)
   const editorScroll = useRef<{
@@ -195,11 +190,9 @@ export function ActionPadEditor({
     positions: {}
   })
   const [hostPath, setHostPath] = useState(sourcePath)
-  const [exportPath, setExportPath] = useState('')
-  const [showExport, setShowExport] = useState(false)
   const [moveDestination, setMoveDestination] = useState('')
   const [editError, setEditError] = useState<ConfigIssue | null>(null)
-  const [pendingIds, setPendingIds] = useState<Readonly<Record<string, PendingIdEdit>>>(() => restorePendingIds(config, initialIdDrafts))
+  const [pendingIds, setPendingIds] = useState<Readonly<Record<string, PendingIdEdit>>>({})
   const [operationError, setOperationError] = useState('')
   const [operationPending, setOperationPending] = useState(false)
   const [iconRequest, setIconRequest] = useState<IconInsertionRequest>()
@@ -211,15 +204,18 @@ export function ActionPadEditor({
   const operationInFlight = useRef(false)
   const observedConfig = useRef(config)
   const localChangeSignature = useRef<string | null>(null)
-  const draftCallbacks = useRef({ onPendingEditsChange, onIdDraftsChange })
-  draftCallbacks.current = { onPendingEditsChange, onIdDraftsChange }
+  const pendingEditsCallback = useRef(onPendingEditsChange)
+  pendingEditsCallback.current = onPendingEditsChange
   const busy = hostBusy || operationPending
   const hasPendingIds = Object.keys(pendingIds).length > 0
+  const pendingEdits = useMemo<ActionPadEditorPendingEdits>(() => ({
+    fieldEdits: hasPendingIds,
+    pathEdit: hostPath !== sourcePath
+  }), [hasPendingIds, hostPath, sourcePath])
+  const hasPendingEdits = pendingEdits.fieldEdits || pendingEdits.pathEdit
   const structuralBusy = busy || hasPendingIds
   const latestEditor = useRef({ config, busy, hasPendingIds })
   latestEditor.current = { config, busy, hasPendingIds }
-  const idDrafts = useMemo(() => Object.fromEntries(Object.entries(pendingIds).map(([path, pending]) => [path, pending.value])), [pendingIds])
-  const idDraftsSignature = JSON.stringify(idDrafts)
 
   useEffect(() => { setHostPath(sourcePath) }, [sourcePath])
 
@@ -253,14 +249,9 @@ export function ActionPadEditor({
   }, [config, sourcePath])
 
   useEffect(() => {
-    draftCallbacks.current.onPendingEditsChange?.(hasPendingIds)
-    return () => { draftCallbacks.current.onPendingEditsChange?.(false) }
-  }, [hasPendingIds])
-
-  useEffect(() => {
-    draftCallbacks.current.onIdDraftsChange?.(idDrafts)
-    // Do not clear recovery drafts on unmount: the parent may keep them.
-  }, [idDraftsSignature])
+    pendingEditsCallback.current?.(pendingEdits)
+    return () => { pendingEditsCallback.current?.({ fieldEdits: false, pathEdit: false }) }
+  }, [pendingEdits])
 
   const menuIndex = Math.min(menuSelection, Math.max(0, config.menus.length - 1))
   const menu = config.menus[menuIndex]
@@ -287,7 +278,8 @@ export function ActionPadEditor({
     ...(editError ? [editError] : [])
   ]
   const valid = displayedIssues.length === 0
-  const canWrite = connected && !busy && valid
+  const waitingForInitialLoad = initialLoadPending && !dirty && !hasPendingEdits
+  const canWrite = connected && !busy && valid && !waitingForInitialLoad
   const deletionReason = menu ? menuDeletionReason(config, menuIndex) : undefined
   const groupDeleteReason = group ? groupDeletionReason(config, groupLocation) : undefined
   const destinations = config.menus.flatMap((candidate, candidateMenuIndex) =>
@@ -299,10 +291,7 @@ export function ActionPadEditor({
     )
   )
   const destinationExists = destinations.some((candidate) => candidate.value === moveDestination)
-  const legacyNotice = operationNotice === undefined && message
-    ? { severity: 'info' as const, summary: message }
-    : null
-  const displayedOperationNotice = operationNotice ?? legacyNotice
+  const displayedOperationNotice = operationNotice ?? null
 
   useEffect(() => {
     if (iconRequest && (busy || !fontLoaded || kind !== 'button' ||
@@ -371,7 +360,7 @@ export function ActionPadEditor({
       try {
         await operation()
       } catch (error) {
-        setOperationError(error instanceof Error ? error.message : 'The host operation failed. Your draft has been kept.')
+        setOperationError(error instanceof Error ? error.message : 'The host operation failed. Your unsaved edits are still open.')
       } finally {
         operationInFlight.current = false
         setOperationPending(false)
@@ -420,7 +409,7 @@ export function ActionPadEditor({
 
   function insertNerdFontIcon(icon: NerdFontIcon) {
     // Native picker callbacks may arrive after dismissal, another picker, or a
-    // draft replacement. Never apply a captured run/cursor to a newer document.
+    // document replacement. Never apply a captured run/cursor to a newer document.
     if (!iconRequest || activeIconRequest.current !== iconRequest) return
     const request = iconRequest
     dismissIconPicker()
@@ -569,7 +558,7 @@ export function ActionPadEditor({
       <View style={styles.header}>
         <View style={styles.titleBlock}>
           <Text accessibilityRole="header" style={styles.title}>Edit Action Pad</Text>
-          <Text style={styles.muted}>{dirty || hasPendingIds ? 'Unsaved changes' : 'No unsaved changes'} · {connected ? 'Host connected' : 'Offline editing'}</Text>
+          <Text style={styles.muted}>{dirty || hasPendingEdits ? 'Unsaved changes' : 'No unsaved changes'} · {connected ? 'Host connected' : 'Offline editing'}</Text>
         </View>
         <EditorButton label="Logs" onPress={onOpenLogs} />
         <EditorButton disabled={busy} label="Cancel" onPress={onCancel} />
@@ -608,34 +597,13 @@ export function ActionPadEditor({
               label={hostPath === sourcePath ? 'Load / Reload' : 'Load'}
               onPress={() => runOperation(() => onLoad(hostPath))}
             />
-            <EditorButton disabled={busy} label={showExport ? 'Hide export' : 'Export copy…'} onPress={() => setShowExport(!showExport)} />
           </View>
-          {showExport ? (
-            <View style={styles.section}>
-              <FormField
-                disabled={busy}
-                fontLoaded={fontLoaded}
-                hint="Export writes a copy without activating it or changing the linked file."
-                label="Export YAML path"
-                onChange={setExportPath}
-                placeholder="/path/to/action-pad-copy.yaml"
-                value={exportPath}
-              />
-              <EditorButton disabled={!canWrite || exportPath.length === 0} label="Write exported copy" onPress={() => runOperation(() => onExport(exportPath))} />
-            </View>
-          ) : null}
-          <Text style={styles.muted}>Paths are on the Neovim host. Use an absolute path or ~/. Save activates the draft only after the file is written.</Text>
-          {!connected ? <Text style={styles.notice}>You can edit offline. Reconnect to load, save, or export; drafts are never uploaded automatically.</Text> : null}
+          <Text style={styles.muted}>Paths are on the Neovim host. Use an absolute path or ~/. Save activates these edits only after the file is written.</Text>
+          {!connected ? <Text style={styles.notice}>You can keep editing while this screen stays open. Reconnect to load or save.</Text> : null}
           {operation ? <OperationStatusCard operation={operation} onStopWaiting={onStopWaiting} /> : null}
-          {displayedOperationNotice ? (
-            <NoticeStatusCard notice={displayedOperationNotice} onReconnectAndCheck={onReconnectAndCheck} />
-          ) : null}
-          {recoveryNotice ? <NoticeStatusCard notice={recoveryNotice} /> : null}
+          {displayedOperationNotice ? <NoticeStatusCard notice={displayedOperationNotice} /> : null}
           {connectionFailure ? (
-            <NoticeStatusCard
-              notice={connectionFailureNotice(connectionFailure)}
-              onReconnectAndCheck={onReconnectAndCheck}
-            />
+            <NoticeStatusCard notice={connectionFailureNotice(connectionFailure)} />
           ) : null}
           {targetNotice ? <Text accessibilityLiveRegion="polite" style={styles.notice} testID="action-pad-editor-target-notice">{targetNotice}</Text> : null}
           {operationError ? <Text accessibilityLiveRegion="polite" style={styles.error}>{operationError}</Text> : null}
@@ -728,7 +696,7 @@ export function ActionPadEditor({
               <View style={styles.card} testID="action-pad-menu-manager">
                 <Text accessibilityRole="header" style={styles.sectionTitle}>Manage menus</Text>
                 <Text style={styles.muted}>Removing a launcher or clearing its action does not remove the destination menu. Delete menu definitions here when they are no longer needed.</Text>
-                <Text style={styles.muted}>Changes update this recoverable draft immediately. Save writes the YAML and activates the edited Action Pad.</Text>
+                <Text style={styles.muted}>Changes stay in this editor until Save writes the YAML and activates the edited Action Pad.</Text>
 
                 <View style={styles.menuList}>
                   {menuAnalysis.map((analysis) => {
@@ -970,7 +938,7 @@ export function ActionPadEditor({
           <View style={styles.modalBackdrop}>
             <View accessibilityViewIsModal style={styles.confirmationCard} testID="action-pad-cleanup-confirmation">
               <Text accessibilityRole="header" style={styles.sectionTitle}>Remove unused menus?</Text>
-              <Text style={styles.muted}>This removes the following unreachable menu definitions and everything inside them from the draft.</Text>
+              <Text style={styles.muted}>This removes the following unreachable menu definitions and everything inside them from the working copy.</Text>
               <ScrollView keyboardShouldPersistTaps="handled" nestedScrollEnabled style={styles.confirmationList}>
                 {cleanupConfirmation.menus.map((candidate, index) => (
                   <View key={`${candidate.id}-${index}`} style={styles.confirmationRow}>
@@ -984,7 +952,7 @@ export function ActionPadEditor({
               <Text style={styles.notice}>
                 Total: {cleanupConfirmation.menus.length} {cleanupConfirmation.menus.length === 1 ? 'menu' : 'menus'}, {cleanupConfirmation.groupCount} {cleanupConfirmation.groupCount === 1 ? 'group' : 'groups'}, and {cleanupConfirmation.buttonCount} {cleanupConfirmation.buttonCount === 1 ? 'button' : 'buttons'}.
               </Text>
-              <Text style={styles.muted}>You can still discard the draft with Cancel. The live Action Pad changes only after Save.</Text>
+              <Text style={styles.muted}>You can still discard these edits with Cancel. The live Action Pad changes only after Save.</Text>
               <View style={styles.actions}>
                 <EditorButton disabled={busy} label="Keep menus" onPress={() => setCleanupConfirmation(undefined)} />
                 <EditorButton
@@ -1096,7 +1064,7 @@ function findInitialButton(config: ActionPadConfig, target: ActionPadButtonTarge
   if (!target) return undefined
   let match: ButtonLocation | undefined
   // ID scopes matter: imported groups/buttons can legitimately share an ID.
-  // Incomplete recovery drafts may also contain ambiguous tuples; never guess.
+  // Incomplete local ID edits may also contain ambiguous tuples; never guess.
   for (const [menuIndex, menu] of config.menus.entries()) {
     if (menu.id !== target.menuId) continue
     for (const [groupIndex, group] of menu.groups.entries()) {
@@ -1512,13 +1480,7 @@ function OperationStatusCard({
   )
 }
 
-function NoticeStatusCard({
-  notice,
-  onReconnectAndCheck
-}: {
-  readonly notice: ActionPadNotice
-  readonly onReconnectAndCheck?: () => void
-}) {
+function NoticeStatusCard({ notice }: { readonly notice: ActionPadNotice }) {
   const [showDetails, setShowDetails] = useState(false)
   useEffect(() => { setShowDetails(false) }, [notice])
   const rows = noticeDetailRows(notice)
@@ -1544,9 +1506,6 @@ function NoticeStatusCard({
         {notice.recommendedAction ? <Text style={styles.muted}>{notice.recommendedAction}</Text> : null}
       </View>
       <View style={styles.actions}>
-        {onReconnectAndCheck ? (
-          <EditorButton label="Reconnect & check save" onPress={onReconnectAndCheck} primary />
-        ) : null}
         {rows.length > 0 ? (
           <EditorButton
             accessibilityLabel={showDetails ? 'Hide technical details' : 'Show technical details'}
@@ -1580,7 +1539,7 @@ function connectionFailureNotice(failure: ConnectionFailure): ActionPadNotice {
   return {
     severity: 'error',
     summary: `Host connection failed: ${failure.message}`,
-    recommendedAction: 'Reconnect before accessing host files. If a save was pending, check it before retrying.',
+    recommendedAction: 'Reconnect before loading or saving. Unsaved edits remain available until you close the editor.',
     details: {
       socketCode: failure.nativeCode ?? failure.code,
       nativeSocketMessage: failure.nativeMessage ?? failure.message
@@ -1598,7 +1557,6 @@ function noticeDetailRows(notice: ActionPadNotice): readonly (readonly [string, 
   if (details.path) rows.push(['Host path', details.path])
   if (details.byteCount !== undefined) rows.push(['Serialized bytes', String(details.byteCount)])
   if (details.hostErrorCode) rows.push(['Host error code', details.hostErrorCode])
-  if (details.hostStage) rows.push(['Host stage', details.hostStage])
   if (details.socketCode) rows.push(['Native socket code', details.socketCode])
   if (details.nativeSocketMessage) rows.push(['Native socket message', details.nativeSocketMessage])
   return rows
@@ -1606,17 +1564,14 @@ function noticeDetailRows(notice: ActionPadNotice): readonly (readonly [string, 
 
 function operationLabel(kind: ActionPadOperation['kind']): string {
   return kind === 'load' ? 'Loading Action Pad'
-    : kind === 'save' ? 'Saving Action Pad'
-      : kind === 'export' ? 'Exporting Action Pad'
-        : 'Checking previous save'
+    : 'Saving Action Pad'
 }
 
 function phaseLabel(phase: ActionPadOperation['phase']): string {
   switch (phase) {
-    case 'validating': return 'Validating draft'
-    case 'checking-host-file': return 'Checking host file'
+    case 'validating': return 'Validating edits'
+    case 'reading': return 'Reading host file'
     case 'writing': return 'Writing host file'
-    case 'awaiting-confirmation': return 'Awaiting host confirmation'
   }
 }
 
@@ -1865,39 +1820,6 @@ function confirmRemoval(title: string, message: string, remove: () => void) {
     { text: 'Cancel', style: 'cancel' },
     { text: 'Delete', style: 'destructive', onPress: remove }
   ])
-}
-
-function restorePendingIds(
-  config: ActionPadConfig,
-  drafts: Readonly<Record<string, string>> = {}
-): Readonly<Record<string, PendingIdEdit>> {
-  const pending: Record<string, PendingIdEdit> = {}
-  for (const [path, value] of Object.entries(drafts)) {
-    const indices = /^menus\[(\d+)\](?:\.groups\[(\d+)\](?:\.buttons\[(\d+)\])?)?\.id$/.exec(path)
-    if (!indices) continue
-    const menuIndex = Number(indices[1])
-    const groupIndex = Number(indices[2] ?? 0)
-    const buttonIndex = Number(indices[3] ?? 0)
-    const menu = config.menus[menuIndex]
-    const group = menu?.groups[groupIndex]
-    const button = group?.buttons[buttonIndex]
-    const current = indices[3] !== undefined ? button?.id : indices[2] !== undefined ? group?.id : menu?.id
-    // A save may have persisted the accepted ID just before clearing its buffer.
-    if (current === undefined || current === value) continue
-    const edit: ActionPadEdit = indices[3] !== undefined
-      ? { type: 'update-button', location: { menuIndex, groupIndex, buttonIndex }, patch: { id: value } }
-      : indices[2] !== undefined
-        ? { type: 'update-group', location: { menuIndex, groupIndex }, id: value }
-        : { type: 'update-menu', menuIndex, patch: { id: value } }
-    let message = 'Apply or undo this recovered ID edit.'
-    try {
-      editActionPad(config, edit)
-    } catch (error) {
-      if (error instanceof Error) message = error.message
-    }
-    pending[path] = { value, message }
-  }
-  return pending
 }
 
 const styles = StyleSheet.create({

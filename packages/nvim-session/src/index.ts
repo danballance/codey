@@ -17,7 +17,6 @@ export {
   MAX_HOST_DOCUMENT_BYTES,
   type HostDocument,
   type HostDocumentErrorCode,
-  type HostDocumentErrorStage,
   type HostDocumentWrite,
 } from "./host-documents";
 
@@ -49,7 +48,7 @@ export interface NvimSession {
   inputMouse(mouse: MouseInput): Promise<void>;
   defaultActionPadPath(): Promise<string>;
   readHostDocument(path: string): Promise<HostDocument>;
-  writeHostDocument(request: HostDocumentWrite): Promise<HostDocument>;
+  writeHostDocument(request: HostDocumentWrite): Promise<void>;
   onRedraw(listener: RedrawListener): () => void;
   close(): Promise<void>;
 }
@@ -159,7 +158,7 @@ export class NvimSessionClient implements NvimSession {
     return readHostDocument(this.rpc, path);
   }
 
-  public async writeHostDocument(request: HostDocumentWrite): Promise<HostDocument> {
+  public async writeHostDocument(request: HostDocumentWrite): Promise<void> {
     this.#assertOpen();
     return writeHostDocument(this.rpc, request);
   }

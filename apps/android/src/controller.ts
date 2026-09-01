@@ -83,7 +83,7 @@ export interface MobileSession {
   resize(width: number, height: number): Promise<void>
   defaultActionPadPath(): Promise<string>
   readHostDocument(path: string): Promise<HostDocument>
-  writeHostDocument(request: HostDocumentWrite): Promise<HostDocument>
+  writeHostDocument(request: HostDocumentWrite): Promise<void>
   onRedraw(listener: (batch: RedrawBatch) => void): () => void
   close(): Promise<void>
 }
@@ -463,7 +463,7 @@ export class TabletClientController {
     return this.#documentOperation(endpoint, (session) => session.readHostDocument(path))
   }
 
-  public writeHostDocument(endpoint: Endpoint, request: HostDocumentWrite): Promise<HostDocument> {
+  public writeHostDocument(endpoint: Endpoint, request: HostDocumentWrite): Promise<void> {
     return this.#documentOperation(endpoint, (session) => session.writeHostDocument(request))
   }
 

@@ -135,18 +135,16 @@ describe("NvimSessionClient", () => {
     const session = createNvimSession(double.rpc as never);
     const path = "/tmp/'; error('not executable') --.yaml";
     const text = "label: ''); vim.cmd('quit!'); --'\n";
-    const document = { path, resolvedPath: path, text, revision: "a".repeat(64) };
+    const document = { path, text };
     double.rpc.request
       .mockResolvedValueOnce({ ok: true, path: "/host/config/codey/action-pad.yaml" })
       .mockResolvedValueOnce({ ok: true, document })
-      .mockResolvedValueOnce({ ok: true, document });
+      .mockResolvedValueOnce({ ok: true });
 
     expect(await session.defaultActionPadPath()).toBe("/host/config/codey/action-pad.yaml");
     expect(await session.readHostDocument(path)).toEqual(document);
-    const request = {
-      path, text, expectedRevision: document.revision, expectedResolvedPath: path,
-    };
-    expect(await session.writeHostDocument(request)).toEqual(document);
+    const request = { path, text };
+    await expect(session.writeHostDocument(request)).resolves.toBeUndefined();
 
     const [defaultCall, readCall, writeCall] = double.rpc.request.mock.calls as unknown as
       [string, [string, unknown[]]][];
@@ -155,20 +153,21 @@ describe("NvimSessionClient", () => {
     expect(writeCall?.[1]).toEqual([defaultCall?.[1][0], ["write", request]]);
     expect(writeCall?.[1][0]).not.toContain(path);
     expect(writeCall?.[1][0]).not.toContain(text);
+    expect(writeCall?.[1][0]).not.toContain("fs_mkstemp");
+    expect(writeCall?.[1][0]).not.toContain("fs_link");
+    expect(writeCall?.[1][0]).not.toContain("fs_rename");
   });
 
   it("represents a missing host file without treating it as an empty saved file", async () => {
     const double = createRpcDouble();
     const session = createNvimSession(double.rpc as never);
-    const document = {
-      path: "/tmp/missing.yaml", resolvedPath: "/tmp/missing.yaml", text: null, revision: null,
-    };
+    const document = { path: "/tmp/missing.yaml", text: null };
     double.rpc.request.mockResolvedValue({ ok: true, document });
     expect(await session.readHostDocument(document.path)).toEqual(document);
   });
 
   it.each([
-    "conflict", "modified-buffer", "invalid-path", "not-found", "permission", "too-large", "io",
+    "conflict", "invalid-path", "not-found", "permission", "too-large", "io",
   ])("preserves host document %s errors without closing the RPC session", async (code) => {
     const double = createRpcDouble();
     const session = createNvimSession(double.rpc as never);
@@ -179,16 +178,16 @@ describe("NvimSessionClient", () => {
     expect(double.rpc.close).not.toHaveBeenCalled();
   });
 
-  it("preserves the optional host failure stage", async () => {
+  it("does not expose legacy host failure stages", async () => {
     const double = createRpcDouble();
     const session = createNvimSession(double.rpc as never);
     double.rpc.request.mockResolvedValue({
       ok: false, code: "io", stage: "read-back", message: "Save confirmation failed",
     });
 
-    await expect(session.readHostDocument("/tmp/pad.yaml")).rejects.toMatchObject({
-      name: "HostDocumentError", code: "io", stage: "read-back",
-    });
+    const error = await session.readHostDocument("/tmp/pad.yaml").catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ name: "HostDocumentError", code: "io" });
+    expect(error).not.toHaveProperty("stage");
   });
 
   it.each(["pad.yaml", "", "/", "~/", "~someone/pad.yaml", "/tmp/pad\0.yaml", "/tmp/"])(
@@ -206,12 +205,11 @@ describe("NvimSessionClient", () => {
     const session = createNvimSession(double.rpc as never);
     const path = "/tmp/pad.yaml";
     const text = "é".repeat(MAX_HOST_DOCUMENT_BYTES / 2);
-    const document = { path, resolvedPath: path, text, revision: "a".repeat(64) };
-    double.rpc.request.mockResolvedValue({ ok: true, document });
-    await expect(session.writeHostDocument({ path, text, expectedRevision: null })).resolves.toEqual(document);
+    double.rpc.request.mockResolvedValue({ ok: true });
+    await expect(session.writeHostDocument({ path, text })).resolves.toBeUndefined();
     double.rpc.request.mockClear();
     await expect(session.writeHostDocument({
-      path, text: text + "é", expectedRevision: null,
+      path, text: text + "é",
     })).rejects.toMatchObject({ code: "too-large" });
     expect(double.rpc.request).not.toHaveBeenCalled();
   });
@@ -219,9 +217,9 @@ describe("NvimSessionClient", () => {
   it.each([
     undefined,
     { ok: false, code: "unknown", message: "invalid" },
-    { ok: true, document: { path: "/tmp/pad.yaml", resolvedPath: "/tmp/pad.yaml", text: "", revision: null } },
-    { ok: true, document: { path: "relative", resolvedPath: "/tmp/pad.yaml", text: null, revision: null } },
-    { ok: true, document: { path: "/tmp/pad.yaml", resolvedPath: "/tmp/pad.yaml", text: "", revision: "invalid" } },
+    { ok: true, document: { path: "/tmp/pad.yaml", text: 1 } },
+    { ok: true, document: { path: "relative", text: null } },
+    { ok: true, document: { path: "/tmp/pad.yaml" } },
   ])("rejects malformed host document response %j", async (response) => {
     const double = createRpcDouble();
     const session = createNvimSession(double.rpc as never);
@@ -240,7 +238,7 @@ describe("NvimSessionClient", () => {
     await expect(session.defaultActionPadPath()).rejects.toThrow("closed");
     await expect(session.readHostDocument("/tmp/pad.yaml")).rejects.toThrow("closed");
     await expect(session.writeHostDocument({
-      path: "/tmp/pad.yaml", text: "", expectedRevision: null,
+      path: "/tmp/pad.yaml", text: "",
     })).rejects.toThrow("closed");
     expect(double.rpc.request).not.toHaveBeenCalled();
   });

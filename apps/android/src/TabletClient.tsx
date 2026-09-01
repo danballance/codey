@@ -26,7 +26,10 @@ import {
 } from '@codey/perf'
 
 import { ACTION_PAD_LONG_PRESS_MS, ActionPad, type ActionPadButtonTarget } from './action-pad'
-import { ActionPadEditor } from './action-pad/ActionPadEditor'
+import {
+  ActionPadEditor,
+  type ActionPadEditorPendingEdits
+} from './action-pad/ActionPadEditor'
 import { resolveActionPadConfig, type ActionPadConfig } from './action-pad/document'
 import { ActionPadConfigStore } from './action-pad/store'
 import {
@@ -108,6 +111,10 @@ interface NativeInputTiming {
 
 const KEYBOARD_COMPACT_THRESHOLD = 120
 const ACTION_PAD_WIDTH = 336
+const NO_ACTION_PAD_EDITOR_PENDING_EDITS: ActionPadEditorPendingEdits = {
+  fieldEdits: false,
+  pathEdit: false
+}
 
 export function TabletClient({
   capability,
@@ -133,13 +140,14 @@ export function TabletClient({
   const [editingActionPad, setEditingActionPad] = useState(false)
   const [initialActionPadButton, setInitialActionPadButton] = useState<ActionPadButtonTarget>()
   const editingActionPadRef = useRef(false)
+  const actionPadPendingEditsRef = useRef<ActionPadEditorPendingEdits>(NO_ACTION_PAD_EDITOR_PENDING_EDITS)
   const openingActionPadEditor = useRef(false)
   const openingLogs = useRef(false)
   const logsVisibleRef = useRef(logsVisible)
   const editControlLongPressTriggered = useRef(false)
   const clientMountedRef = useRef(true)
   const nativeNvimStatusRequest = useRef(0)
-  const actionPadInitialization = useRef<Promise<void>>(Promise.resolve())
+  const actionPadPathInitialization = useRef<Promise<void>>(Promise.resolve())
   const targetSelectionStarted = useRef(false)
   const [selectedKind, setSelectedKind] = useState<ConnectionTargetKind>('local')
   const [workspacePath, setWorkspacePath] = useState(DEFAULT_LOCAL_WORKSPACE_PATH)
@@ -172,10 +180,10 @@ export function TabletClient({
       message: 'Mounted the supported tablet client',
       details: { capability }
     })
-    actionPadInitialization.current = connectionSettingsStore.load()
+    actionPadPathInitialization.current = connectionSettingsStore.load()
       .then(async (settings) => {
-        // A connection chosen during startup owns its target and recovery data;
-        // a slower storage read must not replace it with the previous selection.
+        // A connection chosen during startup owns its target and remembered
+        // Action Pad path; a slower storage read must not replace it.
         if (!mounted || targetSelectionStarted.current) return
         const target = selectedConnectionTarget(settings)
         setSelectedKind(settings.selectedKind)
@@ -682,7 +690,10 @@ export function TabletClient({
   ])
 
   useEffect(() => {
-    void actionPadStore.setConnected(connected)
+    const pendingEdits = connected && editingActionPadRef.current
+      ? actionPadPendingEditsRef.current
+      : NO_ACTION_PAD_EDITOR_PENDING_EDITS
+    void actionPadStore.setConnected(connected, pendingEdits)
   }, [actionPadStore, connected])
 
   useEffect(() => {
@@ -833,13 +844,13 @@ export function TabletClient({
     }
     openingActionPadEditor.current = true
     try {
-      // ID text is initialized when the editor mounts. Await recovery first so
-      // opening immediately after launch cannot replace recovered edits.
-      await actionPadInitialization.current
+      // Await the remembered-path lookup so an editor opened immediately after
+      // launch starts with the selected endpoint's path.
+      await actionPadPathInitialization.current
       await actionPadStore.selectEndpoint(actionPadStore.getState().endpoint)
       if (!canOpen()) {
         openOperation.cancellation({
-          message: 'Action Pad editor opening was superseded during recovery'
+          message: 'Action Pad editor opening was superseded during path initialization'
         })
         return
       }
@@ -905,6 +916,7 @@ export function TabletClient({
         return
       }
       setFormError('')
+      actionPadPendingEditsRef.current = NO_ACTION_PAD_EDITOR_PENDING_EDITS
       setInitialActionPadButton(initialButton)
       setEditingActionPad(true)
       openOperation.success({
@@ -941,19 +953,20 @@ export function TabletClient({
         message: 'Closed the Action Pad editor',
         details: { dirty: actionPadStore.getState().dirty }
       })
+      actionPadPendingEditsRef.current = NO_ACTION_PAD_EDITOR_PENDING_EDITS
       setEditingActionPad(false)
       setInitialActionPadButton(undefined)
       editingActionPadRef.current = false
     }
     const discard = () => {
-      actionPadStore.discardDraft()
+      actionPadStore.discardWorkingConfig()
       close()
     }
-    if (state.dirty) {
-      Alert.alert('Unsaved Action Pad edits', 'Keep the draft for later, or discard it. Neither option changes the active pad or host file.', [
+    const pendingEdits = actionPadPendingEditsRef.current
+    if (state.dirty || pendingEdits.fieldEdits || pendingEdits.pathEdit) {
+      Alert.alert('Unsaved Action Pad edits', 'Closing the editor will discard these in-memory edits. The host file will not change. If the first load was waiting for these edits, the selected file may then update the active pad.', [
         { text: 'Keep editing', style: 'cancel' },
-        { text: 'Keep draft & close', onPress: close },
-        { text: 'Discard', style: 'destructive', onPress: discard }
+        { text: 'Discard and close', style: 'destructive', onPress: discard }
       ])
     } else close()
   }, [actionPadStore])
@@ -987,46 +1000,27 @@ export function TabletClient({
   }, [actionPadTarget, controller, grantAllFilesAccess, host, nativeNvimStatus, port, workspacePath])
 
   const loadActionPad = useCallback(async (path: string) => {
-    if (actionPadStore.getState().dirty && !await confirmAction(
+    if ((actionPadStore.getState().dirty || actionPadPendingEditsRef.current.fieldEdits) && !await confirmAction(
       'Replace unsaved edits?',
-      'Loading a valid host file will replace this draft. Buttons can execute Neovim commands; load only files you trust.',
+      'Loading a valid host file will replace these in-memory edits. Buttons can execute Neovim commands; load only files you trust.',
       'Load file'
     )) return
     await actionPadStore.load(path)
   }, [actionPadStore])
 
   const saveActionPad = useCallback((path: string) => actionPadStore.save(path), [actionPadStore])
-  const changeActionPad = useCallback((config: ActionPadConfig) => actionPadStore.setDraft(config), [actionPadStore])
-  const changeActionPadIds = useCallback((ids: Readonly<Record<string, string>>) => actionPadStore.setIdDrafts(ids), [actionPadStore])
-  const exportActionPad = useCallback((path: string) => actionPadStore.export(path, (destination) => confirmAction(
-    'Replace exported file?',
-    `Export will replace ${destination}. Your active file and unsaved status will stay unchanged.`,
-    'Replace'
-  )), [actionPadStore])
+  const changeActionPad = useCallback((config: ActionPadConfig) => {
+    actionPadStore.setWorkingConfig(config)
+    actionPadStore.setConnectionPreservation(actionPadPendingEditsRef.current)
+  }, [actionPadStore])
+  const changeActionPadPendingEdits = useCallback((pending: ActionPadEditorPendingEdits) => {
+    actionPadPendingEditsRef.current = pending
+    actionPadStore.setConnectionPreservation(pending)
+  }, [actionPadStore])
   const stopWaitingForActionPad = useCallback(() => {
     actionPadStore.stopWaiting()
     void controller.disconnect()
   }, [actionPadStore, controller])
-  const reconnectAndCheckActionPadSave = useCallback(() => {
-    void (async () => {
-      const target = actionPadTarget
-      setSelectedKind(target.kind)
-      if (target.kind === 'local') setWorkspacePath(target.workspacePath)
-      else {
-        setHost(target.host)
-        setPort(String(target.port))
-      }
-      await actionPadStore.setConnected(false)
-      await connectionSettingsStore
-        .save(settingsForTarget(target, workspacePath, host, port))
-        .catch(() => undefined)
-      await controller.connect(target)
-      if (controller.getState().phase !== 'connected') return
-      await actionPadStore.setConnected(true)
-      await actionPadStore.reconcilePendingSave()
-    })()
-  }, [actionPadStore, actionPadTarget, controller, host, port, workspacePath])
-
   return (
     <KeyboardAvoidingView
       behavior="height"
@@ -1275,9 +1269,9 @@ export function TabletClient({
           >
             <Text style={styles.editActionPadText}>{selectingActionPad ? 'Done editing' : 'Edit Action Pad'}{actionPadState.dirty ? ' · unsaved' : ''}</Text>
           </Pressable>
-          {actionPadState.error || actionPadState.recoveryWarning ? (
+          {actionPadState.error ? (
             <Text accessibilityRole="alert" style={styles.actionPadNotice}>
-              {actionPadState.recoveryWarning || actionPadState.message}
+              {actionPadState.message}
             </Text>
           ) : null}
         </View>
@@ -1324,25 +1318,21 @@ export function TabletClient({
           {editingActionPad ? <ActionPadEditor
             busy={actionPadState.busy}
             connectionFailure={client.connectionFailure}
-            config={actionPadState.draft}
+            config={actionPadState.workingConfig}
             connected={connected}
             dirty={actionPadState.dirty}
             initialButton={initialActionPadButton}
-            initialIdDrafts={actionPadState.idDrafts}
-            message=""
+            initialLoadPending={actionPadState.initialLoadPending}
             notice={actionPadState.notice}
             onCancel={closeActionPadEditor}
             onChange={changeActionPad}
-            onIdDraftsChange={changeActionPadIds}
-            onExport={exportActionPad}
             onLoad={loadActionPad}
             onOpenLogs={openLogsFromActionPadEditor}
-            onReconnectAndCheck={actionPadState.pendingSavePath === null ? undefined : reconnectAndCheckActionPadSave}
+            onPendingEditsChange={changeActionPadPendingEdits}
             onSave={saveActionPad}
             onStopWaiting={stopWaitingForActionPad}
             operation={actionPadState.operation}
-            recoveryNotice={actionPadState.recoveryNotice}
-            sourcePath={actionPadState.pendingSavePath ?? actionPadState.sourcePath}
+            sourcePath={actionPadState.sourcePath}
           /> : null}
         </SafeAreaView>
       </Modal>
