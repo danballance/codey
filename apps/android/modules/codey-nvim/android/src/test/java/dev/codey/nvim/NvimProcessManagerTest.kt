@@ -37,7 +37,7 @@ class NvimProcessManagerTest {
     val response = byteArrayOf(0, -1, 1, -128, 42, 7)
     val request = byteArrayOf(-1, 0, 127, -128, 13, 10)
 
-    val sessionId = manager.start("/workspace")
+    val sessionId = manager.start("/workspace", "/config")
     manager.write(sessionId, request)
     process.emitStdout(response.copyOfRange(0, 2))
     process.emitStdout(response.copyOfRange(2, response.size))
@@ -62,9 +62,9 @@ class NvimProcessManagerTest {
       if (launches.getAndIncrement() == 0) first else second
     }
 
-    val firstId = manager.start("/one")
+    val firstId = manager.start("/one", "/config")
     assertTrue(manager.isRunning)
-    assertTrue(runCatching { manager.start("/two") }.isFailure)
+    assertTrue(runCatching { manager.start("/two", "/config") }.isFailure)
 
     manager.stop(firstId)
     assertFalse(manager.isRunning)
@@ -72,7 +72,7 @@ class NvimProcessManagerTest {
     manager.stop(firstId)
     assertTrue(runCatching { manager.write(firstId, byteArrayOf(1)) }.isFailure)
 
-    val secondId = manager.start("/two")
+    val secondId = manager.start("/two", "/config")
     assertTrue(secondId > firstId)
     assertTrue(runCatching { manager.write(firstId, byteArrayOf(1)) }.isFailure)
     manager.stop(secondId)
@@ -85,7 +85,7 @@ class NvimProcessManagerTest {
     val manager = manager(sink) { process }
     val stderr = ByteArray(20 * 1024) { index -> ('a'.code + index % 26).toByte() }
 
-    manager.start("/workspace")
+    manager.start("/workspace", "/config")
     process.emitStderr(stderr)
     process.complete(23)
 
@@ -106,7 +106,7 @@ class NvimProcessManagerTest {
       .also(processes::add)
     val sink = RecordingSink()
     val manager = manager(sink) { process }
-    val sessionId = manager.start("/workspace")
+    val sessionId = manager.start("/workspace", "/config")
 
     val error = runCatching { manager.write(sessionId, byteArrayOf(1)) }.exceptionOrNull()
 
@@ -123,7 +123,7 @@ class NvimProcessManagerTest {
     val process = FakeProcess(ignoreGracefulDestroy = true).also(processes::add)
     val sink = RecordingSink()
     val manager = manager(sink, stopTimeoutMillis = 10) { process }
-    val sessionId = manager.start("/workspace")
+    val sessionId = manager.start("/workspace", "/config")
 
     manager.stop(sessionId)
     manager.stop(sessionId)
@@ -140,7 +140,7 @@ class NvimProcessManagerTest {
     val sink = RecordingSink()
     val manager = manager(sink) { process }
 
-    manager.start("/workspace")
+    manager.start("/workspace", "/config")
     process.closeStdout()
 
     assertTrue(sink.exitReady.await(2, TimeUnit.SECONDS))
@@ -155,7 +155,7 @@ class NvimProcessManagerTest {
     val manager = manager(sink, rpcEofExitGraceMillis = 2_000) { process }
     val finalStderr = "final stderr before exit\n"
 
-    manager.start("/workspace")
+    manager.start("/workspace", "/config")
     process.closeStdout()
     assertTrue(
       "stdout reader did not begin the natural-exit grace wait",
@@ -178,12 +178,12 @@ class NvimProcessManagerTest {
   fun `shutdown prevents future starts`() {
     val process = FakeProcess().also(processes::add)
     val manager = manager(RecordingSink()) { process }
-    val sessionId = manager.start("/workspace")
+    val sessionId = manager.start("/workspace", "/config")
 
     manager.closeAll()
     manager.closeAll()
 
-    assertTrue(runCatching { manager.start("/workspace") }.isFailure)
+    assertTrue(runCatching { manager.start("/workspace", "/config") }.isFailure)
     assertTrue(runCatching { manager.write(sessionId, byteArrayOf(1)) }.isFailure)
   }
 
@@ -194,7 +194,9 @@ class NvimProcessManagerTest {
     launcher: () -> FakeProcess
   ): NvimProcessManager = NvimProcessManager(
     eventSink = sink,
-    launchSpecProvider = { cwd -> NvimLaunchSpec(listOf("nvim"), java.io.File(cwd), emptyMap()) },
+    launchSpecProvider = { request ->
+      NvimLaunchSpec(listOf("nvim"), java.io.File(request.workingDirectory), emptyMap())
+    },
     processLauncher = NvimProcessLauncher { launcher() },
     stopTimeoutMillis = stopTimeoutMillis,
     rpcEofExitGraceMillis = rpcEofExitGraceMillis

@@ -18,7 +18,7 @@ Android tablet
     -> app-local connection/editor controller
     -> NvimSessionClient
     -> MessagePackRpcClient
-    -> ExpoNvimProcessTransport -> CodeyNvim -> bundled nvim --clean --embed
+    -> ExpoNvimProcessTransport -> CodeyNvim -> bundled nvim [--clean] --embed
      or ExpoTcpTransport -> CodeyTcp -> remote headless Neovim
 ```
 
@@ -72,10 +72,11 @@ command-line, popup-menu, or message UIs.
 
 ## Android platform boundary
 
-`ConnectionTarget` is the persisted discriminated union for Local workspace and
-Remote endpoint settings. The controller receives only a normalized target and
-the runtime factory selects the transport. The Action Pad persists one selected
-YAML path for Local mode and one for each Remote endpoint.
+`ConnectionTarget` is the normalized discriminated union for a Local workspace
+plus config folder or a Remote endpoint. Version-3 connection settings own the
+device-wide Local config folder alongside the workspace and Remote endpoint.
+The form may hold an unset folder, but Local connection construction rejects it.
+Remote endpoints retain one selected YAML path each in the Action Pad store.
 
 The POC native process module admits one session, launches the executable
 directly from Android's extracted native-library directory, and never invokes a
@@ -84,7 +85,15 @@ drained concurrently into a 16 KiB tail; an exit event carries that tail and a
 stable native error code. Runtime data is SHA-256 checked, extracted with path
 traversal protection into a versioned private directory, and never marked
 executable. Local startup also gates API level, ABI, bundle presence, workspace
-access, and Android all-files permission.
+access, Android all-files permission, and the required config folder before
+spawning the process. The folder must be an existing readable, writable,
+non-root directory. An existing `init.lua` must be a readable regular file.
+Without one, startup preserves the exact `nvim --clean --embed` contract. With
+one, the folder is exposed as `stdpath('config')` through `XDG_CONFIG_HOME` and
+`NVIM_APPNAME`; Neovim loads `init.lua` plus normal `lua/`, `plugin/`, and
+`after/` content. Data, state, and cache use an app-private profile keyed by the
+canonical folder path. A post-start check turns config errors into a failed
+connection instead of silently continuing.
 
 The app evaluates the active Android window before constructing any editor
 resource. Expo requests landscape in the generated manifest, and the runtime
@@ -262,7 +271,12 @@ size values, style/colour fields, and rich labels even though legacy strings
 remain valid.
 
 The configuration store owns the active document, in-memory working copy, and
-one remembered path per endpoint. The separate editor
+one remembered YAML path per Remote endpoint. Connection setup injects the
+resolved `<config-folder>/action-pad.yaml` path for Local mode; the store neither
+persists nor chooses the Local folder and never falls back to a private Local
+file. The Local editor displays that destination read-only and exposes Save as
+its only file operation, while Remote retains editable path and Load controls.
+The separate editor
 does not mount an interactive action pad; its button-label form reuses the
 production text renderer in a noninteractive Normal/Compact preview. Entering
 the editor settles the prior IME composition, blurs the Neovim input target,
@@ -286,14 +300,19 @@ results to the endpoint and connection generation. File failures and local wait
 timeouts do not tear down the editor session; a failure after opening may leave
 the destination incomplete and recovery is manual.
 
-User-selected configurations are executable input configuration, not a safe
-command sandbox. Loading or editing does not dispatch their inputs, but active
-input buttons may execute arbitrary Neovim commands. Remote connections retain
+User-selected configurations are executable code/input configuration, not a
+safe command sandbox. A selected Local `init.lua` and its runtime files execute
+at startup. Loading or editing Action Pad YAML does not dispatch its inputs, but
+active input buttons may execute arbitrary Neovim commands. Remote connections retain
 the trusted-private-network requirement for both input and file access. In
 Local mode those commands execute under the Android app UID and can reach files
 allowed by all-files access. There is no separate Android document-provider
 backend, cloud/Git synchronization, or remote file browser; Load and Save
 use explicit paths interpreted by the selected Neovim process.
+
+Codey does not watch, source, or reload Local Lua files after startup. Users can
+edit the selected config folder through the same Local workspace access and then
+source files deliberately or reconnect for a fresh startup.
 
 Expo Continuous Native Generation owns the ignored `apps/android/android/`
 directory. Native module source remains tracked under `apps/android/modules/`.

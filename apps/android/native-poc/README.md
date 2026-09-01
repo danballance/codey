@@ -8,7 +8,8 @@ recipe or a production release pipeline.
 
 - Android 11 / API 30 or newer.
 - `arm64-v8a` only.
-- One app-scoped `nvim --clean --embed` process at a time.
+- One app-scoped `nvim --embed` process at a time, with `--clean` retained when
+  no readable Local `init.lua` is selected.
 - MessagePack-RPC over the child process's stdin/stdout, with stderr retained
   only as a bounded diagnostic tail.
 - A user-selected absolute workspace path, using Android all-files access. The
@@ -48,11 +49,17 @@ gate.
 ## Install and use
 
 Install the APK on an arm64 Android 11+ device, choose **Local**, grant the
-all-files permission when prompted, and use **Browse** to choose an existing
-writable directory below `/storage/emulated/0`. Selection only saves the Local
-workspace; press **Connect** separately to start NeoVim. You can instead type a
-known writable absolute filesystem path manually. Choose **Remote** to keep
-using the existing host/port workflow.
+all-files permission when prompted, and use the two **Browse** controls to choose
+an existing writable workspace and required Neovim config folder below
+`/storage/emulated/0`. Selection saves the Local settings; press **Connect**
+separately to start NeoVim. You can instead type known writable absolute paths
+manually. The config folder supplies the fixed `action-pad.yaml` and optional
+`init.lua`; `lua/`, `plugin/`, and `after/` are normal Neovim config children.
+The folder must already exist and be readable and writable. A missing
+`init.lua` keeps clean startup, while an invalid folder or invalid existing
+`init.lua` blocks startup. Configuration changes are not watched or reloaded;
+source them manually or reconnect. Choose **Remote** to keep using the existing
+host/port workflow and arbitrary Action Pad YAML path.
 
 This POC browser deliberately does not use `ACTION_OPEN_DOCUMENT_TREE`, map
 `content://` URIs to paths, enumerate cloud document providers, or browse
@@ -60,13 +67,17 @@ removable storage. NeoVim needs a real working-directory path for ordinary
 filesystem and Git operations, while a Storage Access Framework tree is a
 provider URI rather than a portable filesystem location.
 
-Local mode intentionally uses a private clean HOME/XDG environment. It does
-not load the user's desktop NeoVim configuration or plugins, open a localhost
+Local mode always uses a private HOME and app-private data, state, and cache.
+When the required folder has no readable `init.lua`, Neovim starts clean. With
+one, the selected folder becomes Neovim's actual config
+root while the other XDG roots stay private. It does not open a localhost
 server, run an intermediary launcher shell, run a background service, or keep
-NeoVim alive after the app session closes. `--clean` is not a security sandbox:
-NeoVim commands, Lua, `system()`, and `:!` can launch `/system/bin/sh` and access
-anything available to the app UID, including the workspace granted through
-all-files access. Only open trusted files and send trusted Action Pad commands.
+NeoVim alive after the app session closes. Neither `--clean` nor the configured
+mode is a security sandbox: selected Lua executes automatically at startup, and
+Neovim commands, `system()`, and `:!` can launch `/system/bin/sh` and access
+anything available to the app UID, including files covered by all-files access.
+Only select trusted config folders, open trusted files, and send trusted Action
+Pad commands.
 
 ## Before F-Droid
 

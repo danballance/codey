@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import type { HostDocument, HostDocumentErrorCode, HostDocumentWrite } from '@codey/nvim-session'
 
 import { diagnosticLogger, type DiagnosticLogger, type DiagnosticOperation } from '../diagnostics/logger'
+import { isLocalActionPadEndpoint } from '../connection-target'
 import { DEFAULT_ENDPOINT, type Endpoint } from '../endpoint'
 import { DEFAULT_ACTION_PAD_CONFIG } from './config'
 import {
@@ -54,6 +55,7 @@ export interface ActionPadNotice {
 
 export interface ActionPadStoreState {
   readonly endpoint: Endpoint
+  /** Resolved YAML path on the selected Neovim host. */
   readonly sourcePath: string
   readonly activeConfig: ActionPadConfig
   readonly workingConfig: ActionPadConfig
@@ -114,7 +116,7 @@ export function legacyActionPadStorageKey(endpoint: Endpoint): string {
   return `codey.android.action-pad.v1.${encodeURIComponent(endpoint.host)}:${endpoint.port}`
 }
 
-/** Keeps edits in memory; the selected YAML file is the only durable configuration. */
+/** Keeps edits in memory; only Remote YAML path selections are persisted here. */
 export class ActionPadConfigStore {
   readonly #listeners = new Set<() => void>()
   readonly #documents: ActionPadHostDocuments
@@ -153,8 +155,14 @@ export class ActionPadConfigStore {
     return () => this.#listeners.delete(listener)
   }
 
-  selectEndpoint(endpoint: Endpoint): Promise<void> {
-    if (sameEndpoint(endpoint, this.#state.endpoint) && this.#hydrated) return this.#hydration
+  selectEndpoint(endpoint: Endpoint, localSourcePath: string | null = null): Promise<void> {
+    const sourcePath = isLocalActionPadEndpoint(endpoint) && localSourcePath !== null
+      ? requirePath(localSourcePath)
+      : ''
+    if (
+      sameEndpoint(endpoint, this.#state.endpoint) && this.#hydrated &&
+      (!isLocalActionPadEndpoint(endpoint) || sourcePath === this.#state.sourcePath)
+    ) return this.#hydration
     this.#cancelActiveRunWithoutNotice()
     const generation = ++this.#generation
     this.#refreshRequested = false
@@ -162,9 +170,11 @@ export class ActionPadConfigStore {
     this.#initialLoadCompleted = false
     this.#editVersion = 0
     this.#hydrated = true
-    this.#state = { ...initialState(endpoint), busy: true }
+    this.#state = { ...initialState(endpoint, sourcePath), busy: !isLocalActionPadEndpoint(endpoint) }
     this.#emit()
-    this.#hydration = this.#restoreSelectedPath(endpoint, generation)
+    this.#hydration = isLocalActionPadEndpoint(endpoint)
+      ? Promise.resolve()
+      : this.#restoreSelectedPath(endpoint, generation)
     return this.#hydration
   }
 
@@ -216,7 +226,7 @@ export class ActionPadConfigStore {
       if (rawLegacy.length > ACTION_PAD_CONFIG_MAX_BYTES * 5) {
         throw new Error('The legacy Action Pad record is too large to migrate')
       }
-      const sourcePath = legacySourcePath(JSON.parse(rawLegacy))
+      const sourcePath = requirePath(legacySourcePath(JSON.parse(rawLegacy)))
       if (!await this.#persistSelectedPath(endpoint, sourcePath, generation)) {
         throw new Error('Could not store the migrated Action Pad path')
       }
@@ -317,10 +327,20 @@ export class ActionPadConfigStore {
     }
     this.#refreshRequested = false
     await this.#run('load', this.#state.sourcePath, async (context) => {
-      let path = this.#state.sourcePath
-      if (path.length === 0 && !this.#connectionPreservation.pathEdit) {
-        path = requirePath(await this.#documents.defaultActionPadPath(context.endpoint))
-        context.rawLifecycle.defaultActionPadPath = path
+      if (this.#state.sourcePath.length === 0 && this.#connectionPreservation.pathEdit) {
+        this.#set({
+          notice: notice('info', 'Connected. Your unsaved edits are unchanged.',
+            'Save them, or use Load / Reload after confirming that they can be discarded.')
+        })
+        return
+      }
+      let path: string
+      if (this.#state.sourcePath.length === 0 && !this.#connectionPreservation.pathEdit) {
+        if (isLocalActionPadEndpoint(context.endpoint)) {
+          throw new Error('Choose a Neovim config folder before connecting.')
+        }
+        const defaultPath = requirePath(await this.#documents.defaultActionPadPath(context.endpoint))
+        context.rawLifecycle.defaultActionPadPath = defaultPath
         this.#assertCurrent(context)
         if (this.#connectionPreservation.pathEdit) {
           this.#set({
@@ -329,10 +349,13 @@ export class ActionPadConfigStore {
           })
           return
         }
-        this.#set({ sourcePath: path })
-        this.#updateOperation(context, { path })
-        await this.#persistSelectedPath(context.endpoint, path, context.generation)
+        path = defaultPath
+        this.#set({ sourcePath: defaultPath })
+        await this.#persistSelectedPath(context.endpoint, defaultPath, context.generation)
         this.#assertCurrent(context)
+        this.#updateOperation(context, { path })
+      } else {
+        path = requirePath(this.#state.sourcePath)
       }
       const preservation = this.#connectionPreservation
       if (this.#state.dirty || preservation.fieldEdits || preservation.pathEdit) {
@@ -371,12 +394,17 @@ export class ActionPadConfigStore {
 
   /** The screen obtains discard confirmation before calling this method. */
   async load(path: string): Promise<void> {
-    await this.#run('load', path, async (context) => {
-      await this.#loadDocument(context, requirePath(path), true)
+    const selectedPath = requirePath(path)
+    await this.#run('load', selectedPath, async (context) => {
+      await this.#loadDocument(context, selectedPath, true)
     })
   }
 
-  async #loadDocument(context: OperationContext, path: string, persistSelection: boolean): Promise<void> {
+  async #loadDocument(
+    context: OperationContext,
+    path: string,
+    persistSelection: boolean
+  ): Promise<void> {
     const editVersion = this.#editVersion
     this.#updateOperation(context, { phase: 'reading', path })
     const document = await this.#documents.readHostDocument(context.endpoint, path)
@@ -412,7 +440,10 @@ export class ActionPadConfigStore {
         ? notice('info', 'Using the starter configuration. Save will create the selected host file.')
         : notice('success', `Loaded ${selectedPath}`)
     })
-    if (persistSelection && !await this.#persistSelectedPath(context.endpoint, selectedPath, context.generation)) {
+    if (
+      persistSelection && !isLocalActionPadEndpoint(context.endpoint) &&
+      !await this.#persistSelectedPath(context.endpoint, selectedPath, context.generation)
+    ) {
       this.#assertCurrent(context)
       this.#set({
         notice: notice('warning', `Loaded ${selectedPath}, but Codey could not remember this path.`,
@@ -422,15 +453,15 @@ export class ActionPadConfigStore {
   }
 
   async save(path: string): Promise<void> {
-    await this.#run('save', path, async (context) => {
+    const selectedPath = requirePath(path)
+    await this.#run('save', selectedPath, async (context) => {
       const config = cloneConfig(this.#state.workingConfig)
       const text = serializeActionPadConfig(config)
       const editVersion = this.#editVersion
-      const requiredPath = requirePath(path)
-      const request: HostDocumentWrite = { path: requiredPath, text }
+      const request: HostDocumentWrite = { path: selectedPath, text }
       context.rawLifecycle.writeRequest = request
       this.#updateOperation(context, {
-        phase: 'writing', path: requiredPath, byteCount: utf8ByteLength(text), writeStarted: true
+        phase: 'writing', path: selectedPath, byteCount: utf8ByteLength(text), writeStarted: true
       })
       await this.#documents.writeHostDocument(context.endpoint, request)
       context.rawLifecycle.writeCompleted = true
@@ -439,20 +470,25 @@ export class ActionPadConfigStore {
       this.#initialLoadCompleted = true
       this.#refreshRequested = false
       this.#set({
-        sourcePath: requiredPath,
+        sourcePath: selectedPath,
         activeConfig: cloneConfig(config),
         workingConfig,
         dirty: !sameConfig(workingConfig, config),
         initialLoadPending: false
       })
-      const persisted = await this.#persistSelectedPath(context.endpoint, requiredPath, context.generation)
+      const shouldPersist = !isLocalActionPadEndpoint(context.endpoint)
+      const persisted = !shouldPersist || await this.#persistSelectedPath(
+        context.endpoint,
+        selectedPath,
+        context.generation
+      )
       this.#assertCurrent(context)
       this.#set({
         notice: persisted
           ? notice('success', this.#state.dirty
-            ? `Saved ${requiredPath}. Newer edits are still unsaved.`
-            : `Saved ${requiredPath}`)
-          : notice('warning', `Saved ${requiredPath}, but Codey could not remember this path.`,
+            ? `Saved ${selectedPath}. Newer edits are still unsaved.`
+            : `Saved ${selectedPath}`)
+          : notice('warning', `Saved ${selectedPath}, but Codey could not remember this path.`,
             'The file is saved; select it again after restarting.')
       })
     })
@@ -727,11 +763,11 @@ export class ActionPadConfigStore {
   }
 }
 
-function initialState(endpoint: Endpoint): ActionPadStoreState {
+function initialState(endpoint: Endpoint, sourcePath = ''): ActionPadStoreState {
   const initialNotice = notice('info', 'Starter configuration. Connect to load the selected YAML file.')
   return {
     endpoint,
-    sourcePath: '',
+    sourcePath,
     activeConfig: cloneConfig(DEFAULT_ACTION_PAD_CONFIG),
     workingConfig: cloneConfig(DEFAULT_ACTION_PAD_CONFIG),
     dirty: false,

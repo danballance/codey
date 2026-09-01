@@ -45,7 +45,9 @@ class CodeyNvimModule : Module() {
       },
       // Keep runtime/context resolution deferred so an otherwise-unused module
       // can still be destroyed safely after React context teardown.
-      launchSpecProvider = { cwd -> nvimRuntime.prepare(cwd) }
+      launchSpecProvider = { request ->
+        nvimRuntime.prepare(request.workingDirectory, request.configDirectory)
+      }
     )
   }
   private val manager by managerDelegate
@@ -94,8 +96,8 @@ class CodeyNvimModule : Module() {
       }
     }.runOnQueue(ioScope)
 
-    AsyncFunction("start") { cwd: String ->
-      manager.start(cwd)
+    AsyncFunction("start") { cwd: String, configDirectory: String ->
+      manager.start(cwd, configDirectory)
     }.runOnQueue(ioScope)
 
     AsyncFunction("write") { sessionId: Int, bytes: ByteArray ->

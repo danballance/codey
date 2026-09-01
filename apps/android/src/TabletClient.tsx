@@ -40,12 +40,14 @@ import {
 } from './connection-settings-store'
 import {
   actionPadEndpointForTarget,
+  actionPadPathForTarget,
   connectionTargetLabel,
   createLocalConnectionTarget,
   createRemoteConnectionTarget,
   DEFAULT_CONNECTION_TARGET,
   DEFAULT_LOCAL_WORKSPACE_PATH,
   DEFAULT_REMOTE_TARGET,
+  requireConfigDirectory,
   type ConnectionTarget,
   type ConnectionTargetKind
 } from './connection-target'
@@ -151,6 +153,7 @@ export function TabletClient({
   const targetSelectionStarted = useRef(false)
   const [selectedKind, setSelectedKind] = useState<ConnectionTargetKind>('local')
   const [workspacePath, setWorkspacePath] = useState(DEFAULT_LOCAL_WORKSPACE_PATH)
+  const [configDirectory, setConfigDirectory] = useState('')
   const [host, setHost] = useState('192.168.1.20')
   const [port, setPort] = useState('6666')
   const [actionPadTarget, setActionPadTarget] = useState<ConnectionTarget>(DEFAULT_CONNECTION_TARGET)
@@ -159,6 +162,8 @@ export function TabletClient({
   const [nativeNvimStatusLoading, setNativeNvimStatusLoading] = useState(true)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const workspacePickerOpenRef = useRef(false)
+  const [configPickerOpen, setConfigPickerOpen] = useState(false)
+  const configPickerOpenRef = useRef(false)
   const [formError, setFormError] = useState('')
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds>({ width: 0, height: 0 })
   const [screenHeight, setScreenHeight] = useState(capability.height)
@@ -170,6 +175,7 @@ export function TabletClient({
 
   logsVisibleRef.current = logsVisible
   workspacePickerOpenRef.current = workspacePickerOpen
+  configPickerOpenRef.current = configPickerOpen
 
   useEffect(() => {
     let mounted = true
@@ -188,10 +194,14 @@ export function TabletClient({
         const target = selectedConnectionTarget(settings)
         setSelectedKind(settings.selectedKind)
         setWorkspacePath(settings.local.workspacePath)
+        setConfigDirectory(settings.local.configDirectory ?? '')
         setHost(settings.remote.host)
         setPort(String(settings.remote.port))
+        await actionPadStore.selectEndpoint(
+          actionPadEndpointForTarget(target),
+          actionPadPathForTarget(target)
+        )
         setActionPadTarget(target)
-        await actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
       })
       .finally(() => {
         if (mounted) setConnectionSettingsLoaded(true)
@@ -204,6 +214,14 @@ export function TabletClient({
           category: 'workspace',
           event: 'picker.unmounted',
           message: 'Workspace picker unmounted with the tablet client',
+          details: { reason: 'capability-driven-client-unmount' }
+        })
+      }
+      if (configPickerOpenRef.current) {
+        diagnosticLogger.info({
+          category: 'workspace',
+          event: 'config_picker.unmounted',
+          message: 'Config folder picker unmounted with the tablet client',
           details: { reason: 'capability-driven-client-unmount' }
         })
       }
@@ -319,13 +337,19 @@ export function TabletClient({
 
     try {
       const target = selectedKind === 'local'
-        ? createLocalConnectionTarget(workspacePath)
+        ? createLocalConnectionTarget(
+            workspacePath,
+            requireConfigDirectory(configDirectory)
+          )
         : createRemoteConnectionTarget(host, port)
-      const settings = settingsForTarget(target, workspacePath, host, port)
+      const settings = settingsForTarget(target, workspacePath, configDirectory, host, port)
       targetSelectionStarted.current = true
       setActionPadTarget(target)
       void connectionSettingsStore.save(settings).catch(() => undefined)
-      void actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
+      void actionPadStore.selectEndpoint(
+        actionPadEndpointForTarget(target),
+        actionPadPathForTarget(target)
+      )
       void controller.connect(target)
     } catch (reason) {
       diagnosticLogger.warn({
@@ -336,7 +360,7 @@ export function TabletClient({
       })
       setFormError(reason instanceof Error ? reason.message : 'Invalid connection details')
     }
-  }, [actionPadStore, client.phase, controller, host, port, selectedKind, workspacePath])
+  }, [actionPadStore, client.phase, configDirectory, controller, host, port, selectedKind, workspacePath])
 
   const submitControllerInput = useCallback(
     (keys: string, tags: PerformanceTags): Promise<void> => {
@@ -563,10 +587,12 @@ export function TabletClient({
   const workspaceBrowseDisabled = connecting || connected || !connectionSettingsLoaded ||
     nativeNvimStatusLoading ||
     nativeNvimStatus?.supported !== true || !nativeNvimStatus.allFilesAccess
+  const configBrowseDisabled = workspaceBrowseDisabled
+  const localConfigMissing = !connected && selectedKind === 'local' && configDirectory.trim().length === 0
 
   useEffect(() => {
     if (
-      workspacePickerOpen &&
+      (workspacePickerOpen || configPickerOpen) &&
       nativeNvimStatus !== null &&
       (!nativeNvimStatus.supported || !nativeNvimStatus.allFilesAccess)
     ) {
@@ -577,22 +603,29 @@ export function TabletClient({
         details: { nativeNvimStatus, logsVisible }
       })
       setWorkspacePickerOpen(false)
+      setConfigPickerOpen(false)
     }
-  }, [logsVisible, nativeNvimStatus, workspacePickerOpen])
+  }, [configPickerOpen, logsVisible, nativeNvimStatus, workspacePickerOpen])
 
   const selectConnectionKind = useCallback((kind: ConnectionTargetKind) => {
     if (connected || connecting || kind === selectedKind) return
     setFormError('')
     try {
       const target = kind === 'local'
-        ? createLocalConnectionTarget(workspacePath)
+        ? createLocalConnectionTarget(
+            workspacePath,
+            configDirectory
+          )
         : createRemoteConnectionTarget(host, port)
-      const settings = settingsForTarget(target, workspacePath, host, port)
+      const settings = settingsForTarget(target, workspacePath, configDirectory, host, port)
       targetSelectionStarted.current = true
       setSelectedKind(kind)
       setActionPadTarget(target)
       void connectionSettingsStore.save(settings).catch(() => undefined)
-      void actionPadStore.selectEndpoint(actionPadEndpointForTarget(target))
+      void actionPadStore.selectEndpoint(
+        actionPadEndpointForTarget(target),
+        actionPadPathForTarget(target)
+      )
     } catch (reason) {
       diagnosticLogger.warn({
         category: 'settings',
@@ -602,7 +635,7 @@ export function TabletClient({
       })
       setFormError(reason instanceof Error ? reason.message : 'Invalid connection details')
     }
-  }, [actionPadStore, connected, connecting, host, port, selectedKind, workspacePath])
+  }, [actionPadStore, configDirectory, connected, connecting, host, port, selectedKind, workspacePath])
 
   const grantAllFilesAccess = useCallback(() => {
     setFormError('')
@@ -648,8 +681,11 @@ export function TabletClient({
       return
     }
     try {
-      const target = createLocalConnectionTarget(path)
-      const settings = settingsForTarget(target, target.workspacePath, host, port)
+      const target = createLocalConnectionTarget(
+        path,
+        configDirectory
+      )
+      const settings = settingsForTarget(target, target.workspacePath, configDirectory, host, port)
       targetSelectionStarted.current = true
       setFormError('')
       setWorkspacePath(target.workspacePath)
@@ -679,6 +715,8 @@ export function TabletClient({
       setFormError(reason instanceof Error ? reason.message : 'Invalid workspace directory')
     }
   }, [
+    actionPadStore,
+    configDirectory,
     connected,
     connecting,
     connectionSettingsLoaded,
@@ -687,6 +725,64 @@ export function TabletClient({
     nativeNvimStatusLoading,
     port,
     selectedKind
+  ])
+
+  const selectConfigDirectory = useCallback((path: string) => {
+    if (
+      selectedKind !== 'local' || connecting || connected ||
+      !connectionSettingsLoaded || nativeNvimStatusLoading ||
+      nativeNvimStatus?.supported !== true ||
+      !nativeNvimStatus.allFilesAccess
+    ) {
+      diagnosticLogger.warn({
+        category: 'workspace',
+        event: 'config_selection.rejected',
+        message: 'Rejected a config folder selection because browsing is no longer available',
+        details: { path, selectedKind, connecting, connected, nativeNvimStatus }
+      })
+      setConfigPickerOpen(false)
+      return
+    }
+    try {
+      const target = createLocalConnectionTarget(workspacePath, requireConfigDirectory(path))
+      const settings = settingsForTarget(target, target.workspacePath, path, host, port)
+      targetSelectionStarted.current = true
+      setFormError('')
+      setConfigDirectory(target.configDirectory ?? '')
+      setActionPadTarget(target)
+      setConfigPickerOpen(false)
+      void actionPadStore.selectEndpoint(
+        actionPadEndpointForTarget(target),
+        actionPadPathForTarget(target)
+      )
+      void connectionSettingsStore.save(settings).catch((reason: unknown) => {
+        diagnosticLogger.error({
+          category: 'workspace',
+          event: 'config_selection.settings_save_failed',
+          message: 'Selected the config folder but could not persist connection settings',
+          details: { path: target.configDirectory, settings, reason }
+        })
+      })
+    } catch (reason) {
+      diagnosticLogger.warn({
+        category: 'workspace',
+        event: 'config_selection.rejected',
+        message: 'Rejected an invalid config folder',
+        details: { path, reason }
+      })
+      setFormError(reason instanceof Error ? reason.message : 'Invalid Neovim config folder')
+    }
+  }, [
+    actionPadStore,
+    connected,
+    connecting,
+    connectionSettingsLoaded,
+    host,
+    nativeNvimStatus,
+    nativeNvimStatusLoading,
+    port,
+    selectedKind,
+    workspacePath
   ])
 
   useEffect(() => {
@@ -847,7 +943,10 @@ export function TabletClient({
       // Await the remembered-path lookup so an editor opened immediately after
       // launch starts with the selected endpoint's path.
       await actionPadPathInitialization.current
-      await actionPadStore.selectEndpoint(actionPadStore.getState().endpoint)
+      await actionPadStore.selectEndpoint(
+        actionPadStore.getState().endpoint,
+        actionPadPathForTarget(actionPadTarget)
+      )
       if (!canOpen()) {
         openOperation.cancellation({
           message: 'Action Pad editor opening was superseded during path initialization'
@@ -935,7 +1034,7 @@ export function TabletClient({
     } finally {
       openingActionPadEditor.current = false
     }
-  }, [actionPadStore, controller])
+  }, [actionPadStore, actionPadTarget, controller])
 
   // Bind a button's identity to the document that rendered it, including native
   // events delivered just after a different endpoint or document is published.
@@ -972,32 +1071,62 @@ export function TabletClient({
   }, [actionPadStore])
 
   const connectActionPadHost = useCallback(() => {
-    const target = actionPadTarget
-    if (target.kind === 'local' && nativeNvimStatus?.supported === false) {
-      setFormError(
-        nativeNvimStatus.unavailableReason ?? 'Bundled NeoVim is unavailable on this device'
-      )
-      return
-    }
-    if (
-      target.kind === 'local' &&
-      nativeNvimStatus?.supported === true &&
-      !nativeNvimStatus.allFilesAccess
-    ) {
-      grantAllFilesAccess()
-      return
-    }
-    setSelectedKind(target.kind)
-    if (target.kind === 'local') setWorkspacePath(target.workspacePath)
-    else {
-      setHost(target.host)
-      setPort(String(target.port))
-    }
-    void connectionSettingsStore
-      .save(settingsForTarget(target, workspacePath, host, port))
-      .catch(() => undefined)
-    void controller.connect(target)
-  }, [actionPadTarget, controller, grantAllFilesAccess, host, nativeNvimStatus, port, workspacePath])
+    void (async () => {
+      let target = actionPadTarget
+      if (target.kind === 'local' && nativeNvimStatus?.supported === false) {
+        setFormError(
+          nativeNvimStatus.unavailableReason ?? 'Bundled NeoVim is unavailable on this device'
+        )
+        return
+      }
+      if (
+        target.kind === 'local' &&
+        nativeNvimStatus?.supported === true &&
+        !nativeNvimStatus.allFilesAccess
+      ) {
+        grantAllFilesAccess()
+        return
+      }
+      if (target.kind === 'local') {
+        try {
+          target = createLocalConnectionTarget(
+            workspacePath,
+            requireConfigDirectory(configDirectory)
+          )
+          await actionPadStore.selectEndpoint(
+            actionPadEndpointForTarget(target),
+            actionPadPathForTarget(target)
+          )
+          setActionPadTarget(target)
+        } catch (reason) {
+          setFormError(reason instanceof Error
+            ? reason.message
+            : 'Could not select the local config folder')
+          return
+        }
+      }
+      setSelectedKind(target.kind)
+      if (target.kind === 'local') setWorkspacePath(target.workspacePath)
+      else {
+        setHost(target.host)
+        setPort(String(target.port))
+      }
+      void connectionSettingsStore
+        .save(settingsForTarget(target, workspacePath, configDirectory, host, port))
+        .catch(() => undefined)
+      void controller.connect(target)
+    })()
+  }, [
+    actionPadStore,
+    actionPadTarget,
+    configDirectory,
+    controller,
+    grantAllFilesAccess,
+    host,
+    nativeNvimStatus,
+    port,
+    workspacePath
+  ])
 
   const loadActionPad = useCallback(async (path: string) => {
     if ((actionPadStore.getState().dirty || actionPadPendingEditsRef.current.fieldEdits) && !await confirmAction(
@@ -1071,36 +1200,65 @@ export function TabletClient({
         {selectedKind === 'local' ? (
           <View
             style={[
-              styles.workspacePathControls,
-              !expanded && styles.condensedWorkspacePathControls
+              styles.localPathStack,
+              !expanded && styles.condensedLocalPathStack
             ]}
             testID="local-workspace-controls"
           >
-            <TextInput
-              accessibilityLabel="Local workspace path"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!connecting && !connected}
-              onChangeText={setWorkspacePath}
-              placeholder="/storage/emulated/0"
-              placeholderTextColor="#65717e"
-              style={[styles.input, styles.workspaceInput]}
-              value={workspacePath}
-            />
-            <Pressable
-              accessibilityLabel="Browse local workspaces"
-              accessibilityRole="button"
-              accessibilityState={{ disabled: workspaceBrowseDisabled }}
-              disabled={workspaceBrowseDisabled}
-              onPress={() => setWorkspacePickerOpen(true)}
-              style={({ pressed }) => [
-                styles.workspaceBrowseButton,
-                pressed && styles.pressed,
-                workspaceBrowseDisabled && styles.disabled
-              ]}
-            >
-              <Text style={styles.workspaceBrowseButtonText}>Browse</Text>
-            </Pressable>
+            <View style={styles.workspacePathControls}>
+              <TextInput
+                accessibilityLabel="Local workspace path"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!connecting && !connected}
+                onChangeText={setWorkspacePath}
+                placeholder="Workspace folder"
+                placeholderTextColor="#65717e"
+                style={[styles.input, styles.workspaceInput]}
+                value={workspacePath}
+              />
+              <Pressable
+                accessibilityLabel="Browse local workspaces"
+                accessibilityRole="button"
+                accessibilityState={{ disabled: workspaceBrowseDisabled }}
+                disabled={workspaceBrowseDisabled}
+                onPress={() => setWorkspacePickerOpen(true)}
+                style={({ pressed }) => [
+                  styles.workspaceBrowseButton,
+                  pressed && styles.pressed,
+                  workspaceBrowseDisabled && styles.disabled
+                ]}
+              >
+                <Text style={styles.workspaceBrowseButtonText}>Browse</Text>
+              </Pressable>
+            </View>
+            <View style={styles.workspacePathControls} testID="local-config-controls">
+              <TextInput
+                accessibilityLabel="Neovim config folder"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!connecting && !connected}
+                onChangeText={setConfigDirectory}
+                placeholder="Neovim config folder"
+                placeholderTextColor="#65717e"
+                style={[styles.input, styles.workspaceInput]}
+                value={configDirectory}
+              />
+              <Pressable
+                accessibilityLabel="Browse Neovim config folders"
+                accessibilityRole="button"
+                accessibilityState={{ disabled: configBrowseDisabled }}
+                disabled={configBrowseDisabled}
+                onPress={() => setConfigPickerOpen(true)}
+                style={({ pressed }) => [
+                  styles.workspaceBrowseButton,
+                  pressed && styles.pressed,
+                  configBrowseDisabled && styles.disabled
+                ]}
+              >
+                <Text style={styles.workspaceBrowseButtonText}>Browse</Text>
+              </Pressable>
+            </View>
           </View>
         ) : (
           <>
@@ -1138,14 +1296,16 @@ export function TabletClient({
         )}
         <Pressable
           accessibilityRole="button"
-          disabled={connecting || localUnavailable.length > 0}
+          disabled={connecting || localUnavailable.length > 0 ||
+            (localConfigMissing && !localNeedsFilesAccess)}
           onPress={connected || !localNeedsFilesAccess ? toggleConnection : grantAllFilesAccess}
           style={({ pressed }) => [
             styles.connectionButton,
             !expanded && styles.condensedConnectionButton,
             connected && styles.disconnectButton,
             pressed && styles.pressed,
-            (connecting || localUnavailable.length > 0) && styles.disabled
+            (connecting || localUnavailable.length > 0 ||
+              (localConfigMissing && !localNeedsFilesAccess)) && styles.disabled
           ]}
         >
           {connecting ? <ActivityIndicator color="#0b0e12" size="small" /> : null}
@@ -1156,6 +1316,8 @@ export function TabletClient({
         <Text numberOfLines={1} style={[styles.statusMessage, client.phase === 'error' && styles.error]}>
           {formError || localUnavailable || (localNeedsFilesAccess
             ? 'Allow all-files access for the local workspace'
+            : localConfigMissing
+              ? 'Choose a Neovim config folder'
             : client.message)}
         </Text>
         <Pressable
@@ -1175,6 +1337,15 @@ export function TabletClient({
           onCancel={() => setWorkspacePickerOpen(false)}
           onOpenLogs={openLogsFromWorkspacePicker}
           onSelect={selectWorkspaceDirectory}
+        />
+      ) : null}
+      {configPickerOpen ? (
+        <WorkspaceDirectoryPicker
+          initialPath={configDirectory.startsWith('/') ? configDirectory : workspacePath}
+          onCancel={() => setConfigPickerOpen(false)}
+          onOpenLogs={openLogsFromWorkspacePicker}
+          onSelect={selectConfigDirectory}
+          purpose="config"
         />
       ) : null}
 
@@ -1332,6 +1503,7 @@ export function TabletClient({
             onSave={saveActionPad}
             onStopWaiting={stopWaitingForActionPad}
             operation={actionPadState.operation}
+            pathKind={actionPadTarget.kind === 'local' ? 'fixed-file' : 'file'}
             sourcePath={actionPadState.sourcePath}
           /> : null}
         </SafeAreaView>
@@ -1352,29 +1524,42 @@ function confirmAction(title: string, message: string, action: string): Promise<
 function settingsForTarget(
   target: ConnectionTarget,
   workspacePath: string,
+  configDirectory: string,
   host: string,
   port: string
 ): ConnectionSettings {
   const local = target.kind === 'local'
     ? target
-    : safeLocalTarget(workspacePath)
+    : safeLocalTarget(workspacePath, configDirectory)
   const remote = target.kind === 'remote'
     ? target
     : safeRemoteTarget(host, port)
   return validateConnectionSettings({
-    version: 2,
+    version: 3,
     selectedKind: target.kind,
-    local: { workspacePath: local.workspacePath },
+    local: {
+      workspacePath: local.workspacePath,
+      configDirectory: local.configDirectory
+    },
     remote: { host: remote.host, port: remote.port }
   })
 }
 
-function safeLocalTarget(workspacePath: string) {
+function safeLocalTarget(workspacePath: string, configDirectory: string) {
+  let normalizedWorkspace = DEFAULT_LOCAL_WORKSPACE_PATH
   try {
-    return createLocalConnectionTarget(workspacePath)
-  } catch {
-    return createLocalConnectionTarget(DEFAULT_LOCAL_WORKSPACE_PATH)
-  }
+    normalizedWorkspace = createLocalConnectionTarget(workspacePath).workspacePath
+  } catch { /* retain the last valid default while another target is selected */ }
+
+  let normalizedConfigDirectory: string | null = null
+  try {
+    normalizedConfigDirectory = createLocalConnectionTarget(
+      DEFAULT_LOCAL_WORKSPACE_PATH,
+      configDirectory
+    ).configDirectory
+  } catch { /* do not persist an invalid draft */ }
+
+  return createLocalConnectionTarget(normalizedWorkspace, normalizedConfigDirectory)
 }
 
 function safeRemoteTarget(host: string, port: string) {
@@ -1632,15 +1817,18 @@ const styles = StyleSheet.create({
   targetButtonSelected: { backgroundColor: '#293442' },
   targetButtonText: { color: '#8c99a8', fontSize: 12, fontWeight: '600' },
   targetButtonTextSelected: { color: '#eef4fa' },
-  workspacePathControls: {
+  localPathStack: {
     width: 320,
+    gap: 5
+  },
+  condensedLocalPathStack: {
+    flexShrink: 1,
+    minWidth: 160
+  },
+  workspacePathControls: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6
-  },
-  condensedWorkspacePathControls: {
-    flexShrink: 1,
-    minWidth: 160
   },
   workspaceInput: { flex: 1, minWidth: 0 },
   workspaceBrowseButton: {

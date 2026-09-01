@@ -54,11 +54,13 @@ describe('Android runtime connection selection', () => {
   it('builds the shared RPC/session stack over the local process transport', () => {
     const resources = createRuntimeConnection({
       kind: 'local',
-      workspacePath: '/storage/emulated/0/Code'
+      workspacePath: '/storage/emulated/0/Code',
+      configDirectory: '/storage/emulated/0/Codey'
     })
 
     expect(ExpoNvimProcessTransport).toHaveBeenCalledWith({
-      workspacePath: '/storage/emulated/0/Code'
+      workspacePath: '/storage/emulated/0/Code',
+      configDirectory: '/storage/emulated/0/Codey'
     })
     expect(ExpoTcpTransport).not.toHaveBeenCalled()
     expect(MessagePackRpcClient).toHaveBeenCalledWith(resources.transport)
@@ -81,6 +83,15 @@ describe('Android runtime connection selection', () => {
     })
     expect(ExpoNvimProcessTransport).not.toHaveBeenCalled()
     expect(MessagePackRpcClient).toHaveBeenCalledWith(resources.transport)
+  })
+
+  it('rejects a Local runtime connection without a config folder', () => {
+    expect(() => createRuntimeConnection({
+      kind: 'local',
+      workspacePath: '/storage/emulated/0/Code',
+      configDirectory: null
+    })).toThrow('Choose a Neovim config folder')
+    expect(ExpoNvimProcessTransport).not.toHaveBeenCalled()
   })
 
   it('records RPC and malformed-redraw failures, skips transport-origin duplicates, and disposes once', () => {

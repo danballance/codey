@@ -5,6 +5,7 @@ export type ConnectionTargetKind = 'local' | 'remote'
 export interface LocalConnectionTarget {
   readonly kind: 'local'
   readonly workspacePath: string
+  readonly configDirectory: string | null
 }
 
 export interface RemoteConnectionTarget extends Endpoint {
@@ -14,10 +15,12 @@ export interface RemoteConnectionTarget extends Endpoint {
 export type ConnectionTarget = LocalConnectionTarget | RemoteConnectionTarget
 
 export const DEFAULT_LOCAL_WORKSPACE_PATH = '/storage/emulated/0'
+export const LOCAL_ACTION_PAD_FILE_NAME = 'action-pad.yaml'
 
 export const DEFAULT_LOCAL_TARGET: LocalConnectionTarget = Object.freeze({
   kind: 'local',
-  workspacePath: DEFAULT_LOCAL_WORKSPACE_PATH
+  workspacePath: DEFAULT_LOCAL_WORKSPACE_PATH,
+  configDirectory: null
 })
 
 export const DEFAULT_REMOTE_TARGET: RemoteConnectionTarget = Object.freeze({
@@ -58,8 +61,26 @@ export function validateWorkspacePath(value: string): string {
   return segments.length === 0 ? '/' : `/${segments.join('/')}`
 }
 
-export function createLocalConnectionTarget(workspacePath: string): LocalConnectionTarget {
-  return { kind: 'local', workspacePath: validateWorkspacePath(workspacePath) }
+export function validateConfigDirectory(value: string | null | undefined): string | null {
+  if (value === null || value === undefined || value.trim().length === 0) return null
+  return validateAbsoluteAndroidPath(value, 'Config folder')
+}
+
+export function requireConfigDirectory(value: string | null | undefined): string {
+  const directory = validateConfigDirectory(value)
+  if (directory === null) throw new TypeError('Choose a Neovim config folder')
+  return directory
+}
+
+export function createLocalConnectionTarget(
+  workspacePath: string,
+  configDirectory: string | null = null
+): LocalConnectionTarget {
+  return {
+    kind: 'local',
+    workspacePath: validateWorkspacePath(workspacePath),
+    configDirectory: validateConfigDirectory(configDirectory)
+  }
 }
 
 export function createRemoteConnectionTarget(
@@ -77,7 +98,14 @@ export function validateConnectionTarget(value: unknown): ConnectionTarget {
   const target = value as Record<string, unknown>
   if (target.kind === 'local') {
     if (typeof target.workspacePath !== 'string') throw new TypeError('Enter a workspace path')
-    return createLocalConnectionTarget(target.workspacePath)
+    const configDirectory = target.configDirectory
+    if (
+      configDirectory !== undefined && configDirectory !== null &&
+      typeof configDirectory !== 'string'
+    ) {
+      throw new TypeError('Enter a valid config folder')
+    }
+    return createLocalConnectionTarget(target.workspacePath, configDirectory as string | null | undefined)
   }
 
   if (target.kind === 'remote') {
@@ -109,9 +137,42 @@ export function actionPadEndpointForTarget(target: ConnectionTarget): Endpoint {
   return { host: target.host, port: target.port }
 }
 
+export function actionPadPathForTarget(target: ConnectionTarget): string | null {
+  if (target.kind !== 'local') return null
+  const directory = validateConfigDirectory(target.configDirectory)
+  if (directory === null) return null
+  return directory === '/'
+    ? `/${LOCAL_ACTION_PAD_FILE_NAME}`
+    : `${directory}/${LOCAL_ACTION_PAD_FILE_NAME}`
+}
+
 const LOCAL_ACTION_PAD_ENDPOINT: Endpoint = Object.freeze({ host: '@local', port: 1 })
+
+export function isLocalActionPadEndpoint(endpoint: Endpoint): boolean {
+  return endpoint.host === LOCAL_ACTION_PAD_ENDPOINT.host && endpoint.port === LOCAL_ACTION_PAD_ENDPOINT.port
+}
 
 function formatEndpoint(endpoint: Endpoint): string {
   const host = endpoint.host.includes(':') ? `[${endpoint.host}]` : endpoint.host
   return `${host}:${endpoint.port}`
+}
+
+function validateAbsoluteAndroidPath(value: string, label: string): string {
+  if (typeof value !== 'string') throw new TypeError(`Enter a ${label.toLowerCase()}`)
+
+  const path = value.trim()
+  if (path.length === 0) throw new TypeError(`Enter a ${label.toLowerCase()}`)
+  if (!path.startsWith('/')) throw new TypeError(`${label} must be absolute`)
+  if (path.includes('\0')) throw new TypeError(`${label} contains an invalid character`)
+
+  const segments: string[] = []
+  for (const segment of path.split('/')) {
+    if (segment.length === 0 || segment === '.') continue
+    if (segment === '..') {
+      throw new TypeError(`${label} must not contain parent-directory segments`)
+    }
+    segments.push(segment)
+  }
+
+  return segments.length === 0 ? '/' : `/${segments.join('/')}`
 }

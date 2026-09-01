@@ -20,6 +20,7 @@ import {
 
 export interface ExpoNvimProcessTransportOptions {
   readonly workspacePath: string
+  readonly configDirectory: string
 }
 
 export interface NvimTransportDiagnosticContext {
@@ -46,6 +47,7 @@ interface NvimExitError extends NativeCodedError {
 export class ExpoNvimProcessTransport implements DuplexTransport {
   readonly #module: NativeNvimModule
   readonly #workspacePath: string
+  readonly #configDirectory: string
   readonly #logger: DiagnosticLogger
   readonly #diagnosticContext: NvimTransportDiagnosticContext
   readonly #dataListeners = new Set<(chunk: Uint8Array) => void>()
@@ -76,6 +78,11 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
     }
     this.#module = module ?? getNativeNvim()
     this.#workspacePath = workspacePath
+    const configDirectory = options.configDirectory.trim()
+    if (configDirectory.length === 0) {
+      throw new TypeError('NeoVim config directory must not be empty')
+    }
+    this.#configDirectory = configDirectory
     this.#logger = logger
     this.#diagnosticContext = diagnosticContext
   }
@@ -93,12 +100,16 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
       event: 'transport.local.open',
       message: 'Starting the local NeoVim process transport',
       parentOperationId: this.#diagnosticContext.operationId,
-      details: { ...this.#diagnosticContext, workspacePath: this.#workspacePath }
+      details: {
+        ...this.#diagnosticContext,
+        workspacePath: this.#workspacePath,
+        configDirectory: this.#configDirectory
+      }
     })
     let nativeStart: Promise<number>
     try {
       this.#subscribe()
-      nativeStart = this.#module.start(this.#workspacePath)
+      nativeStart = this.#module.start(this.#workspacePath, this.#configDirectory)
     } catch (reason) {
       const error = withNativeCode(
         toError(reason, 'NeoVim process failed to start'),
@@ -113,6 +124,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
         details: {
           ...this.#diagnosticContext,
           workspacePath: this.#workspacePath,
+          configDirectory: this.#configDirectory,
           cleanupFailures,
           ...(observedOrigin === undefined
             ? {}
@@ -150,6 +162,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
           details: {
             ...this.#diagnosticContext,
             workspacePath: this.#workspacePath,
+            configDirectory: this.#configDirectory,
             sessionId
           }
         })
@@ -163,6 +176,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
             details: {
               ...this.#diagnosticContext,
               workspacePath: this.#workspacePath,
+              configDirectory: this.#configDirectory,
               reason: error,
               cleanupFailures
             }
@@ -177,6 +191,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
             details: {
               ...this.#diagnosticContext,
               workspacePath: this.#workspacePath,
+              configDirectory: this.#configDirectory,
               cleanupFailures,
               ...(observedOrigin === undefined
                 ? {}
@@ -216,6 +231,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
         details: {
           ...this.#diagnosticContext,
           workspacePath: this.#workspacePath,
+          configDirectory: this.#configDirectory,
           sessionId,
           bytes,
           error
@@ -241,6 +257,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
             details: {
               ...this.#diagnosticContext,
               workspacePath: this.#workspacePath,
+              configDirectory: this.#configDirectory,
               sessionId,
               reason: stopReason
             }
@@ -286,6 +303,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
       details: {
         ...this.#diagnosticContext,
         workspacePath: this.#workspacePath,
+        configDirectory: this.#configDirectory,
         sessionId: this.#sessionId
       }
     })
@@ -315,6 +333,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
           details: {
             ...this.#diagnosticContext,
             workspacePath: this.#workspacePath,
+            configDirectory: this.#configDirectory,
             sessionId,
             nativeStopFailure,
             cleanupFailures,
@@ -376,6 +395,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
         details: {
           ...this.#diagnosticContext,
           workspacePath: this.#workspacePath,
+          configDirectory: this.#configDirectory,
           sessionId: this.#sessionId,
           exitEvent: event,
           error

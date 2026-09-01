@@ -19,6 +19,11 @@ internal data class NvimLaunchSpec(
   val environment: Map<String, String>
 )
 
+internal data class NvimStartRequest(
+  val workingDirectory: String,
+  val configDirectory: String
+)
+
 internal fun interface NvimProcessLauncher {
   fun launch(spec: NvimLaunchSpec): Process
 }
@@ -54,7 +59,7 @@ internal interface NvimEventSink {
  */
 internal class NvimProcessManager(
   private val eventSink: NvimEventSink,
-  private val launchSpecProvider: (String) -> NvimLaunchSpec,
+  private val launchSpecProvider: (NvimStartRequest) -> NvimLaunchSpec,
   private val processLauncher: NvimProcessLauncher = ProcessBuilderNvimLauncher,
   private val stopTimeoutMillis: Long = DEFAULT_STOP_TIMEOUT_MILLIS,
   private val rpcEofExitGraceMillis: Long = DEFAULT_RPC_EOF_EXIT_GRACE_MILLIS
@@ -68,12 +73,12 @@ internal class NvimProcessManager(
   val isRunning: Boolean
     get() = synchronized(lifecycleLock) { activeSession != null }
 
-  fun start(cwd: String): Int {
+  fun start(cwd: String, configDirectory: String): Int {
     synchronized(lifecycleLock) {
       check(!shutDown) { "NeoVim process manager is shut down" }
       check(activeSession == null) { "A local NeoVim process is already running" }
 
-      val launchSpec = launchSpecProvider(cwd)
+      val launchSpec = launchSpecProvider(NvimStartRequest(cwd, configDirectory))
       val process = try {
         processLauncher.launch(launchSpec)
       } catch (error: IOException) {

@@ -24,6 +24,60 @@ internal data class NvimRuntimeStatus(
   val unavailableReason: String? = null
 )
 
+internal data class LocalNvimConfiguration(
+  val directory: File,
+  val initFile: File?
+)
+
+internal data class LocalNvimConfigRoot(
+  val xdgConfigHome: File,
+  val appName: String
+)
+
+internal fun resolveLocalNvimConfiguration(path: String): LocalNvimConfiguration {
+  require(path.isNotBlank()) { "Choose a local config folder" }
+  val requested = File(path)
+  require(requested.isAbsolute) { "Local config folder must be absolute" }
+  val directory = try {
+    requested.canonicalFile
+  } catch (error: IOException) {
+    throw IllegalArgumentException("Unable to resolve local config folder", error)
+  } catch (error: SecurityException) {
+    throw IllegalArgumentException("Unable to resolve local config folder", error)
+  }
+  require(directory.exists()) { "Local config folder does not exist" }
+  require(directory.isDirectory) { "Local config folder is not a directory" }
+  require(directory.canRead()) { "Local config folder is not readable" }
+  require(directory.canWrite()) { "Local config folder is not writable" }
+  require(directory.parentFile != null && directory.name.isNotBlank()) {
+    "Local config folder must not be the filesystem root"
+  }
+
+  val initFile = File(directory, "init.lua")
+  if (!initFile.exists()) return LocalNvimConfiguration(directory, null)
+  require(initFile.isFile) { "Local init.lua is not a regular file" }
+  require(initFile.canRead()) { "Local init.lua is not readable" }
+  return LocalNvimConfiguration(directory, initFile.canonicalFile)
+}
+
+internal fun nvimCommand(executable: String, configured: Boolean): List<String> = if (configured) {
+  listOf(
+    executable,
+    "--embed",
+    "--cmd",
+    "let v:errmsg = ''",
+    "-c",
+    STRICT_CONFIG_CHECK
+  )
+} else {
+  listOf(executable, "--clean", "--embed")
+}
+
+internal fun localNvimConfigRoot(directory: File): LocalNvimConfigRoot = LocalNvimConfigRoot(
+  xdgConfigHome = checkNotNull(directory.parentFile).canonicalFile,
+  appName = directory.name
+)
+
 /** Resolves only immutable packaged code plus private, non-executable runtime data. */
 internal class AndroidNvimRuntime(private val context: Context) {
   private val applicationContext = context.applicationContext
@@ -84,7 +138,7 @@ internal class AndroidNvimRuntime(private val context: Context) {
   fun listWorkspaceDirectory(path: String): WorkspaceListing =
     workspaceBrowser.listDirectory(path)
 
-  fun prepare(cwd: String): NvimLaunchSpec {
+  fun prepare(cwd: String, configDirectory: String): NvimLaunchSpec {
     val runtimeStatus = status(running = false)
     check(runtimeStatus.supported) {
       runtimeStatus.unavailableReason ?: "Local NeoVim is unavailable"
@@ -94,37 +148,50 @@ internal class AndroidNvimRuntime(private val context: Context) {
     }
 
     val workspace = workspaceDirectoryValidator.requireWritableDirectory(cwd)
+    val configuration = resolveLocalNvimConfiguration(configDirectory)
     val runtime = installer.installIfNeeded()
     val privateRoot = File(applicationContext.filesDir, PRIVATE_ROOT).ensureDirectory()
     val home = File(privateRoot, "home").ensureDirectory()
     val xdgRoot = File(privateRoot, "xdg").ensureDirectory()
-    val xdgConfig = File(xdgRoot, "config").ensureDirectory()
-    val xdgData = File(xdgRoot, "data").ensureDirectory()
-    val xdgState = File(xdgRoot, "state").ensureDirectory()
-    val xdgCache = File(xdgRoot, "cache").ensureDirectory()
+    val activeConfiguration = configuration.takeIf { it.initFile != null }
+    val configRoot = activeConfiguration?.let { localNvimConfigRoot(it.directory) }
+    val storageRoot = if (activeConfiguration != null) {
+      File(privateRoot, "profiles/${configProfileKey(activeConfiguration.directory)}")
+        .ensureDirectory()
+    } else {
+      xdgRoot
+    }
+    val xdgConfig = if (configRoot == null) {
+      File(xdgRoot, "config").ensureDirectory()
+    } else configRoot.xdgConfigHome
+    val xdgData = File(storageRoot, "data").ensureDirectory()
+    val xdgState = File(storageRoot, "state").ensureDirectory()
+    val xdgCache = File(storageRoot, "cache").ensureDirectory()
     val xdgRuntime = File(applicationContext.cacheDir, "$PRIVATE_ROOT/xdg-runtime").ensureDirectory()
     val temp = File(applicationContext.cacheDir, "$PRIVATE_ROOT/tmp").ensureDirectory()
     val nativeDirectory = File(applicationContext.applicationInfo.nativeLibraryDir).canonicalFile
 
-    return NvimLaunchSpec(
-      command = listOf(nativeExecutable().canonicalPath, "--clean", "--embed"),
-      workingDirectory = workspace,
-      environment = mapOf(
-        "HOME" to home.canonicalPath,
-        "XDG_CONFIG_HOME" to xdgConfig.canonicalPath,
-        "XDG_DATA_HOME" to xdgData.canonicalPath,
-        "XDG_STATE_HOME" to xdgState.canonicalPath,
-        "XDG_CACHE_HOME" to xdgCache.canonicalPath,
-        "XDG_RUNTIME_DIR" to xdgRuntime.canonicalPath,
-        "TMPDIR" to temp.canonicalPath,
-        "VIMRUNTIME" to runtime.canonicalPath,
-        "SHELL" to "/system/bin/sh",
-        "PATH" to "/system/bin:/system/xbin",
-        "LD_LIBRARY_PATH" to nativeDirectory.canonicalPath,
-        "LD_PRELOAD" to nativePreloadLibrary().canonicalPath,
-        "LANG" to "C.UTF-8"
-      )
+    val command = nvimCommand(nativeExecutable().canonicalPath, activeConfiguration != null)
+    val environment = mutableMapOf(
+      "HOME" to home.canonicalPath,
+      "XDG_CONFIG_HOME" to xdgConfig.canonicalPath,
+      "XDG_DATA_HOME" to xdgData.canonicalPath,
+      "XDG_STATE_HOME" to xdgState.canonicalPath,
+      "XDG_CACHE_HOME" to xdgCache.canonicalPath,
+      "XDG_RUNTIME_DIR" to xdgRuntime.canonicalPath,
+      "TMPDIR" to temp.canonicalPath,
+      "VIMRUNTIME" to runtime.canonicalPath,
+      "SHELL" to "/system/bin/sh",
+      "PATH" to "/system/bin:/system/xbin",
+      "LD_LIBRARY_PATH" to nativeDirectory.canonicalPath,
+      "LD_PRELOAD" to nativePreloadLibrary().canonicalPath,
+      "LANG" to "C.UTF-8"
     )
+    if (configRoot != null) {
+      environment["NVIM_APPNAME"] = configRoot.appName
+    }
+
+    return NvimLaunchSpec(command, workspace, environment)
   }
 
   private fun nativeExecutable(): File = File(
@@ -144,6 +211,14 @@ internal class AndroidNvimRuntime(private val context: Context) {
     const val LUAJIT_LIBRARY_NAME = "libluajit-5.1.so"
   }
 }
+
+private const val STRICT_CONFIG_CHECK =
+  "lua if vim.v.errmsg ~= '' then io.stderr:write('Codey config startup failed: ' .. " +
+    "vim.v.errmsg .. '\\n'); vim.cmd('cquit 1') end"
+
+private fun configProfileKey(directory: File): String = MessageDigest.getInstance("SHA-256")
+  .digest(directory.canonicalPath.toByteArray(Charsets.UTF_8))
+  .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
 internal class NvimRuntimeInstaller(
   private val context: Context,

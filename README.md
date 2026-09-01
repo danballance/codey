@@ -92,8 +92,9 @@ nvim --clean --headless --listen 192.168.1.20:6666
 ```
 
 The personal arm64 Android 11+ proof-of-concept APK can instead start its own
-clean NeoVim process. Build it with `pnpm android:poc`, then select **Local**,
-grant Android all-files access, and choose an existing writable workspace.
+NeoVim process. Build it with `pnpm android:poc`, then select **Local**, grant
+Android all-files access, and choose an existing writable workspace and Neovim
+config folder before connecting.
 See [the bundled NeoVim POC guide](apps/android/native-poc/README.md) for its
 scope, binary provenance, and the work intentionally deferred before F-Droid.
 
@@ -149,11 +150,13 @@ router port forwarding, bind it to `0.0.0.0`, or use it on an untrusted network.
 Restrict the port to the tablet address or trusted subnet with the host firewall
 where practical.
 
-Local mode removes the network endpoint, not Neovim's command power. `--clean`
-prevents ordinary user configuration from loading but is not a sandbox:
-commands, Lua, `system()`, and `:!` run with the Android app UID and can access
-files covered by the app's all-files grant. Use trusted files and Action Pad
-configurations in both modes.
+Local mode removes the network endpoint, not Neovim's command power. A config
+folder is required before connecting. Neovim starts with `--clean` when that
+folder has no `init.lua`; otherwise that Lua and normal config runtime files
+execute automatically.
+Neither mode is a sandbox: commands, Lua, `system()`, and `:!` run with the
+Android app UID and can access files covered by the app's all-files grant. Use
+trusted Local config folders, files, and Action Pad configurations.
 
 See [the architecture notes](docs/architecture.md) for the component boundaries
 and current limitations. Codey source is available under [Apache-2.0](LICENSE);

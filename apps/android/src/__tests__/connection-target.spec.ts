@@ -4,11 +4,14 @@ import {
   DEFAULT_LOCAL_WORKSPACE_PATH,
   DEFAULT_REMOTE_TARGET,
   actionPadEndpointForTarget,
+  actionPadPathForTarget,
   connectionTargetLabel,
   createLocalConnectionTarget,
   createRemoteConnectionTarget,
+  validateConfigDirectory,
   validateConnectionTarget,
-  validateWorkspacePath
+  validateWorkspacePath,
+  requireConfigDirectory
 } from '../connection-target'
 import { DEFAULT_ENDPOINT } from '../endpoint'
 
@@ -23,7 +26,23 @@ describe('connection targets', () => {
     expect(validateWorkspacePath('  /storage//emulated/0/./projects/  ')).toBe(
       '/storage/emulated/0/projects'
     )
-    expect(createLocalConnectionTarget('/')).toEqual({ kind: 'local', workspacePath: '/' })
+    expect(createLocalConnectionTarget('/')).toEqual({
+      kind: 'local', workspacePath: '/', configDirectory: null
+    })
+  })
+
+  it('normalizes an optional absolute local config folder', () => {
+    expect(validateConfigDirectory(null)).toBeNull()
+    expect(validateConfigDirectory('  ')).toBeNull()
+    expect(validateConfigDirectory(' /storage//emulated/0/Codey/./ ')).toBe(
+      '/storage/emulated/0/Codey'
+    )
+    expect(createLocalConnectionTarget('/work', '/storage/config')).toEqual({
+      kind: 'local', workspacePath: '/work', configDirectory: '/storage/config'
+    })
+    expect(() => validateConfigDirectory('relative/config')).toThrow('absolute')
+    expect(() => validateConfigDirectory('/storage/../config')).toThrow('parent-directory')
+    expect(() => requireConfigDirectory(null)).toThrow('Choose a Neovim config folder')
   })
 
   it('rejects empty, relative, parent-traversing, and NUL-containing workspace paths', () => {
@@ -47,7 +66,7 @@ describe('connection targets', () => {
   })
 
   it('provides user-facing labels, including an unambiguous IPv6 endpoint', () => {
-    expect(connectionTargetLabel({ kind: 'local', workspacePath: '/work' })).toBe(
+    expect(connectionTargetLabel({ kind: 'local', workspacePath: '/work', configDirectory: null })).toBe(
       'Local (/work)'
     )
     expect(connectionTargetLabel({ kind: 'remote', host: '127.0.0.1', port: 6666 })).toBe(
@@ -59,11 +78,15 @@ describe('connection targets', () => {
   })
 
   it('keeps the local Action Pad path preference stable across workspace changes', () => {
-    expect(actionPadEndpointForTarget({ kind: 'local', workspacePath: '/first' })).toEqual({
+    expect(actionPadEndpointForTarget({
+      kind: 'local', workspacePath: '/first', configDirectory: null
+    })).toEqual({
       host: '@local',
       port: 1
     })
-    expect(actionPadEndpointForTarget({ kind: 'local', workspacePath: '/second' })).toEqual({
+    expect(actionPadEndpointForTarget({
+      kind: 'local', workspacePath: '/second', configDirectory: '/config'
+    })).toEqual({
       host: '@local',
       port: 1
     })
@@ -71,5 +94,15 @@ describe('connection targets', () => {
       host: 'remote.test',
       port: 7777
     })
+  })
+
+  it('derives the fixed Local Action Pad file from the connection config folder', () => {
+    expect(actionPadPathForTarget({
+      kind: 'local', workspacePath: '/work', configDirectory: '/storage/config'
+    })).toBe('/storage/config/action-pad.yaml')
+    expect(actionPadPathForTarget({
+      kind: 'local', workspacePath: '/work', configDirectory: null
+    })).toBeNull()
+    expect(actionPadPathForTarget({ kind: 'remote', host: 'remote.test', port: 7777 })).toBeNull()
   })
 })

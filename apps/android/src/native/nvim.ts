@@ -46,7 +46,7 @@ export interface NativeNvimExitEvent {
 export interface NativeNvimModule {
   getStatus(): Promise<NativeNvimStatus>
   openAllFilesSettings(): Promise<void>
-  start(cwd: string): Promise<number>
+  start(cwd: string, configDirectory: string): Promise<number>
   write(sessionId: number, bytes: Uint8Array): Promise<void>
   stop(sessionId: number): Promise<void>
   addListener(

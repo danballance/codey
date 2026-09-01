@@ -64,6 +64,7 @@ export interface ActionPadEditorProps {
   readonly dirty: boolean
   readonly initialLoadPending: boolean
   readonly sourcePath: string
+  readonly pathKind?: 'file' | 'fixed-file'
   readonly operation?: ActionPadOperation | null
   readonly notice?: ActionPadNotice | null
   readonly connectionFailure?: ConnectionFailure | null
@@ -138,6 +139,7 @@ export function ActionPadEditor({
   dirty,
   initialLoadPending,
   sourcePath,
+  pathKind = 'file',
   operation = null,
   notice: operationNotice,
   connectionFailure,
@@ -210,8 +212,8 @@ export function ActionPadEditor({
   const hasPendingIds = Object.keys(pendingIds).length > 0
   const pendingEdits = useMemo<ActionPadEditorPendingEdits>(() => ({
     fieldEdits: hasPendingIds,
-    pathEdit: hostPath !== sourcePath
-  }), [hasPendingIds, hostPath, sourcePath])
+    pathEdit: pathKind === 'file' && hostPath !== sourcePath
+  }), [hasPendingIds, hostPath, pathKind, sourcePath])
   const hasPendingEdits = pendingEdits.fieldEdits || pendingEdits.pathEdit
   const structuralBusy = busy || hasPendingIds
   const latestEditor = useRef({ config, busy, hasPendingIds })
@@ -583,22 +585,34 @@ export function ActionPadEditor({
         testID="action-pad-editor-scroll"
       >
         <View style={styles.card}>
-          <FormField
-            disabled={busy}
-            fontLoaded={fontLoaded}
-            label="Host YAML path"
-            onChange={setHostPath}
-            placeholder="~/.config/nvim/codey/action-pad.yaml"
-            value={hostPath}
-          />
-          <View style={styles.actions}>
-            <EditorButton
-              disabled={!connected || busy || hostPath.length === 0}
-              label={hostPath === sourcePath ? 'Load / Reload' : 'Load'}
-              onPress={() => runOperation(() => onLoad(hostPath))}
-            />
-          </View>
-          <Text style={styles.muted}>Paths are on the Neovim host. Use an absolute path or ~/. Save activates these edits only after the file is written.</Text>
+          {pathKind === 'fixed-file' ? (
+            <Text selectable style={styles.muted}>
+              {hostPath.length > 0
+                ? `Saves to ${hostPath}`
+                : 'Choose a Neovim config folder before connecting.'}
+            </Text>
+          ) : (
+            <>
+              <FormField
+                disabled={busy}
+                fontLoaded={fontLoaded}
+                label="Host YAML path"
+                onChange={setHostPath}
+                placeholder="~/.config/nvim/codey/action-pad.yaml"
+                value={hostPath}
+              />
+              <View style={styles.actions}>
+                <EditorButton
+                  disabled={!connected || busy || hostPath.length === 0}
+                  label={hostPath === sourcePath ? 'Load / Reload' : 'Load'}
+                  onPress={() => runOperation(() => onLoad(hostPath))}
+                />
+              </View>
+              <Text style={styles.muted}>
+                Paths are on the Neovim host. Use an absolute path or ~/. Save activates these edits only after the file is written.
+              </Text>
+            </>
+          )}
           {!connected ? <Text style={styles.notice}>You can keep editing while this screen stays open. Reconnect to load or save.</Text> : null}
           {operation ? <OperationStatusCard operation={operation} onStopWaiting={onStopWaiting} /> : null}
           {displayedOperationNotice ? <NoticeStatusCard notice={displayedOperationNotice} /> : null}

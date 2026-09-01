@@ -164,17 +164,20 @@ jest.mock('../workspace/WorkspaceDirectoryPicker', () => {
       initialPath,
       onCancel,
       onOpenLogs,
-      onSelect
+      onSelect,
+      purpose
     }: {
       initialPath: string
       onCancel: () => void
       onOpenLogs: () => void
       onSelect: (path: string) => void
+      purpose?: 'workspace' | 'config'
     }) => React.createElement(View, {
       initialPath,
       onCancel,
       onOpenLogs,
       onSelect,
+      purpose,
       testID: 'mock-workspace-directory-picker'
     })
   }
@@ -187,6 +190,17 @@ const mockedAppStateAddEventListener = jest.mocked(AppState.addEventListener)
 const getItem = jest.mocked(AsyncStorage.getItem)
 const setItem = jest.mocked(AsyncStorage.setItem)
 const DEFAULT_ACTION_PAD_ENDPOINT = actionPadEndpointForTarget(DEFAULT_CONNECTION_TARGET)
+const TEST_CONFIG_DIRECTORY = '/storage/emulated/0/Codey'
+const TEST_ACTION_PAD_PATH = `${TEST_CONFIG_DIRECTORY}/action-pad.yaml`
+const DEFAULT_TEST_SETTINGS = {
+  version: 3 as const,
+  selectedKind: 'local' as const,
+  local: {
+    workspacePath: '/storage/emulated/0',
+    configDirectory: TEST_CONFIG_DIRECTORY
+  },
+  remote: DEFAULT_CONNECTION_SETTINGS.remote
+}
 
 type TabletClientTestProps = Omit<
   ComponentProps<typeof TabletClientComponent>,
@@ -259,10 +273,13 @@ function deferred<T>() {
 
 function storedSettings(target: ConnectionTarget): string {
   return JSON.stringify({
-    ...DEFAULT_CONNECTION_SETTINGS,
+    ...DEFAULT_TEST_SETTINGS,
     selectedKind: target.kind,
     ...(target.kind === 'local'
-      ? { local: { workspacePath: target.workspacePath } }
+      ? { local: {
+          workspacePath: target.workspacePath,
+          configDirectory: target.configDirectory ?? TEST_CONFIG_DIRECTORY
+        } }
       : { remote: { host: target.host, port: target.port } })
   })
 }
@@ -270,6 +287,13 @@ function storedSettings(target: ConnectionTarget): string {
 function openManagedButton(editor: ReturnType<typeof within>, menu = 'Home (home)') {
   fireEvent.press(editor.getByRole('button', { name: `Edit ${menu}` }))
   fireEvent.press(editor.getByRole('button', { name: 'Button settings' }))
+}
+
+async function connectConfiguredLocal(screen: ReturnType<typeof render>) {
+  await waitFor(() => expect(
+    screen.getByLabelText('Neovim config folder').props.value
+  ).not.toBe(''))
+  await act(async () => { fireEvent.press(screen.getByText('Connect')) })
 }
 
 function TabletLogsHarness() {
@@ -299,7 +323,9 @@ afterEach(async () => {
 beforeEach(() => {
   mockedAppStateAddEventListener.mockReset()
   mockedAppStateAddEventListener.mockReturnValue({ remove: jest.fn() })
-  getItem.mockResolvedValue(null)
+  getItem.mockImplementation(async (key) => key === CONNECTION_SETTINGS_STORAGE_KEY
+    ? JSON.stringify(DEFAULT_TEST_SETTINGS)
+    : null)
   mockedConnectionFactory.mockReset()
   mockedNativeNvimStatus.mockReset()
   mockedNativeNvimStatus.mockResolvedValue({
@@ -324,6 +350,33 @@ beforeEach(() => {
 })
 
 describe('tablet client shell', () => {
+  it('requires and persists a Local config folder before connecting', async () => {
+    getItem.mockResolvedValue(null)
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+
+    await waitFor(() => expect(screen.getByText('Choose a Neovim config folder')).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Connect' }).props.accessibilityState.disabled).toBe(true)
+    fireEvent.changeText(screen.getByLabelText('Neovim config folder'), TEST_CONFIG_DIRECTORY)
+    expect(screen.getByRole('button', { name: 'Connect' }).props.accessibilityState.disabled).toBe(false)
+
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+
+    await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(
+      {
+        kind: 'local',
+        workspacePath: '/storage/emulated/0',
+        configDirectory: TEST_CONFIG_DIRECTORY
+      },
+      expect.objectContaining({ generation: 1, operationId: expect.any(String) })
+    ))
+    expect(setItem).toHaveBeenCalledWith(
+      CONNECTION_SETTINGS_STORAGE_KEY,
+      expect.stringContaining(`"configDirectory":"${TEST_CONFIG_DIRECTORY}"`)
+    )
+  })
+
   it('routes local all-files permission recovery through Android settings', async () => {
     mockedNativeNvimStatus.mockResolvedValue({
       supported: true,
@@ -364,9 +417,12 @@ describe('tablet client shell', () => {
   it('stores a browsed local workspace while retaining Remote and does not connect', async () => {
     getItem.mockImplementation(async (key) => key === CONNECTION_SETTINGS_STORAGE_KEY
       ? JSON.stringify({
-          version: 2,
+          version: 3,
           selectedKind: 'local',
-          local: { workspacePath: '/storage/emulated/0/Old' },
+          local: {
+            workspacePath: '/storage/emulated/0/Old',
+            configDirectory: TEST_CONFIG_DIRECTORY
+          },
           remote: { host: 'saved-remote.test', port: 7331 }
         })
       : null)
@@ -391,9 +447,12 @@ describe('tablet client shell', () => {
     await waitFor(() => expect(setItem).toHaveBeenCalledWith(
       CONNECTION_SETTINGS_STORAGE_KEY,
       JSON.stringify({
-        version: 2,
+        version: 3,
         selectedKind: 'local',
-        local: { workspacePath: '/storage/emulated/0/Projects' },
+        local: {
+          workspacePath: '/storage/emulated/0/Projects',
+          configDirectory: TEST_CONFIG_DIRECTORY
+        },
         remote: { host: 'saved-remote.test', port: 7331 }
       })
     ))
@@ -430,17 +489,25 @@ describe('tablet client shell', () => {
     expect(mockedConnectionFactory).not.toHaveBeenCalled()
 
     diagnosticLogger.clear()
-    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await connectConfiguredLocal(screen)
 
     await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(
-      { kind: 'local', workspacePath: '/storage/emulated/0/Canonical' },
+      {
+        kind: 'local',
+        workspacePath: '/storage/emulated/0/Canonical',
+        configDirectory: TEST_CONFIG_DIRECTORY
+      },
       { generation: 1, operationId: expect.any(String) }
     ))
     expect(diagnosticLogger.getSnapshot().entries.find(
       ({ event }) => event === 'connection.connect.started'
     )?.details).toMatchObject({
       generation: 1,
-      target: { kind: 'local', workspacePath: '/storage/emulated/0/Canonical' }
+      target: {
+        kind: 'local',
+        workspacePath: '/storage/emulated/0/Canonical',
+        configDirectory: TEST_CONFIG_DIRECTORY
+      }
     })
   })
 
@@ -459,9 +526,12 @@ describe('tablet client shell', () => {
 
     await act(async () => {
       resolveSettings(JSON.stringify({
-        version: 2,
+        version: 3,
         selectedKind: 'local',
-        local: { workspacePath: '/storage/emulated/0/Previous' },
+        local: {
+          workspacePath: '/storage/emulated/0/Previous',
+          configDirectory: TEST_CONFIG_DIRECTORY
+        },
         remote: { host: 'hydrated-remote.test', port: 7444 }
       }))
       await settingsRead
@@ -480,9 +550,12 @@ describe('tablet client shell', () => {
     await waitFor(() => expect(setItem).toHaveBeenCalledWith(
       CONNECTION_SETTINGS_STORAGE_KEY,
       JSON.stringify({
-        version: 2,
+        version: 3,
         selectedKind: 'local',
-        local: { workspacePath: '/storage/emulated/0/New' },
+        local: {
+          workspacePath: '/storage/emulated/0/New',
+          configDirectory: TEST_CONFIG_DIRECTORY
+        },
         remote: { host: 'hydrated-remote.test', port: 7444 }
       })
     ))
@@ -506,7 +579,7 @@ describe('tablet client shell', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Starting Local (/storage/emulated/0)…')).toBeTruthy())
     expect(screen.getByRole('button', { name: 'Browse local workspaces' }).props.accessibilityState.disabled).toBe(true)
 
@@ -647,7 +720,7 @@ describe('tablet client shell', () => {
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     await waitFor(() => expect(mockedNativeNvimStatus).toHaveBeenCalledTimes(1))
-    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     mockedNativeNvimStatus.mockResolvedValueOnce({
@@ -671,16 +744,22 @@ describe('tablet client shell', () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
-    fireEvent.press(screen.getByText('Connect'))
+    fireEvent.changeText(screen.getByLabelText('Neovim config folder'), TEST_CONFIG_DIRECTORY)
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(
-      DEFAULT_CONNECTION_TARGET,
+      {
+        kind: 'local',
+        workspacePath: '/storage/emulated/0',
+        configDirectory: TEST_CONFIG_DIRECTORY
+      },
       expect.objectContaining({ generation: 1, operationId: expect.any(String) })
     ))
     await act(async () => { restoreEndpoint(JSON.stringify({ host: 'previous.test', port: 7777 })) })
     expect(screen.getByLabelText('Local workspace path').props.value).toBe('/storage/emulated/0')
     await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
     const editor = within(screen.getByTestId('action-pad-editor'))
-    expect(editor.getByLabelText('Host YAML path').props.value).toBe('/home/test/.config/nvim/codey/action-pad.yaml')
+    expect(editor.getByText(`Saves to ${TEST_ACTION_PAD_PATH}`)).toBeTruthy()
+    expect(editor.queryByLabelText('Codey config folder')).toBeNull()
     expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(false)
   })
 
@@ -761,7 +840,7 @@ describe('tablet client shell', () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(800, 600)} />)
-    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await connectConfiguredLocal(screen)
     fireEvent.press(screen.getByTestId('action-pad-leader'))
     fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
     const pad = within(screen.getByTestId('action-pad-container'))
@@ -790,7 +869,7 @@ describe('tablet client shell', () => {
     const double = connectionDouble()
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
-    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await connectConfiguredLocal(screen)
     fireEvent.press(screen.getByTestId('action-pad-leader'))
     fireEvent.press(screen.getByRole('button', { name: 'Edit Action Pad' }))
     await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Edit Terminal' })) })
@@ -836,59 +915,56 @@ describe('tablet client shell', () => {
     }
   })
 
-  it('resumes the deferred first load when a typed YAML path is reverted', async () => {
+  it('selects the Local config folder before opening the simplified Action Pad editor', async () => {
     const double = connectionDouble()
-    const read = deferred<HostDocument>()
-    jest.mocked(double.session.readHostDocument).mockImplementation(() => read.promise)
     mockedConnectionFactory.mockReturnValue(double)
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
-    try {
-      const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
-      await act(async () => { await Promise.resolve() })
-      fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
-      await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
-      const editor = within(screen.getByTestId('action-pad-editor'))
-      fireEvent.changeText(editor.getByLabelText('Host YAML path'), '/home/test/another.yaml')
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Browse Neovim config folders'
+    }).props.accessibilityState.disabled).toBe(false))
+    fireEvent.press(screen.getByRole('button', { name: 'Browse Neovim config folders' }))
+    const picker = screen.getByTestId('mock-workspace-directory-picker')
+    expect(picker.props).toMatchObject({
+      initialPath: TEST_CONFIG_DIRECTORY,
+      purpose: 'config'
+    })
+    fireEvent(picker, 'select', '/home/test/another')
 
-      await act(async () => {
-        fireEvent.press(screen.getByRole('button', { name: 'Connect configuration session' }))
-      })
-      await waitFor(() => expect(screen.queryByRole('button', { name: 'Connect configuration session' })).toBeNull())
-      expect(within(screen.getByTestId('action-pad-editor')).getByLabelText(
-        'Host YAML path'
-      ).props.value).toBe('/home/test/another.yaml')
-      expect(double.session.defaultActionPadPath).not.toHaveBeenCalled()
-      expect(double.session.readHostDocument).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Neovim config folder').props.value).toBe('/home/test/another')
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+    fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
+    await waitFor(() => expect(screen.getByTestId('action-pad-editor')).toBeTruthy())
+    const editor = within(screen.getByTestId('action-pad-editor'))
+    expect(editor.getByText('Saves to /home/test/another/action-pad.yaml')).toBeTruthy()
+    expect(editor.queryByRole('button', { name: 'Browse' })).toBeNull()
+    expect(editor.queryByRole('button', { name: 'Load' })).toBeNull()
+    expect(editor.queryByRole('button', { name: 'Load / Reload' })).toBeNull()
+    expect(editor.queryByLabelText('Codey config folder')).toBeNull()
 
-      fireEvent.press(within(screen.getByTestId('action-pad-editor')).getByRole('button', { name: 'Cancel' }))
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Connect configuration session' }))
+    })
 
-      expect(alert.mock.calls.at(-1)?.[0]).toBe('Unsaved Action Pad edits')
-      expect(alert.mock.calls.at(-1)?.[1]).toBe(
-        'Closing the editor will discard these in-memory edits. The host file will not change. If the first load was waiting for these edits, the selected file may then update the active pad.'
-      )
-      expect(alert.mock.calls.at(-1)?.[2]?.map((button) => button.text)).toEqual(['Keep editing', 'Discard and close'])
-      expect(screen.getByTestId('action-pad-editor')).toBeTruthy()
-
-      fireEvent.changeText(
-        within(screen.getByTestId('action-pad-editor')).getByLabelText('Host YAML path'),
-        ''
-      )
-      await waitFor(() => expect(double.session.readHostDocument).toHaveBeenCalledWith(
-        '/home/test/.config/nvim/codey/action-pad.yaml'
-      ))
-      expect(within(screen.getByTestId('action-pad-editor')).getByTestId(
-        'action-pad-editor-save'
-      ).props.accessibilityState.disabled).toBe(true)
-
-      await act(async () => {
-        read.resolve({ path: '/home/test/.config/nvim/codey/action-pad.yaml', text: null })
-      })
-      await waitFor(() => expect(within(screen.getByTestId('action-pad-editor')).getByTestId(
-        'action-pad-editor-save'
-      ).props.accessibilityState.disabled).toBe(false))
-    } finally {
-      alert.mockRestore()
-    }
+    await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(
+      {
+        kind: 'local',
+        workspacePath: '/storage/emulated/0',
+        configDirectory: '/home/test/another'
+      },
+      { generation: 1, operationId: expect.any(String) }
+    ))
+    await waitFor(() => expect(double.session.readHostDocument).toHaveBeenCalledWith(
+      '/home/test/another/action-pad.yaml'
+    ))
+    expect(double.session.defaultActionPadPath).not.toHaveBeenCalled()
+    expect(setItem).toHaveBeenCalledWith(
+      CONNECTION_SETTINGS_STORAGE_KEY,
+      expect.stringContaining('"configDirectory":"/home/test/another"')
+    )
+    expect(setItem).not.toHaveBeenCalledWith(
+      actionPadPathStorageKey(DEFAULT_ACTION_PAD_ENDPOINT),
+      expect.any(String)
+    )
   })
 
   it('opens the general editor on hold without also toggling selection on release', async () => {
@@ -918,7 +994,7 @@ describe('tablet client shell', () => {
     })
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
-    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     await waitFor(() => expect(within(screen.getByTestId('action-pad')).queryAllByRole('button')).toHaveLength(0))
     const control = screen.getByRole('button', { name: 'Edit Action Pad' })
@@ -1026,17 +1102,17 @@ describe('tablet client shell', () => {
     await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Connect configuration session' })) })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Connect configuration session' })).toBeNull())
     expect(editor.getByLabelText('Button ID').props.value).toBe('directory')
-    expect(double.session.defaultActionPadPath).toHaveBeenCalledTimes(1)
+    expect(double.session.defaultActionPadPath).not.toHaveBeenCalled()
     expect(double.session.readHostDocument).not.toHaveBeenCalled()
 
     fireEvent.press(editor.getByRole('button', { name: 'Undo Button ID edit' }))
     await waitFor(() => expect(double.session.readHostDocument).toHaveBeenCalledWith(
-      '/home/test/.config/nvim/codey/action-pad.yaml'
+      TEST_ACTION_PAD_PATH
     ))
     expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(true)
 
     await act(async () => {
-      read.resolve({ path: '/home/test/.config/nvim/codey/action-pad.yaml', text: null })
+      read.resolve({ path: TEST_ACTION_PAD_PATH, text: null })
     })
     await waitFor(() => expect(editor.getByTestId(
       'action-pad-editor-save'
@@ -1058,17 +1134,17 @@ describe('tablet client shell', () => {
 
     await act(async () => { fireEvent.press(screen.getByRole('button', { name: 'Connect configuration session' })) })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Connect configuration session' })).toBeNull())
-    expect(double.session.defaultActionPadPath).toHaveBeenCalledTimes(1)
+    expect(double.session.defaultActionPadPath).not.toHaveBeenCalled()
     expect(double.session.readHostDocument).not.toHaveBeenCalled()
 
     fireEvent.changeText(editor.getByLabelText('Button label'), 'Esc')
     await waitFor(() => expect(double.session.readHostDocument).toHaveBeenCalledWith(
-      '/home/test/.config/nvim/codey/action-pad.yaml'
+      TEST_ACTION_PAD_PATH
     ))
     expect(editor.getByTestId('action-pad-editor-save').props.accessibilityState.disabled).toBe(true)
 
     await act(async () => {
-      read.resolve({ path: '/home/test/.config/nvim/codey/action-pad.yaml', text: null })
+      read.resolve({ path: TEST_ACTION_PAD_PATH, text: null })
     })
     await waitFor(() => expect(editor.getByTestId(
       'action-pad-editor-save'
@@ -1080,7 +1156,7 @@ describe('tablet client shell', () => {
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     await act(async () => { await Promise.resolve() })
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     const nativeIme = jest.requireMock('../native/CodeyIme') as {
       __settleComposition: jest.Mock
@@ -1104,9 +1180,9 @@ describe('tablet client shell', () => {
     expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
   })
 
-  it('loads, edits, saves and reloads through the mounted host session', async () => {
+  it('loads, edits and saves the fixed Local Action Pad file through the mounted host session', async () => {
     const double = connectionDouble()
-    const path = '/home/test/pad.yaml'
+    const path = TEST_ACTION_PAD_PATH
     const config: ActionPadConfig = {
       version: 1, rootMenuId: 'home', menus: [
         {
@@ -1138,18 +1214,9 @@ describe('tablet client shell', () => {
     mockedConnectionFactory.mockReturnValue(double)
     const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
     await act(async () => { await Promise.resolve() })
-    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
+    await connectConfiguredLocal(screen)
     await act(async () => { fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress') })
     const editor = within(screen.getByTestId('action-pad-editor'))
-    await waitFor(() => expect(editor.getByLabelText('Host YAML path').props.editable).toBe(true))
-    fireEvent.changeText(editor.getByLabelText('Host YAML path'), path)
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
-    try {
-      await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Load' })) })
-      expect(alert).not.toHaveBeenCalled()
-    } finally {
-      alert.mockRestore()
-    }
     expect(editor.getByTestId('action-pad-menu-manager')).toBeTruthy()
     await waitFor(() => expect(editor.getByText('Unused (unused)')).toBeTruthy())
     fireEvent.press(editor.getByTestId('action-pad-remove-unused-menus'))
@@ -1167,13 +1234,15 @@ describe('tablet client shell', () => {
       label: '001 λ', tap: { nvimInput: input }
     })
     expect(editor.getByTestId('action-pad-menu-manager')).toBeTruthy()
-    await act(async () => { fireEvent.press(editor.getByRole('button', { name: 'Load / Reload' })) })
     expect(parseActionPadConfig(files.get(path)!).menus.map((menu) => menu.id)).toEqual(['home'])
     expect(editor.queryByText('Unused (unused)')).toBeNull()
     openManagedButton(editor)
     expect(editor.getByLabelText('Tap Neovim input').props.value).toBe(input)
-    expect(editor.getByLabelText('Host YAML path').props.value).toBe(path)
-    expect(setItem).toHaveBeenCalledWith(actionPadPathStorageKey(DEFAULT_ACTION_PAD_ENDPOINT), path)
+    expect(editor.getByText(`Saves to ${TEST_ACTION_PAD_PATH}`)).toBeTruthy()
+    expect(setItem).not.toHaveBeenCalledWith(
+      actionPadPathStorageKey(DEFAULT_ACTION_PAD_ENDPOINT),
+      expect.any(String)
+    )
     fireEvent.press(editor.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByTestId('action-pad-editor')).toBeNull()
     expect(within(screen.getByTestId('action-pad')).getByText('001 λ')).toBeTruthy()
@@ -1286,7 +1355,7 @@ describe('tablet client shell', () => {
     fireEvent(screen.getByTestId('mock-editor-canvas'), 'layout', {
       nativeEvent: { layout: { width: 700, height: 550, x: 0, y: 0 } }
     })
-    fireEvent.press(screen.getByText('Connect'))
+    await act(async () => { fireEvent.press(screen.getByText('Connect')) })
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     expect(double.session.attach).toHaveBeenCalledWith(70, 25)
 
@@ -1337,7 +1406,7 @@ describe('tablet client shell', () => {
     })
     expect(screen.queryByText('100 × 20 · 1280 × 800dp')).toBeNull()
 
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     expect(double.session.attach).toHaveBeenCalledWith(100, 20)
 
@@ -1394,7 +1463,7 @@ describe('tablet client shell', () => {
     const screen = render(
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     const nativeIme = jest.requireMock('../native/CodeyIme') as {
@@ -1436,7 +1505,7 @@ describe('tablet client shell', () => {
     const screen = render(
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     const nativeIme = jest.requireMock('../native/CodeyIme') as {
@@ -1460,7 +1529,7 @@ describe('tablet client shell', () => {
     const screen = render(
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     act(() => {
@@ -1499,7 +1568,7 @@ describe('tablet client shell', () => {
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
 
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     fireEvent.press(screen.getByTestId('action-pad-leader'))
@@ -1526,7 +1595,7 @@ describe('tablet client shell', () => {
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
 
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
@@ -1557,7 +1626,7 @@ describe('tablet client shell', () => {
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
 
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
 
     await waitFor(() => expect(screen.getByText('connection refused')).toBeTruthy())
     expect(screen.getByText('Connect')).toBeTruthy()
@@ -1582,7 +1651,7 @@ describe('tablet client shell', () => {
       __settleComposition: jest.Mock
     }
 
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     nativeIme.__blur.mockClear()
     nativeIme.__settleComposition.mockClear()
@@ -1616,7 +1685,7 @@ describe('tablet client shell', () => {
       __blur: jest.Mock
       __settleComposition: jest.Mock
     }
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     diagnosticLogger.clear()
     nativeIme.__settleComposition.mockRejectedValueOnce(new Error('settlement failed'))
@@ -1681,7 +1750,8 @@ describe('tablet client shell', () => {
       fireEvent(screen.getByRole('button', { name: 'Edit Action Pad' }), 'longPress')
     })
     const editor = within(await screen.findByTestId('action-pad-editor'))
-    fireEvent.changeText(editor.getByLabelText('Host YAML path'), '/private/kept-under-logs.yaml')
+    openManagedButton(editor)
+    fireEvent.changeText(editor.getByLabelText('Button label'), 'Kept under logs')
 
     fireEvent.press(editor.getByRole('button', { name: 'Logs' }))
 
@@ -1692,8 +1762,8 @@ describe('tablet client shell', () => {
 
     expect(screen.queryByTestId('diagnostics-modal')).toBeNull()
     expect(within(screen.getByTestId('action-pad-editor')).getByLabelText(
-      'Host YAML path'
-    ).props.value).toBe('/private/kept-under-logs.yaml')
+      'Button label'
+    ).props.value).toBe('Kept under logs')
   })
 
   it('suspends editor and Action Pad input while Logs is visible', async () => {
@@ -1703,7 +1773,7 @@ describe('tablet client shell', () => {
       <TabletClient capability={tabletCapability(1_280, 800)} logsVisible={false} />
     )
 
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
     screen.rerender(
       <TabletClient capability={tabletCapability(1_280, 800)} logsVisible />
@@ -1722,7 +1792,7 @@ describe('tablet client shell', () => {
       <TabletClient capability={tabletCapability(1_280, 800)} />
     )
 
-    fireEvent.press(screen.getByText('Connect'))
+    await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Disconnect')).toBeTruthy())
 
     screen.unmount()

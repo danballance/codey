@@ -35,6 +35,7 @@ export interface WorkspaceDirectoryPickerProps {
   readonly onCancel: () => void
   readonly onOpenLogs: () => void
   readonly onSelect: (path: string) => void
+  readonly purpose?: 'workspace' | 'config'
   readonly logger?: DiagnosticLogger
 }
 
@@ -43,6 +44,7 @@ export function WorkspaceDirectoryPicker({
   onCancel,
   onOpenLogs,
   onSelect,
+  purpose = 'workspace',
   logger = diagnosticLogger
 }: WorkspaceDirectoryPickerProps) {
   const requestId = useRef(0)
@@ -309,7 +311,7 @@ export function WorkspaceDirectoryPicker({
       category: 'workspace',
       event: 'picker.opened',
       message: 'Opened the workspace directory picker',
-      details: { initialPath: initialPathAtOpen.current }
+      details: { initialPath: initialPathAtOpen.current, purpose }
     })
 
     return () => {
@@ -325,11 +327,12 @@ export function WorkspaceDirectoryPicker({
         details: {
           initialPath: initialPathAtOpen.current,
           closeReason: reason === 'open' ? 'external' : reason,
-          lastRequestId: requestId.current
+          lastRequestId: requestId.current,
+          purpose
         }
       })
     }
-  }, [logger])
+  }, [logger, purpose])
 
   useEffect(() => {
     closed.current = false
@@ -430,7 +433,9 @@ export function WorkspaceDirectoryPicker({
       >
         <View style={styles.header}>
           <View style={styles.titleBlock}>
-            <Text accessibilityRole="header" style={styles.title}>Choose workspace</Text>
+            <Text accessibilityRole="header" style={styles.title}>
+              {purpose === 'config' ? 'Choose Codey config folder' : 'Choose workspace'}
+            </Text>
             <Text style={styles.subtitle}>
               {root === null ? 'Shared storage' : `${root.label} · ${root.path}`}
             </Text>
@@ -446,7 +451,9 @@ export function WorkspaceDirectoryPicker({
               <Text style={styles.secondaryButtonText}>Logs</Text>
             </Pressable>
             <Pressable
-              accessibilityLabel="Cancel workspace selection"
+              accessibilityLabel={purpose === 'config'
+                ? 'Cancel config folder selection'
+                : 'Cancel workspace selection'}
               accessibilityRole="button"
               onPress={() => { cancel('button') }}
               style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
@@ -505,7 +512,9 @@ export function WorkspaceDirectoryPicker({
               <Text accessibilityRole="alert" style={styles.errorTitle}>Could not load folders</Text>
               <Text style={styles.errorMessage}>{error}</Text>
               <Pressable
-                accessibilityLabel="Retry loading workspace folders"
+                accessibilityLabel={purpose === 'config'
+                  ? 'Retry loading config folders'
+                  : 'Retry loading workspace folders'}
                 accessibilityRole="button"
                 onPress={retry}
                 style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
@@ -558,7 +567,9 @@ export function WorkspaceDirectoryPicker({
             Choosing a folder changes the path only. It does not start NeoVim.
           </Text>
           <Pressable
-            accessibilityLabel="Use current folder as workspace"
+            accessibilityLabel={purpose === 'config'
+              ? 'Use current folder as Codey config folder'
+              : 'Use current folder as workspace'}
             accessibilityRole="button"
             accessibilityState={{ disabled: !canUseCurrentFolder }}
             disabled={!canUseCurrentFolder}
@@ -570,7 +581,9 @@ export function WorkspaceDirectoryPicker({
             ]}
             testID="workspace-directory-use"
           >
-            <Text style={styles.useButtonText}>Use this folder</Text>
+            <Text style={styles.useButtonText}>
+              {purpose === 'config' ? 'Use config folder' : 'Use this folder'}
+            </Text>
           </Pressable>
         </View>
       </SafeAreaView>

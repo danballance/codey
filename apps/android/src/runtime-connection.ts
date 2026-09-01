@@ -2,6 +2,7 @@ import { MessagePackRpcClient } from '@codey/msgpack-rpc'
 import { NvimSessionClient, isRedrawBatch } from '@codey/nvim-session'
 
 import type { ConnectionFactory } from './controller'
+import { requireConfigDirectory } from './connection-target'
 import { diagnosticLogger } from './diagnostics/logger'
 import { diagnosticOriginOf, markDiagnosticOrigin } from './diagnostics/origin'
 import { ExpoNvimProcessTransport } from './transport/expo-nvim-process-transport'
@@ -10,9 +11,15 @@ import { ExpoTcpTransport } from './transport/expo-tcp-transport'
 export const createRuntimeConnection: ConnectionFactory = (target, diagnostics) => {
   const transport = target.kind === 'local'
     ? diagnostics === undefined
-      ? new ExpoNvimProcessTransport({ workspacePath: target.workspacePath })
+      ? new ExpoNvimProcessTransport({
+          workspacePath: target.workspacePath,
+          configDirectory: requireConfigDirectory(target.configDirectory)
+        })
       : new ExpoNvimProcessTransport(
-          { workspacePath: target.workspacePath },
+          {
+            workspacePath: target.workspacePath,
+            configDirectory: requireConfigDirectory(target.configDirectory)
+          },
           undefined,
           diagnosticLogger,
           diagnostics

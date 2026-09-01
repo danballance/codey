@@ -117,7 +117,11 @@ describe('TabletClientController', () => {
     const double = connectionDouble()
     const factory = jest.fn((_target: ConnectionTarget) => double)
     const controller = new TabletClientController(factory)
-    const localTarget = { kind: 'local', workspacePath: '/storage/emulated/0/Code' } as const
+    const localTarget = {
+      kind: 'local',
+      workspacePath: '/storage/emulated/0/Code',
+      configDirectory: '/storage/emulated/0/Codey'
+    } as const
 
     await controller.connect(localTarget)
 

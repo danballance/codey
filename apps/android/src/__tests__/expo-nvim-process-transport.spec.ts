@@ -17,7 +17,7 @@ class FakeNativeNvim implements NativeNvimModule {
     running: false,
     allFilesAccess: true
   }
-  readonly starts: string[] = []
+  readonly starts: Array<{ cwd: string; configDirectory: string }> = []
   readonly writes: Array<{ sessionId: number; bytes: number[] }> = []
   nextSessionId = 1
   startSynchronousError: Error | undefined
@@ -35,8 +35,8 @@ class FakeNativeNvim implements NativeNvimModule {
   readonly #dataListeners = new Set<(event: NativeNvimDataEvent) => void>()
   readonly #exitListeners = new Set<(event: NativeNvimExitEvent) => void>()
 
-  start(cwd: string): Promise<number> {
-    this.starts.push(cwd)
+  start(cwd: string, configDirectory: string): Promise<number> {
+    this.starts.push({ cwd, configDirectory })
     if (this.startSynchronousError !== undefined) throw this.startSynchronousError
     if (this.startImplementation !== undefined) return this.startImplementation(cwd)
     return Promise.resolve(this.nextSessionId++)
@@ -120,7 +120,7 @@ describe('ExpoNvimProcessTransport', () => {
   it('starts in a trimmed workspace and forwards data only for its session', async () => {
     const native = new FakeNativeNvim()
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '  /storage/emulated/0/Code  ' },
+      { workspacePath: '  /storage/emulated/0/Code  ', configDirectory: '  /config  ' },
       native,
       createTestLogger()
     )
@@ -133,7 +133,10 @@ describe('ExpoNvimProcessTransport', () => {
     native.emitData({ sessionId: 1, bytes: [3, 4] })
     native.emitData({ sessionId: 1, bytes: [] })
 
-    expect(native.starts).toEqual(['/storage/emulated/0/Code'])
+    expect(native.starts).toEqual([{
+      cwd: '/storage/emulated/0/Code',
+      configDirectory: '/config'
+    }])
     expect(chunks).toEqual([[1, 2], [3, 4]])
   })
 
@@ -145,7 +148,7 @@ describe('ExpoNvimProcessTransport', () => {
       return 8
     }
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' }, native, createTestLogger()
+      { workspacePath: '/workspace', configDirectory: '/config' }, native, createTestLogger()
     )
     const chunks: number[][] = []
     transport.onData((chunk) => chunks.push([...chunk]))
@@ -161,7 +164,7 @@ describe('ExpoNvimProcessTransport', () => {
     let writeIndex = 0
     native.writeImplementation = async () => gates[writeIndex++]!.promise
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' }, native, createTestLogger()
+      { workspacePath: '/workspace', configDirectory: '/config' }, native, createTestLogger()
     )
     await transport.connect()
 
@@ -186,7 +189,7 @@ describe('ExpoNvimProcessTransport', () => {
   it('reports an unexpected exit once with native diagnostics', async () => {
     const native = new FakeNativeNvim()
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' }, native, createTestLogger()
+      { workspacePath: '/workspace', configDirectory: '/config' }, native, createTestLogger()
     )
     const closed = jest.fn()
     transport.onClose(closed)
@@ -217,7 +220,7 @@ describe('ExpoNvimProcessTransport', () => {
     const native = new FakeNativeNvim()
     const logger = createTestLogger()
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' },
+      { workspacePath: '/workspace', configDirectory: '/config' },
       native,
       logger,
       { generation: 8, operationId: 'connection-8' }
@@ -255,7 +258,7 @@ describe('ExpoNvimProcessTransport', () => {
       return 4
     }
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' },
+      { workspacePath: '/workspace', configDirectory: '/config' },
       native,
       logger
     )
@@ -293,7 +296,7 @@ describe('ExpoNvimProcessTransport', () => {
       throw Object.assign(new Error('stdin broke'), { code: 'E_NVIM_STDIN' })
     }
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' }, native, logger
+      { workspacePath: '/workspace', configDirectory: '/config' }, native, logger
     )
     const closed = jest.fn()
     transport.onClose(closed)
@@ -334,7 +337,7 @@ describe('ExpoNvimProcessTransport', () => {
     native.writeImplementation = async () => { throw new Error('stdin broke') }
     native.stopImplementation = () => stopped.promise
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' }, native, createTestLogger()
+      { workspacePath: '/workspace', configDirectory: '/config' }, native, createTestLogger()
     )
     await transport.connect()
 
@@ -355,7 +358,7 @@ describe('ExpoNvimProcessTransport', () => {
     const started = deferred<number>()
     native.startImplementation = () => started.promise
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' }, native, createTestLogger()
+      { workspacePath: '/workspace', configDirectory: '/config' }, native, createTestLogger()
     )
     const closed = jest.fn()
     transport.onClose(closed)
@@ -376,7 +379,7 @@ describe('ExpoNvimProcessTransport', () => {
     const native = new FakeNativeNvim()
     native.writeImplementation = () => new Promise<void>(() => undefined)
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' }, native, createTestLogger()
+      { workspacePath: '/workspace', configDirectory: '/config' }, native, createTestLogger()
     )
     const closed = jest.fn()
     transport.onClose(closed)
@@ -395,8 +398,11 @@ describe('ExpoNvimProcessTransport', () => {
 
   it('validates the workspace before calling native code', () => {
     const native = new FakeNativeNvim()
-    expect(() => new ExpoNvimProcessTransport({ workspacePath: '  ' }, native)).toThrow(
+    expect(() => new ExpoNvimProcessTransport({ workspacePath: '  ', configDirectory: '/config' }, native)).toThrow(
       'workspace path'
+    )
+    expect(() => new ExpoNvimProcessTransport({ workspacePath: '/workspace', configDirectory: '  ' }, native)).toThrow(
+      'config directory'
     )
     expect(native.starts).toEqual([])
   })
@@ -410,7 +416,7 @@ describe('ExpoNvimProcessTransport', () => {
     }
     const subscriptionLogger = createTestLogger()
     const subscriptionTransport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' },
+      { workspacePath: '/workspace', configDirectory: '/config' },
       subscriptionNative,
       subscriptionLogger
     )
@@ -429,7 +435,7 @@ describe('ExpoNvimProcessTransport', () => {
     startNative.startSynchronousError = nativeFailure
     const startLogger = createTestLogger()
     const startTransport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' },
+      { workspacePath: '/workspace', configDirectory: '/config' },
       startNative,
       startLogger
     )
@@ -446,7 +452,7 @@ describe('ExpoNvimProcessTransport', () => {
     const native = new FakeNativeNvim()
     const logger = createTestLogger()
     const transport = new ExpoNvimProcessTransport(
-      { workspacePath: '/workspace' },
+      { workspacePath: '/workspace', configDirectory: '/config' },
       native,
       logger
     )

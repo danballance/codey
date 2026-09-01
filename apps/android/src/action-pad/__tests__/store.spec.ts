@@ -1,5 +1,10 @@
 import type { HostDocument, HostDocumentWrite } from '@codey/nvim-session'
 
+import {
+  actionPadEndpointForTarget,
+  LOCAL_ACTION_PAD_FILE_NAME,
+  DEFAULT_LOCAL_TARGET
+} from '../../connection-target'
 import { createDiagnosticLogger } from '../../diagnostics/logger'
 import { DEFAULT_ACTION_PAD_CONFIG } from '../config'
 import { parseActionPadConfig, serializeActionPadConfig, type ActionPadConfig } from '../document'
@@ -17,8 +22,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 const endpoint = { host: 'nvim.test', port: 6666 }
 const otherEndpoint = { host: 'other.test', port: 7777 }
+const localEndpoint = actionPadEndpointForTarget(DEFAULT_LOCAL_TARGET)
 const sourcePath = '/home/test/action-pad.yaml'
 const alternatePath = '/home/test/alternate.yaml'
+const localConfigDirectory = '/storage/emulated/0/Codey'
+const localActionPadPath = `${localConfigDirectory}/${LOCAL_ACTION_PAD_FILE_NAME}`
 const fixture: ActionPadConfig = {
   version: 1,
   rootMenuId: 'home',
@@ -126,6 +134,64 @@ describe('ActionPadConfigStore', () => {
     expect(test.documents.defaultActionPadPath).not.toHaveBeenCalled()
     expect(test.documents.readHostDocument).toHaveBeenCalledWith(endpoint, alternatePath)
     expect(test.store.getState()).toMatchObject({ sourcePath: alternatePath, activeConfig: alternate })
+  })
+
+  it('loads the fixed Local Action Pad path supplied by connection setup', async () => {
+    const test = setup(null)
+    test.files.set(localActionPadPath, serializeActionPadConfig(fixture))
+    test.storageRecords.set(actionPadPathStorageKey(localEndpoint), localConfigDirectory)
+
+    await test.store.selectEndpoint(localEndpoint, localActionPadPath)
+    await test.store.setConnected(true)
+
+    expect(test.documents.defaultActionPadPath).not.toHaveBeenCalled()
+    expect(test.documents.readHostDocument).toHaveBeenCalledWith(localEndpoint, localActionPadPath)
+    expect(test.store.getState()).toMatchObject({
+      sourcePath: localActionPadPath,
+      activeConfig: fixture
+    })
+    expect(test.storage.setItem).not.toHaveBeenCalled()
+  })
+
+  it('does not resolve a private Local fallback when no config path was supplied', async () => {
+    const test = setup()
+
+    await test.store.selectEndpoint(localEndpoint)
+    await test.store.setConnected(true)
+
+    expect(test.documents.defaultActionPadPath).not.toHaveBeenCalled()
+    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
+    expect(test.store.getState().message).toContain('Choose a Neovim config folder')
+    expect(test.storageRecords.has(actionPadPathStorageKey(localEndpoint))).toBe(false)
+  })
+
+  it('ignores an older Local YAML preference instead of treating it as a directory', async () => {
+    const test = setup(null)
+    const legacyFileLocation = '/storage/emulated/0/legacy-action-pad.yaml'
+    test.storageRecords.set(actionPadPathStorageKey(localEndpoint), legacyFileLocation)
+    test.files.set(localActionPadPath, serializeActionPadConfig(fixture))
+
+    await test.store.selectEndpoint(localEndpoint, localActionPadPath)
+    await test.store.setConnected(true)
+
+    expect(test.documents.readHostDocument).toHaveBeenCalledWith(localEndpoint, localActionPadPath)
+    expect(test.store.getState().sourcePath).toBe(localActionPadPath)
+    expect(test.storage.setItem).not.toHaveBeenCalled()
+  })
+
+  it('saves Local edits only to the fixed path without persisting a path preference', async () => {
+    const test = setup(null)
+    await test.store.selectEndpoint(localEndpoint, localActionPadPath)
+    await test.store.setConnected(true)
+    test.store.setWorkingConfig(edited())
+
+    await test.store.save(localActionPadPath)
+
+    expect(test.documents.writeHostDocument).toHaveBeenCalledWith(
+      localEndpoint,
+      expect.objectContaining({ path: localActionPadPath })
+    )
+    expect(test.storage.setItem).not.toHaveBeenCalled()
   })
 
   it('migrates only sourcePath from legacy recovery and removes the journal', async () => {

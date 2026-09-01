@@ -8,7 +8,7 @@ the mobile vertical slice while reusing the existing `transport`, `msgpack-rpc`,
 Skia + Android IME
   -> NvimSessionClient
   -> MessagePackRpcClient
-  -> ExpoNvimProcessTransport -> CodeyNvim -> nvim --clean --embed
+  -> ExpoNvimProcessTransport -> CodeyNvim -> bundled nvim [--clean] --embed
    or ExpoTcpTransport -> CodeyTcp -> remote TCP endpoint
   -> Neovim
 ```
@@ -16,27 +16,32 @@ Skia + Android IME
 ## Local and remote sessions
 
 Fresh installs select **Local**. On arm64 Android 11 or newer, the personal POC
-APK starts one bundled `nvim --clean --embed` process and carries RPC bytes over
-stdin/stdout. Grant Android's all-files access, then use **Browse** to choose an
-existing writable directory under primary shared storage (the device's internal
-user storage). The browser is intentionally limited to that storage root in this
-POC; it does not expose removable volumes, cloud providers, or Android's Storage
-Access Framework. The path remains editable as a manual fallback for another
-known writable absolute filesystem path.
+APK starts one bundled `nvim --embed` process and carries RPC bytes over
+stdin/stdout. It adds `--clean` unless the selected Neovim config folder contains
+a readable `init.lua`. Grant Android's all-files access, then use the two
+**Browse** controls to choose an existing writable workspace and required Neovim
+config folder under primary shared storage (the device's internal user storage).
+The browser is intentionally limited to that storage root
+in this POC; it does not expose removable volumes, cloud providers, or Android's
+Storage Access Framework. The path remains editable as a manual fallback for
+another known writable absolute filesystem path.
 
-The browser returns the canonical path that the bundled process can use as its
-real working directory. It does not attempt to convert a `content://` tree URI
-into a filesystem path. Choosing a directory updates and saves the Local target
-without starting a session; **Connect** remains an explicit second action.
+The browser returns canonical paths that the bundled process can use directly.
+It does not attempt to convert a `content://` tree URI into a filesystem path.
+Choosing either directory updates and saves the Local target without starting a
+session; **Connect** remains an explicit second action and is unavailable until
+the config folder is set.
 Android's all-files settings page is opened explicitly when access has not been
 granted.
-The process gets a private clean HOME/XDG environment and stops with the app
-session; it is not a background server.
+The process gets a private HOME and stops with the app session; it is not a
+background server. Data, state, and cache remain app-private even when an
+external config folder is active.
 
 Select **Remote** to retain the existing host/port TCP workflow. A legacy saved
 endpoint is migrated to Remote automatically. The most recent local path and
-remote endpoint are stored independently. The Action Pad remembers one YAML
-path for Local mode and one for each Remote endpoint.
+remote endpoint are stored independently. Local connection settings remember one
+device-wide Neovim config folder; Remote mode remembers one Action Pad YAML path
+per endpoint.
 
 The bundled implementation is intentionally arm64/API-30-only and meant for a
 personal sideloaded APK. See [`native-poc/README.md`](native-poc/README.md) for
@@ -137,8 +142,9 @@ menu, group, Back, and keyboard actions are suppressed.
 
 Closing the editor keeps selection mode enabled and preserves the current page
 and active cluster. Use **Done editing** or Android Back while the pad is visible
-to exit selection mode and restore normal button actions. A successful **Save**
-or **Load / Reload** still resets the active pad to its complete root layout.
+to exit selection mode and restore normal button actions. A successful **Save**,
+or **Load / Reload** in Remote mode, resets the active pad to its complete root
+layout.
 
 Hold **Edit Action Pad** for `450ms` to open the general configuration editor
 directly, without entering selection mode. Holding **Done editing** opens the
@@ -196,23 +202,39 @@ a field error, but Save remains disabled until it is valid. The external
 idle **Edit Action Pad** control uses the same set-back transparent treatment;
 **Done editing** remains cyan/tinted and **Connect session** remains filled.
 
-The primary YAML file lives in the connected Neovim environment. In Remote mode
-that is the remote host; in Local mode it is the Android process, where `~/`
-resolves inside Codey's private clean HOME. Choose an absolute path or one
-beginning with `~/`. The suggested path is
-`stdpath("config")/codey/action-pad.yaml`; use a file in your dotfiles or Git
-repository if preferred. The app remembers the active path with its connection
-target. File operations need no extra service, plugin, or SSH connection.
-Remote mode needs no Android storage permission; Local mode uses the all-files
-access already required for an external workspace.
+The primary YAML file lives in the connected Neovim environment. Remote mode
+retains the arbitrary absolute or `~/` host-file field and remembers one file
+per endpoint. Local mode instead uses the required **Neovim config folder** from
+the connection screen and always reads or writes its fixed `action-pad.yaml`
+child. The same folder is
+a real Neovim config root: an optional `init.lua` is the entry point, and normal
+`lua/`, `plugin/`, and `after/` children work through Neovim's runtime path.
+Choose it before connecting with **Browse** or enter an absolute Android
+filesystem path. The folder must already exist and be readable and writable;
+startup is rejected if it is missing or invalid, or if an existing `init.lua`
+is not a readable regular file. A valid folder without `init.lua` uses its
+`action-pad.yaml` but starts clean. A folder with `init.lua`
+loads that Lua configuration on the next explicit Local connection. Codey does
+not reload or restart Neovim when files change: edit the configuration in Codey,
+then source it deliberately or disconnect and reconnect. Version-2 connection
+settings retain workspace and Remote details during migration, but require the
+Local config folder to be selected once. Older Local Action Pad YAML preferences
+are not reinterpreted as directories.
 
-- **Load / Reload** validates a file before replacing the active pad and working copy.
-  Invalid files leave both unchanged. Loading over unsaved edits requires
-  confirmation.
+File operations need no extra service, plugin, or SSH connection. Remote mode
+needs no Android storage permission; Local mode uses the all-files access already
+required for an external workspace.
+
+- In Remote mode, **Load / Reload** validates a file before replacing the active
+  pad and working copy. Invalid files leave both unchanged. Loading over unsaved
+  edits requires confirmation. Local mode loads its fixed file automatically on
+  connection and does not expose a path or Load control in the editor.
 - **Save** validates the working copy, writes the selected host file directly,
   and only then activates the configuration. The first Save creates a missing
   file and its parent directories; startup and reads never create files.
-  Changing the path before Save writes that path and remembers it after success.
+  In Remote mode, changing the path before Save writes that path and remembers
+  it after success. In Local mode Save always targets the selected folder's
+  `action-pad.yaml` child.
 - **Cancel** offers **Keep editing** or **Discard and close** when edits are
   unsaved. Closing discards the in-memory working copy and never writes a host
   file.
@@ -222,13 +244,14 @@ other edit. They disappear from editor pickers immediately, but the live Action
 Pad and host YAML keep the last activated configuration until a successful
 **Save**. Discarding and closing restores the last activated definitions.
 
-The app persists only the selected YAML path for each endpoint. Unsaved edits,
+Connection settings persist the Local config folder; the Action Pad store
+persists only Remote YAML paths. Unsaved edits,
 including incomplete field text, live in memory while the editor remains open;
 closing the editor or restarting the app loses them. Editing works offline while
 the screen stays open, and **Connect session** reconnects without discarding the
-current working copy. The remembered file is loaded automatically on the first
-successful connection for an endpoint; reconnecting later does not reload it.
-Use **Load / Reload** when you want to read the host file again. File operations
+current working copy. The selected file is loaded automatically on the first
+successful connection for a target; reconnecting later does not reload it. In
+Remote mode, use **Load / Reload** to read the host file again. File operations
 require a connection.
 
 Save is last-writer-wins: it does not compare revisions or inspect matching
@@ -345,10 +368,12 @@ be updated explicitly before it can be loaded. Older Codey builds reject
 version-1 documents that use rich button labels; builds predating group
 interactions reject those interactions as well.
 
-**Load only configurations you trust.** Input strings are passed directly to
-Neovim and can contain commands, including commands that affect host files or
-run programs. Loading or editing a configuration never executes those strings;
-pressing an active input button does. Configuration authors own
+**Load only configurations you trust.** A selected Local `init.lua` and its
+runtime files are executable code loaded by Neovim at startup. Action Pad input
+strings are passed directly to Neovim and can contain commands, including
+commands that affect host files or run programs. Loading or editing the Action
+Pad YAML never executes those strings; pressing an active input button does.
+Configuration authors own
 group density, fit, identifiers, and button ordering. The root menu's
 Keyboard interaction focuses the Android IME without sending editor input.
 
@@ -571,9 +596,10 @@ For physical-tablet acceptance, use a temporary host YAML file and verify:
    second lines or shrunken text. Increase Android font scaling, test fallback
    fonts, and check that TalkBack announces the complete button label exactly
    once even when the visible label is shortened.
-8. Change the path and Save. Confirm the new file is created, becomes the
-   remembered path, and activates only after the write succeeds. Load the prior
-   path explicitly to switch back.
+8. In Local mode, confirm the editor shows only the read-only
+   `<config-folder>/action-pad.yaml` destination and Save, with no Browse, Clear,
+   or Load control. In Remote mode, change the path and Save; confirm the new
+   file becomes the remembered path, then load the prior path to switch back.
 9. Change the selected file outside Codey and Save. Confirm Codey overwrites it
    as last writer. Simulate a write failure and confirm the working copy remains
    open while recovery is left to Reload, retry, or restoring a manual backup.

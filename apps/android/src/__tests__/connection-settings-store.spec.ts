@@ -9,6 +9,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 import {
   CONNECTION_SETTINGS_STORAGE_KEY,
   DEFAULT_CONNECTION_SETTINGS,
+  LEGACY_CONNECTION_SETTINGS_STORAGE_KEY,
   LEGACY_ENDPOINT_STORAGE_KEY,
   createConnectionSettingsStore,
   selectedConnectionTarget,
@@ -55,18 +56,23 @@ describe('connection settings store', () => {
     )
     expect(selectedConnectionTarget(DEFAULT_CONNECTION_SETTINGS)).toEqual({
       kind: 'local',
-      workspacePath: '/storage/emulated/0'
+      workspacePath: '/storage/emulated/0',
+      configDirectory: null
     })
     expect(test.getItem).toHaveBeenNthCalledWith(1, CONNECTION_SETTINGS_STORAGE_KEY)
-    expect(test.getItem).toHaveBeenNthCalledWith(2, LEGACY_ENDPOINT_STORAGE_KEY)
+    expect(test.getItem).toHaveBeenNthCalledWith(2, LEGACY_CONNECTION_SETTINGS_STORAGE_KEY)
+    expect(test.getItem).toHaveBeenNthCalledWith(3, LEGACY_ENDPOINT_STORAGE_KEY)
   })
 
-  it('loads and normalizes v2 settings containing both target details', async () => {
+  it('loads and normalizes v3 settings containing the Local config folder', async () => {
     const test = createStorage({
       [CONNECTION_SETTINGS_STORAGE_KEY]: JSON.stringify({
-        version: 2,
+        version: 3,
         selectedKind: 'remote',
-        local: { workspacePath: ' /storage//emulated/0/projects/ ' },
+        local: {
+          workspacePath: ' /storage//emulated/0/projects/ ',
+          configDirectory: ' /storage/emulated/0/config/nvim/ '
+        },
         remote: { host: ' tablet.local ', port: 7777 }
       })
     })
@@ -75,9 +81,12 @@ describe('connection settings store', () => {
     const loaded = await store.load()
 
     expect(loaded).toEqual({
-      version: 2,
+      version: 3,
       selectedKind: 'remote',
-      local: { workspacePath: '/storage/emulated/0/projects' },
+      local: {
+        workspacePath: '/storage/emulated/0/projects',
+        configDirectory: '/storage/emulated/0/config/nvim'
+      },
       remote: { host: 'tablet.local', port: 7777 }
     })
     expect(selectedConnectionTarget(loaded)).toEqual({
@@ -91,16 +100,21 @@ describe('connection settings store', () => {
       'connection_settings.load.succeeded'
     ])
     expect(logger.getSnapshot().entries[1]?.details).toMatchObject({
-      source: 'v2',
+      source: 'v3',
       rawSettings: expect.stringContaining('tablet.local'),
       settings: loaded
     })
   })
 
-  it('saves normalized v2 JSON and retains the other target when selection changes', async () => {
+  it('saves normalized v3 JSON and retains the Local config folder when selection changes', async () => {
     const test = createStorage()
     const store = createTestStore(test.storage).store
-    const settings = withSelectedConnectionTarget(DEFAULT_CONNECTION_SETTINGS, {
+    const configured = withSelectedConnectionTarget(DEFAULT_CONNECTION_SETTINGS, {
+      kind: 'local',
+      workspacePath: '/storage/emulated/0/work',
+      configDirectory: '/storage/emulated/0/config'
+    })
+    const settings = withSelectedConnectionTarget(configured, {
       kind: 'remote',
       host: ' remote.test ',
       port: 7777
@@ -111,15 +125,42 @@ describe('connection settings store', () => {
     expect(test.setItem).toHaveBeenCalledWith(
       CONNECTION_SETTINGS_STORAGE_KEY,
       JSON.stringify({
-        version: 2,
+        version: 3,
         selectedKind: 'remote',
-        local: { workspacePath: '/storage/emulated/0' },
+        local: {
+          workspacePath: '/storage/emulated/0/work',
+          configDirectory: '/storage/emulated/0/config'
+        },
         remote: { host: 'remote.test', port: 7777 }
       })
     )
   })
 
-  it('migrates a valid legacy endpoint to Remote and persists v2 best-effort', async () => {
+  it('migrates v2 settings without interpreting an Action Pad path as a config folder', async () => {
+    const test = createStorage({
+      [LEGACY_CONNECTION_SETTINGS_STORAGE_KEY]: JSON.stringify({
+        version: 2,
+        selectedKind: 'local',
+        local: { workspacePath: ' /storage/emulated/0/projects/ ' },
+        remote: { host: ' tablet.local ', port: 7777 }
+      })
+    })
+
+    const loaded = await createTestStore(test.storage).store.load()
+
+    expect(loaded).toEqual({
+      version: 3,
+      selectedKind: 'local',
+      local: {
+        workspacePath: '/storage/emulated/0/projects',
+        configDirectory: null
+      },
+      remote: { host: 'tablet.local', port: 7777 }
+    })
+    expect(JSON.parse(test.records.get(CONNECTION_SETTINGS_STORAGE_KEY)!)).toEqual(loaded)
+  })
+
+  it('migrates a valid legacy endpoint to Remote and persists v3 best-effort', async () => {
     const test = createStorage({
       [LEGACY_ENDPOINT_STORAGE_KEY]: '{"host":" legacy.test ","port":6000}'
     })
@@ -127,9 +168,9 @@ describe('connection settings store', () => {
     const loaded = await createTestStore(test.storage).store.load()
 
     expect(loaded).toEqual({
-      version: 2,
+      version: 3,
       selectedKind: 'remote',
-      local: { workspacePath: '/storage/emulated/0' },
+      local: { workspacePath: '/storage/emulated/0', configDirectory: null },
       remote: { host: 'legacy.test', port: 6000 }
     })
     expect(JSON.parse(test.records.get(CONNECTION_SETTINGS_STORAGE_KEY)!)).toEqual(loaded)
@@ -155,12 +196,12 @@ describe('connection settings store', () => {
     )
   })
 
-  it('falls back safely for malformed v2, invalid legacy, or storage failure', async () => {
-    const malformedV2 = createStorage({ [CONNECTION_SETTINGS_STORAGE_KEY]: '{broken' })
-    await expect(createTestStore(malformedV2.storage).store.load()).resolves.toBe(
+  it('falls back safely for malformed v3, invalid legacy, or storage failure', async () => {
+    const malformedV3 = createStorage({ [CONNECTION_SETTINGS_STORAGE_KEY]: '{broken' })
+    await expect(createTestStore(malformedV3.storage).store.load()).resolves.toBe(
       DEFAULT_CONNECTION_SETTINGS
     )
-    expect(malformedV2.getItem).toHaveBeenCalledTimes(1)
+    expect(malformedV3.getItem).toHaveBeenCalledTimes(1)
 
     const invalidLegacy = createStorage({
       [LEGACY_ENDPOINT_STORAGE_KEY]: '{"host":"bad host","port":0}'

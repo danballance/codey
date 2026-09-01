@@ -1478,6 +1478,20 @@ describe('ActionPadEditor', () => {
     expect(screen.props.onCancel).toHaveBeenCalledTimes(1)
   })
 
+  it('shows a read-only Local destination and exposes Save as the only file operation', async () => {
+    const path = '/storage/emulated/0/Codey/action-pad.yaml'
+    const screen = renderEditor({ pathKind: 'fixed-file', sourcePath: path, dirty: true })
+
+    expect(screen.getByText(`Saves to ${path}`)).toBeTruthy()
+    expect(screen.queryByLabelText('Host YAML path')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Load' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Load / Reload' })).toBeNull()
+    fireEvent.press(screen.getByTestId('action-pad-editor-save'))
+
+    await waitFor(() => expect(screen.props.onSave).toHaveBeenCalledWith(path))
+    expect(screen.props.onLoad).not.toHaveBeenCalled()
+  })
+
   it('keeps Save disabled while a clean editor is waiting for its first load', () => {
     const clean = renderEditor({ initialLoadPending: true })
     expect(clean.getByTestId('action-pad-editor-save')).toBeDisabled()
