@@ -124,7 +124,7 @@ function props(overrides: Partial<ActionPadEditorProps> = {}): ActionPadEditorPr
   return {
     config: config(), onChange: jest.fn(), connected: true, busy: false, dirty: false,
     initialLoadPending: false,
-    sourcePath: '~/.config/nvim/codey/action-pad.yaml',
+    sourcePath: '/storage/emulated/0/Codey/action-pad.yaml',
     onLoad: jest.fn().mockResolvedValue(undefined), onSave: jest.fn().mockResolvedValue(undefined),
     onCancel: jest.fn(), onOpenLogs: jest.fn(),
     initialButton: { menuId: 'home', groupId: 'actions', buttonId: 'input' },
@@ -389,16 +389,16 @@ describe('ActionPadEditor', () => {
     expect(screen.getByLabelText('Button label').props.value).toBe('Go back')
   })
 
-  it.each(['Save', 'Load / Reload'])('resets targeted selection to the accepted root after %s', async (operation) => {
+  it.each(['Save', 'Reload'])('resets targeted selection to the accepted root after %s', async (operation) => {
     const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockClear()
     const initial = props({ initialButton: { menuId: 'child', groupId: 'target', buttonId: 'back' } })
     function Harness() {
       const [draft, setDraft] = useState(initial.config)
-      async function accept(callback: (path: string) => Promise<void>, path: string) {
-        await callback(path)
+      async function accept(callback: () => Promise<void>) {
+        await callback()
         setDraft(JSON.parse(JSON.stringify(draft)) as ActionPadConfig)
       }
-      return <ActionPadEditor {...initial} config={draft} onChange={(next) => setDraft(JSON.parse(JSON.stringify(next)) as ActionPadConfig)} onSave={(path) => accept(initial.onSave, path)} onLoad={(path) => accept(initial.onLoad, path)} />
+      return <ActionPadEditor {...initial} config={draft} onChange={(next) => setDraft(JSON.parse(JSON.stringify(next)) as ActionPadConfig)} onSave={() => accept(initial.onSave)} onLoad={() => accept(initial.onLoad)} />
     }
     const screen = render(<Harness />)
     fireEvent.changeText(screen.getByLabelText('Button label'), 'Edited target')
@@ -822,7 +822,7 @@ describe('ActionPadEditor', () => {
       const [draft, setDraft] = useState(initial.config)
       return <>
         <ActionPadEditor {...initial} config={draft} onChange={setDraft} />
-        <ActionPad compact={compact} enabled mode="NORMAL" onInput={onInput} onKeyboardPress={onKeyboardPress} rootMenu={resolveActionPadConfig(draft)} />
+        <ActionPad compact={compact} enabled onInput={onInput} onKeyboardPress={onKeyboardPress} rootMenu={resolveActionPadConfig(draft)} />
       </>
     }
     const screen = render(<Harness compact={false} />)
@@ -1375,12 +1375,12 @@ describe('ActionPadEditor', () => {
     expect(screen.draft().rootMenuId).toBe('chil')
     expect(screen.draft().menus[1]?.id).toBe('child')
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: true, pathEdit: false })
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: true })
     fireEvent.changeText(screen.getByLabelText('Menu ID'), 'child-new')
     expect(screen.draft().rootMenuId).toBe('child-new')
     expect(screen.draft().menus[0]?.groups[0]?.buttons[1]?.tap).toMatchObject({ menuId: 'child' })
     expect(screen.getByTestId('action-pad-editor-save')).toBeEnabled()
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: false })
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false })
   })
 
   it('keeps a pending ID across other edits and navigation, with structure guarded until undo', () => {
@@ -1431,30 +1431,18 @@ describe('ActionPadEditor', () => {
     fireEvent.changeText(screen.getByLabelText('Button ID'), 'open')
     expect(screen.getByLabelText('Button ID').props.value).toBe('open')
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
-    expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: true, pathEdit: false })
+    expect(screen.getByText('Unsaved changes · Neovim running')).toBeTruthy()
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: true })
     screen.unmount()
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: false })
-  })
-
-  it('treats a changed host path as an in-memory edit until it is selected', () => {
-    const onPendingEditsChange = jest.fn()
-    const screen = renderEditor({ onPendingEditsChange })
-
-    fireEvent.changeText(screen.getByLabelText('Host YAML path'), '/home/test/another.yaml')
-
-    expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: true })
-    screen.unmount()
-    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false, pathEdit: false })
+    expect(onPendingEditsChange).toHaveBeenLastCalledWith({ fieldEdits: false })
   })
 
   it('serializes file requests while waiting for the parent’s confirmation', async () => {
     let finishLoad!: () => void
     const onLoad = jest.fn(() => new Promise<void>((resolve) => { finishLoad = resolve }))
     const screen = renderEditor({ onLoad })
-    fireEvent.press(screen.getByRole('button', { name: 'Load / Reload' }))
-    fireEvent.press(screen.getByRole('button', { name: 'Load / Reload' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Reload' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Reload' }))
     expect(onLoad).toHaveBeenCalledTimes(1)
     expect(screen.getByLabelText('Button label').props.editable).toBe(false)
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
@@ -1463,33 +1451,31 @@ describe('ActionPadEditor', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
   })
 
-  it('passes load and save paths to the parent without activating or saving implicitly', async () => {
+  it('invokes fixed-file load and save callbacks without activating or saving implicitly', async () => {
     const screen = renderEditor({ dirty: true })
-    expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
-    fireEvent.changeText(screen.getByLabelText('Host YAML path'), '/repo/config/action pad.yaml')
-    fireEvent.press(screen.getByRole('button', { name: 'Load' }))
-    await waitFor(() => expect(screen.props.onLoad).toHaveBeenCalledWith('/repo/config/action pad.yaml'))
+    expect(screen.getByText('Unsaved changes · Neovim running')).toBeTruthy()
+    expect(screen.getByText(`Local file: ${screen.props.sourcePath}`)).toBeTruthy()
+    fireEvent.press(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(screen.props.onLoad).toHaveBeenCalledWith())
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
-    await waitFor(() => expect(screen.props.onSave).toHaveBeenCalledWith('/repo/config/action pad.yaml'))
+    await waitFor(() => expect(screen.props.onSave).toHaveBeenCalledWith())
     expect(screen.queryByRole('button', { name: 'Export copy…' })).toBeNull()
     expect(screen.props.onChange).not.toHaveBeenCalled()
-    expect(screen.getByText('Unsaved changes · Host connected')).toBeTruthy()
+    expect(screen.getByText('Unsaved changes · Neovim running')).toBeTruthy()
     fireEvent.press(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.props.onCancel).toHaveBeenCalledTimes(1)
   })
 
-  it('shows a read-only Local destination and exposes Save as the only file operation', async () => {
+  it('shows the fixed local destination without a path editor', async () => {
     const path = '/storage/emulated/0/Codey/action-pad.yaml'
-    const screen = renderEditor({ pathKind: 'fixed-file', sourcePath: path, dirty: true })
+    const screen = renderEditor({ sourcePath: path, dirty: true })
 
-    expect(screen.getByText(`Saves to ${path}`)).toBeTruthy()
-    expect(screen.queryByLabelText('Host YAML path')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Load' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Load / Reload' })).toBeNull()
+    expect(screen.getByText(`Local file: ${path}`)).toBeTruthy()
+    fireEvent.press(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(screen.props.onLoad).toHaveBeenCalledWith())
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
 
-    await waitFor(() => expect(screen.props.onSave).toHaveBeenCalledWith(path))
-    expect(screen.props.onLoad).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.props.onSave).toHaveBeenCalledWith())
   })
 
   it('keeps Save disabled while a clean editor is waiting for its first load', () => {
@@ -1500,17 +1486,13 @@ describe('ActionPadEditor', () => {
     const dirty = renderEditor({ dirty: true, initialLoadPending: true })
     expect(dirty.getByTestId('action-pad-editor-save')).toBeEnabled()
     dirty.unmount()
-
-    const pathEdit = renderEditor({ initialLoadPending: true })
-    fireEvent.changeText(pathEdit.getByLabelText('Host YAML path'), '/home/test/new-action-pad.yaml')
-    expect(pathEdit.getByTestId('action-pad-editor-save')).toBeEnabled()
   })
 
   it('allows offline edits but blocks file operations, and disables editing while busy', () => {
     const screen = renderEditor({ connected: false })
-    expect(screen.getByText('No unsaved changes · Offline editing')).toBeTruthy()
+    expect(screen.getByText('No unsaved changes · Neovim stopped')).toBeTruthy()
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
-    fireEvent.press(screen.getByRole('button', { name: 'Load / Reload' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Reload' }))
     fireEvent.changeText(screen.getByLabelText('Button label'), 'Offline change')
     expect(screen.props.onChange).toHaveBeenCalledTimes(1)
     expect(screen.props.onSave).not.toHaveBeenCalled()
@@ -1530,7 +1512,7 @@ describe('ActionPadEditor', () => {
     expect(busy.getByRole('button', { name: 'Cancel' })).toBeDisabled()
   })
 
-  it('retains in-memory edits when a host callback fails and shows the actionable error', async () => {
+  it('retains in-memory edits when a local file callback fails and shows the actionable error', async () => {
     const screen = renderEditor({ onSave: jest.fn().mockRejectedValue(new Error('Permission denied. Reload, retry, or restore your backup.')) })
     fireEvent.changeText(screen.getByLabelText('Button label'), 'Keep this edit')
     fireEvent.press(screen.getByTestId('action-pad-editor-save'))
@@ -1554,26 +1536,26 @@ describe('ActionPadEditor', () => {
 
     const progress = screen.getByRole('progressbar')
     expect(progress.props.accessibilityLiveRegion).toBe('polite')
-    expect(screen.getByText('Taking longer than expected. The host request is still pending.')).toBeTruthy()
+    expect(screen.getByText('Taking longer than expected. The Neovim request is still pending.')).toBeTruthy()
     expect(screen.getByTestId('action-pad-editor-save')).toBeDisabled()
-    fireEvent.press(screen.getByRole('button', { name: 'Stop waiting and disconnect' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Stop waiting and stop Neovim' }))
     expect(onStopWaiting).toHaveBeenCalledTimes(1)
   })
 
   it('renders severity-aware notices with collapsed technical details', () => {
     const notice: ActionPadNotice = {
       severity: 'error',
-      summary: 'The host write failed.',
+      summary: 'The local write failed.',
       recommendedAction: 'Reload, retry, or restore your backup.',
       details: {
         operation: 'save',
         phase: 'writing',
         durationMs: 15_200,
-        path: '/host/action-pad.yaml',
+        path: '/storage/emulated/0/Codey/action-pad.yaml',
         byteCount: 431,
         hostErrorCode: 'io',
-        socketCode: 'E_TCP_EOF',
-        nativeSocketMessage: 'peer closed'
+        nativeCode: 'E_NVIM_EXIT',
+        nativeMessage: 'process exited'
       }
     }
     const screen = renderEditor({ notice })
@@ -1583,23 +1565,24 @@ describe('ActionPadEditor', () => {
     expect(screen.queryByTestId('action-pad-technical-details')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Reconnect & check save' })).toBeNull()
     fireEvent.press(screen.getByRole('button', { name: 'Show technical details' }))
-    expect(screen.getByText('Native socket code: E_TCP_EOF')).toBeTruthy()
+    expect(screen.getByText('Native process code: E_NVIM_EXIT')).toBeTruthy()
+    expect(screen.getByText('Native process message: process exited')).toBeTruthy()
     expect(screen.getByText('Serialized bytes: 431')).toBeTruthy()
   })
 
   it('shows the controller connection failure inside the full-screen editor', () => {
     const screen = renderEditor({
       connectionFailure: {
-        code: 'E_TCP_READ',
-        nativeCode: 'E_TCP_READ',
-        message: 'connection reset',
-        nativeMessage: 'ECONNRESET'
+        code: 'E_NVIM_EXIT',
+        nativeCode: 'E_NVIM_EXIT',
+        message: 'process exited',
+        nativeMessage: 'exit code 1'
       }
     })
-    expect(screen.getByText('Host connection failed: connection reset')).toBeTruthy()
+    expect(screen.getByText('Local Neovim failed: process exited')).toBeTruthy()
     fireEvent.press(screen.getByRole('button', { name: 'Show technical details' }))
-    expect(screen.getByText('Native socket code: E_TCP_READ')).toBeTruthy()
-    expect(screen.getByText('Native socket message: ECONNRESET')).toBeTruthy()
+    expect(screen.getByText('Native process code: E_NVIM_EXIT')).toBeTruthy()
+    expect(screen.getByText('Native process message: exit code 1')).toBeTruthy()
   })
 
   it('adapts across supported landscape widths without losing selected fields and keeps controls at least 48dp', () => {

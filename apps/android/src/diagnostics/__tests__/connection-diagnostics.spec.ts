@@ -15,7 +15,7 @@ import {
   type FrameScheduler,
   type MobileSession
 } from '../../controller'
-import type { ConnectionTarget } from '../../connection-target'
+import type { LocalConnectionSettings } from '../../local-connection-settings'
 import {
   createDiagnosticLogger,
   type DiagnosticConsole,
@@ -23,10 +23,10 @@ import {
 } from '../logger'
 
 const target = Object.freeze({
-  kind: 'remote',
-  host: 'nvim.test',
-  port: 7777
-}) satisfies ConnectionTarget
+  version: 1,
+  workspacePath: '/storage/emulated/0/Code',
+  configDirectory: '/storage/emulated/0/Codey'
+}) satisfies LocalConnectionSettings
 
 function createConsole(): jest.Mocked<DiagnosticConsole> {
   return {
@@ -59,7 +59,6 @@ function connectionDouble() {
     input: jest.fn(async (_keys: string) => undefined),
     inputMouse: jest.fn(async (_mouse: MouseInput) => undefined),
     resize: jest.fn(async (_width: number, _height: number) => undefined),
-    defaultActionPadPath: jest.fn(async () => '/tmp/action-pad.yaml'),
     readHostDocument: jest.fn(async (path: string): Promise<HostDocument> => ({
       path,
       text: null
@@ -92,7 +91,7 @@ function connectionDouble() {
     redraw(batch: RedrawBatch) {
       redrawListener?.(batch)
     },
-    remoteClose(error?: Error) {
+    processClose(error?: Error) {
       closeListener?.(error)
     }
   }
@@ -384,7 +383,7 @@ describe('connection operational diagnostics', () => {
       )).toBe(false)
       expect(controller.getState()).toMatchObject({
         phase: 'disconnected',
-        message: action === 'disconnect' ? 'Disconnected' : 'Disposed',
+        message: action === 'disconnect' ? 'Stopped' : 'Disposed',
         snapshot: null
       })
       expect(double.removeRedraw).toHaveBeenCalledTimes(1)
@@ -409,7 +408,11 @@ describe('connection operational diagnostics', () => {
     await controller.connect(target)
     first.session.close.mockRejectedValueOnce(new Error('old session cleanup rejected'))
 
-    await expect(controller.connect({ ...target, port: 8888 })).resolves.toBeUndefined()
+    await expect(controller.connect({
+      version: 1,
+      workspacePath: '/storage/emulated/0/Second',
+      configDirectory: '/storage/emulated/0/SecondConfig'
+    })).resolves.toBeUndefined()
 
     expect(factory).toHaveBeenCalledTimes(1)
     expect(second.session.connect).not.toHaveBeenCalled()

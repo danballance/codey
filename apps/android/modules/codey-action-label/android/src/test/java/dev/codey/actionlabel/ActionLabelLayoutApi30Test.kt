@@ -12,7 +12,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-/** API 30 is the bundled-NeoVim POC floor; raster correctness is tested on API 35. */
+/** API 30 is the bundled-NeoVim runtime floor; raster correctness is tested on API 35. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [30])
 @GraphicsMode(GraphicsMode.Mode.LEGACY)

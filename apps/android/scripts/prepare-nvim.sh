@@ -4,12 +4,12 @@ set -euo pipefail
 script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 app_directory="$(cd "$script_directory/.." && pwd)"
 repository_directory="$(cd "$app_directory/../.." && pwd)"
-lock_file="$app_directory/native-poc/termux-packages.lock"
+lock_file="$app_directory/native-runtime/termux-packages.lock"
 module_main="$app_directory/modules/codey-nvim/android/src/main"
 jni_target="$module_main/jniLibs/arm64-v8a"
 asset_target="$module_main/assets/codey-nvim"
-cache_directory="${CODEY_NVIM_CACHE_DIR:-$app_directory/.cache/nvim-poc}"
-temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/codey-nvim-poc.XXXXXX")"
+cache_directory="${CODEY_NVIM_CACHE_DIR:-$app_directory/.cache/nvim-runtime}"
+temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/codey-nvim-runtime.XXXXXX")"
 
 cleanup() {
   rm -rf -- "$temporary_directory"
@@ -99,7 +99,7 @@ copy_license termux-licenses share/LICENSES/Apache-2.0.txt luv-Apache-2.0.txt
 copy_license neovim share/doc/neovim/LICENSE.txt Neovim-Apache-2.0-and-Vim.txt
 copy_license tree-sitter share/doc/tree-sitter/copyright tree-sitter-MIT.txt
 copy_license utf8proc share/doc/utf8proc/copyright utf8proc-MIT.txt
-install -m 0644 "$app_directory/native-poc/LICENSES/lpeg-MIT.txt" "$license_stage/LPeg-MIT.txt"
+install -m 0644 "$app_directory/native-runtime/LICENSES/lpeg-MIT.txt" "$license_stage/LPeg-MIT.txt"
 install -m 0644 "$repository_directory/LICENSE" "$license_stage/Codey-Apache-2.0.txt"
 install -m 0644 "$repository_directory/THIRD_PARTY_NOTICES.md" "$asset_stage/THIRD_PARTY_NOTICES.md"
 
@@ -184,4 +184,4 @@ mkdir -p "$(dirname "$jni_target")" "$(dirname "$asset_target")"
 mv "$jni_stage" "$jni_target"
 mv "$asset_stage" "$asset_target"
 
-echo "Prepared NeoVim 0.12.5 POC bundle in $module_main"
+echo "Prepared NeoVim 0.12.5 native runtime in $module_main"

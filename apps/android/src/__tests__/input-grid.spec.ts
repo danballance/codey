@@ -1,23 +1,9 @@
-import { validateEndpoint } from '../endpoint'
 import { gridCellForPoint, gridSizeForBounds } from '../grid'
 import {
   committedTextToNvimInput,
   escapeNvimText,
   specialKeyToNvimInput
 } from '../input'
-
-describe('endpoint validation', () => {
-  it('normalizes a trusted LAN endpoint and rejects invalid values', () => {
-    expect(validateEndpoint(' 192.168.0.10 ', '6666')).toEqual({
-      host: '192.168.0.10',
-      port: 6666
-    })
-    expect(() => validateEndpoint('', 6666)).toThrow('hostname')
-    expect(() => validateEndpoint('host name', 6666)).toThrow('hostname')
-    expect(() => validateEndpoint('localhost', '0')).toThrow('Port')
-    expect(() => validateEndpoint('localhost', '65536')).toThrow('Port')
-  })
-})
 
 describe('grid sizing', () => {
   it('calculates dimensions, clamps tiny bounds, and ignores invalid metrics', () => {

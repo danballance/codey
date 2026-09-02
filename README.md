@@ -1,164 +1,138 @@
 # Codey
 
-Codey is a small Neovim client. Neovim remains the editor: it owns the
-buffers, modes, mappings, selections, cursor, plugins, and undo history. Codey
-connects to Neovim's native MessagePack-RPC endpoint and projects its line-grid
-UI into a platform renderer. Android can either start the bundled local
-NeoVim proof of concept or connect to an existing remote TCP endpoint.
-
-The repository contains two end-to-end clients over the same shared protocol
-and editor-state packages:
+Codey is an Android tablet client for a bundled Neovim runtime. Neovim remains
+the editor: it owns buffers, modes, mappings, selections, cursor state, plugins,
+and undo history. Codey starts one app-scoped `nvim --embed` process and renders
+its line-grid UI with Skia.
 
 ```text
-apps/
-  desktop/       Electron client with an HTML canvas renderer
-  android/       Expo development client for Android tablets
-packages/
-  transport/     Platform-neutral byte-stream contract and Node TCP adapter
-  msgpack-rpc/   Streaming MessagePack-RPC client
-  nvim-session/  Typed Neovim UI facade
-  editor-core/   Platform-neutral redraw reducer and grid state
+Android UI + IME
+  -> NvimSessionClient
+  -> MessagePackRpcClient
+  -> ExpoNvimProcessTransport
+  -> CodeyNvim native module
+  -> bundled nvim --embed
+       stdin  <- MessagePack-RPC requests
+       stdout -> MessagePack-RPC responses and notifications
+       stderr -> bounded diagnostic tail
 ```
 
-The Android path uses a Skia renderer, an Android IME view, and local Expo
-Kotlin modules for TCP and the bundled process. Phones remain installable, but a window whose shortest side
-is below `600dp`, or is not wider than it is tall, only shows the
-unsupported-device explanation and cannot open a Neovim session. Supported
-landscape windows place the action pad in a scrollable right-hand rail. Ordered
-base groups keep fixed rail-capacity envelopes. A configured group action can
-temporarily replace only its invoking slot without moving siblings or changing
-scroll extent, while Cmd, Leader,
-Search, Window, and Code remain whole-page navigation. The header distinguishes
-the page path from the one active transient cluster. The primary design target
-remains a 12–14-inch tablet. A completed editor tap is forwarded through
-Neovim's native mouse API to position the cursor; the configured Keyboard
-interaction opens the Android software keyboard.
+There is no editor network listener, discovery service, or background daemon.
+The child process stops with the app session.
+
+## Supported device and window
+
+The current native runtime is deliberately narrow:
+
+- Android 11 / API 30 or newer;
+- `arm64-v8a` devices;
+- a landscape window wider than it is tall;
+- a shortest active window side of at least `600dp`.
+
+Windows below `840dp` wide use the condensed tablet shell; wider windows use
+the expanded shell. At every supported width, compact **Set Workspace** and
+**Set Config Directory** controls share one toolbar row without permanently
+displaying either path. The current mode and Action Pad breadcrumb sit in a
+footer beneath the editor, leaving the fixed `336dp` right-hand Action Pad rail
+more vertical room without changing its button sizes. Unsupported windows never
+construct an editor session.
+
+Before starting Neovim, grant Android's all-files permission and choose two existing
+directories:
+
+- a writable workspace, used as Neovim's working directory; and
+- a readable, writable Neovim config directory.
+
+The config directory may contain `init.lua` and normal `lua/`, `plugin/`, and
+`after/` children. Codey starts Neovim with `--clean` when there is no readable
+`init.lua`. The Action Pad configuration has one fixed location:
+`<config-directory>/action-pad.yaml`.
 
 ## Development environment
 
-The checked-in Nix flake is the supported host environment:
+The checked-in Nix flake provides Node.js, pnpm, Neovim, JDK 17, ADB, Android
+platform/build-tools 36, NDK `27.1.12297006`, CMake `3.22.1`, Watchman, and EAS
+CLI:
 
 ```sh
 nix develop
 pnpm install
 ```
 
-It provides Node.js, pnpm, Neovim, the Electron runtime libraries, and the
-Android host toolchain: JDK 17, Watchman, ADB/platform tools, EAS CLI, Android
-platform and build-tools 36, NDK `27.1.12297006`, and CMake `3.22.1`. Android
-SDK licences are accepted declaratively by the flake. npm packages and Maven
-artifacts are still resolved by pnpm and the Gradle wrapper from the checked-in
-project metadata.
-
-## Desktop client
-
-Start a local endpoint and the Electron client:
-
-```sh
-nvim --clean --headless --listen 127.0.0.1:6666
-pnpm dev
-```
-
-Enter `127.0.0.1` and `6666` in the connection bar. Once connected, click the
-editor canvas and use Neovim normally.
-
-## Android tablet development client
-
-Use a physical Android tablet with developer options and USB debugging enabled.
-The device and development host must also be able to reach each other on a
-trusted private LAN.
-
-Check the USB connection, then build and install the development client:
+Generated Neovim binaries and runtime data are not committed. Attach an
+authorized physical tablet, then install the development client and start
+Metro. The install command stages the checksum-pinned runtime and regenerates
+a clean development-profile Android project first:
 
 ```sh
 adb devices
 pnpm android:install
-```
-
-For later JavaScript/TypeScript iterations, start Metro for the installed
-development client with:
-
-```sh
 pnpm android:metro
 ```
 
-The app is Android-only and requires a landscape tablet window. Use the
-**Remote** tab with the development host's private-LAN address;
-`127.0.0.1` on the tablet means the tablet itself. Start Neovim on that concrete
-host address, for example:
+Native configuration, Kotlin, or native-library changes require another clean
+prebuild and reinstall. TypeScript-only changes can use the existing client and
+Metro session.
+
+To stage the runtime or regenerate the development native project without
+installing it, use `pnpm android:prepare:nvim` or `pnpm android:prebuild`.
+
+To build the standalone release APK, including runtime preparation and a clean
+native generation:
 
 ```sh
-nvim --clean --headless --listen 192.168.1.20:6666
+pnpm android:apk
 ```
 
-The personal arm64 Android 11+ proof-of-concept APK can instead start its own
-NeoVim process. Build it with `pnpm android:poc`, then select **Local**, grant
-Android all-files access, and choose an existing writable workspace and Neovim
-config folder before connecting.
-See [the bundled NeoVim POC guide](apps/android/native-poc/README.md) for its
-scope, binary provenance, and the work intentionally deferred before F-Droid.
+The APK is written to
+`apps/android/android/app/build/outputs/apk/release/app-release.apk`. The
+current local signing fallback is suitable for personal sideloading, not public
+release identity.
 
-Changes to Expo native configuration, including orientation support, or native
-modules require a clean native regeneration and reinstall. The installed APK
-does not pick up these changes from Metro alone:
-
-```sh
-pnpm android:prebuild
-pnpm android:install
-```
-
-The generated `apps/android/android/` tree is disposable and ignored. The local
-Expo modules under `apps/android/modules/` are source-controlled.
-
-See [the Android client guide](apps/android/README.md) and
-[host setup](docs/host-setup.md) for physical-device and LAN details.
+See the [Android client guide](apps/android/README.md) and
+[bundled runtime guide](apps/android/native-runtime/README.md) for details.
 
 ## Verification
 
-Run the complete desktop and Android verification from the Nix shell:
+Run the complete repository check from the Nix shell:
 
 ```sh
-nix develop -c pnpm check
+pnpm check
 ```
 
-This runs TypeScript checks, shared Vitest tests, Android Jest tests, the
-production Electron build, Expo Doctor, an Android Metro export, a clean native
-prebuild, Kotlin unit tests, and both debug and release assembly. Generated APKs
-are under `apps/android/android/app/build/outputs/apk/`.
-
-Individual Android checks are also available:
+Useful Android checks are:
 
 ```sh
 pnpm android:doctor
 pnpm android:bundle
 pnpm android:test
-pnpm check:android:native
+pnpm android:prebuild
+pnpm android:test:native
+pnpm android:assemble
+pnpm android:assemble:release
 ```
 
-With a clean Neovim endpoint already listening on loopback, the optional desktop
-live test exercises the full TCP → RPC → session → redraw-reducer path:
+The generated `apps/android/android/` directory is disposable. Native module
+source is tracked under `apps/android/modules/`.
 
-```sh
-CODEY_NVIM_PORT=6666 pnpm test:live-nvim
-```
+## Security boundary
 
-## Prototype security boundary
+Local stdio removes a network-facing Neovim endpoint; it does not make Neovim
+or user configuration a sandbox. A selected `init.lua`, plugins, Action Pad
+commands, Lua, `system()`, and `:!` execute with the Android app UID. With
+all-files access, that UID can reach broad shared-storage content. Select only
+trusted workspaces, config directories, files, plugins, and Action Pad YAML.
 
-Treat the Neovim RPC port like shell access to the host account. This prototype
-has no authentication or encryption. Do not expose it to the internet, add
-router port forwarding, bind it to `0.0.0.0`, or use it on an untrusted network.
-Restrict the port to the tablet address or trusted subnet with the host firewall
-where practical.
+The Android manifest intentionally retains `INTERNET`. Development clients need
+it for Metro and Expo development services, and future app features may use it.
+Codey does not use that permission for editor transport; Neovim RPC remains on
+the child process's app-owned file descriptors.
 
-Local mode removes the network endpoint, not Neovim's command power. A config
-folder is required before connecting. Neovim starts with `--clean` when that
-folder has no `init.lua`; otherwise that Lua and normal config runtime files
-execute automatically.
-Neither mode is a sandbox: commands, Lua, `system()`, and `:!` run with the
-Android app UID and can access files covered by the app's all-files grant. Use
-trusted Local config folders, files, and Action Pad configurations.
+The directory browser is limited to primary shared storage and works with real
+filesystem paths. It does not turn Storage Access Framework `content://` URIs
+into paths, enumerate cloud providers, or provide a filesystem sandbox.
 
-See [the architecture notes](docs/architecture.md) for the component boundaries
-and current limitations. Codey source is available under [Apache-2.0](LICENSE);
-bundled proof-of-concept dependencies are listed in
+See the [architecture notes](docs/architecture.md) for component boundaries and
+the [performance guide](docs/performance.md) for device benchmarking. Codey is
+licensed under [Apache-2.0](LICENSE); bundled runtime dependencies are listed in
 [third-party notices](THIRD_PARTY_NOTICES.md).

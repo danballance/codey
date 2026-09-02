@@ -321,6 +321,9 @@ describe('ExpoNvimProcessTransport', () => {
       'transport.local.write_failed',
       'transport.local.write_cleanup_failed'
     ])
+    const writeFailureDetails = logger.getSnapshot().entries[0]?.detailsText ?? ''
+    expect(writeFailureDetails).toContain('byteLength')
+    expect(writeFailureDetails).not.toContain('"bytes"')
     expect(logger.getSnapshot().entries.at(-1)?.detailsText).toContain(
       'local write subscription removal failed'
     )

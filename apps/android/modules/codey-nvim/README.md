@@ -6,7 +6,7 @@ socket or use an intermediary shell to launch NeoVim. NeoVim itself is not a
 sandbox: normal commands, Lua, `system()`, and `:!` may start `/system/bin/sh`
 with the app UID and access any files granted to the app.
 
-The generated proof-of-concept inputs are not committed. Before prebuilding the
+The generated native runtime inputs are not committed. Before prebuilding the
 Android app, stage these files:
 
 - `android/src/main/jniLibs/arm64-v8a/libcodey_nvim.so`: the arm64 PIE NeoVim

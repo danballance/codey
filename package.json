@@ -2,18 +2,18 @@
   "name": "codey",
   "version": "0.1.0",
   "private": true,
-  "description": "A remote Neovim client with shared protocol and editor-state packages",
+  "description": "A local Android Neovim client with a bundled editor runtime",
   "packageManager": "pnpm@11.19.0",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "dev": "pnpm --filter @codey/desktop dev",
+    "dev": "pnpm android:metro",
     "android:metro": "pnpm --filter @codey/android run start",
     "android:install": "pnpm --filter @codey/android run android",
     "android:install:release": "pnpm --filter @codey/android run install:release",
-    "android:poc": "pnpm --filter @codey/android run build:poc",
-    "android:prepare:nvim:poc": "pnpm --filter @codey/android run prepare:nvim:poc",
+    "android:apk": "pnpm --filter @codey/android run build:apk",
+    "android:prepare:nvim": "pnpm --filter @codey/android run prepare:nvim",
     "android:doctor": "pnpm --filter @codey/android run doctor",
     "android:bundle": "pnpm --filter @codey/android run export:android",
     "android:prebuild": "pnpm --filter @codey/android run prebuild:clean",
@@ -21,13 +21,13 @@
     "android:test:native": "pnpm --filter @codey/android run native:test",
     "android:assemble": "pnpm --filter @codey/android run assemble:debug",
     "android:assemble:release": "pnpm --filter @codey/android run assemble:release",
-    "build": "pnpm --filter @codey/desktop build",
+    "build": "pnpm android:apk",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run && pnpm android:test",
     "test:watch": "vitest",
-    "test:live-nvim": "CODEY_LIVE_NVIM=1 vitest run tests/live-nvim.test.ts",
-    "check:android:native": "pnpm android:prebuild && pnpm android:test:native && pnpm android:assemble && pnpm android:assemble:release",
-    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm android:doctor && pnpm android:bundle && pnpm check:android:native"
+    "test:live-nvim": "vitest run tests/live-nvim.test.ts",
+    "check:android:native": "pnpm --filter @codey/android run native:verify",
+    "check": "pnpm typecheck && pnpm test && pnpm android:doctor && pnpm android:bundle && pnpm check:android:native"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

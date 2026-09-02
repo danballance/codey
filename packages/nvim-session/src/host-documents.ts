@@ -232,9 +232,6 @@ local function write_document(path, input)
 end
 
 local ok, result = pcall(function()
-  if operation == "default-path" then
-    return { path = absolute_path(vim.fn.stdpath("config") .. "/codey/action-pad.yaml") }
-  end
   if type(request) ~= "table" then fail("io", "Invalid host document request.") end
   local path = absolute_path(request.path)
   if operation == "read" then return { document = read_document(path) } end
@@ -256,14 +253,6 @@ if type(result) == "table" and result.host_document_error then
 end
 return { ok = false, code = "io", message = "Host document operation failed: " .. tostring(result) }
 `;
-
-export async function defaultActionPadPath(rpc: DocumentRpc): Promise<string> {
-  const result = await execute(rpc, "default-path", {});
-  if (typeof result.path !== "string" || !result.path.startsWith("/")) {
-    throw invalidResponse();
-  }
-  return result.path;
-}
 
 export async function readHostDocument(
   rpc: DocumentRpc,

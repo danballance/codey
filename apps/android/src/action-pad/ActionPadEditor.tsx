@@ -64,12 +64,11 @@ export interface ActionPadEditorProps {
   readonly dirty: boolean
   readonly initialLoadPending: boolean
   readonly sourcePath: string
-  readonly pathKind?: 'file' | 'fixed-file'
   readonly operation?: ActionPadOperation | null
   readonly notice?: ActionPadNotice | null
   readonly connectionFailure?: ConnectionFailure | null
-  readonly onLoad: (path: string) => Promise<void>
-  readonly onSave: (path: string) => Promise<void>
+  readonly onLoad: () => Promise<void>
+  readonly onSave: () => Promise<void>
   readonly onCancel: () => void
   readonly onOpenLogs: () => void
   readonly onStopWaiting?: () => void
@@ -79,7 +78,6 @@ export interface ActionPadEditorProps {
 
 export interface ActionPadEditorPendingEdits {
   readonly fieldEdits: boolean
-  readonly pathEdit: boolean
 }
 
 type SelectionKind = 'manager' | 'menu' | 'group' | 'button'
@@ -135,11 +133,10 @@ export function ActionPadEditor({
   config,
   onChange,
   connected,
-  busy: hostBusy,
+  busy: documentBusy,
   dirty,
   initialLoadPending,
   sourcePath,
-  pathKind = 'file',
   operation = null,
   notice: operationNotice,
   connectionFailure,
@@ -191,7 +188,6 @@ export function ActionPadEditor({
     positionedButtonIdentity: '',
     positions: {}
   })
-  const [hostPath, setHostPath] = useState(sourcePath)
   const [moveDestination, setMoveDestination] = useState('')
   const [editError, setEditError] = useState<ConfigIssue | null>(null)
   const [pendingIds, setPendingIds] = useState<Readonly<Record<string, PendingIdEdit>>>({})
@@ -208,18 +204,15 @@ export function ActionPadEditor({
   const localChangeSignature = useRef<string | null>(null)
   const pendingEditsCallback = useRef(onPendingEditsChange)
   pendingEditsCallback.current = onPendingEditsChange
-  const busy = hostBusy || operationPending
+  const busy = documentBusy || operationPending
   const hasPendingIds = Object.keys(pendingIds).length > 0
   const pendingEdits = useMemo<ActionPadEditorPendingEdits>(() => ({
-    fieldEdits: hasPendingIds,
-    pathEdit: pathKind === 'file' && hostPath !== sourcePath
-  }), [hasPendingIds, hostPath, pathKind, sourcePath])
-  const hasPendingEdits = pendingEdits.fieldEdits || pendingEdits.pathEdit
+    fieldEdits: hasPendingIds
+  }), [hasPendingIds])
+  const hasPendingEdits = pendingEdits.fieldEdits
   const structuralBusy = busy || hasPendingIds
   const latestEditor = useRef({ config, busy, hasPendingIds })
   latestEditor.current = { config, busy, hasPendingIds }
-
-  useEffect(() => { setHostPath(sourcePath) }, [sourcePath])
 
   useEffect(() => () => { activeIconRequest.current = undefined }, [])
 
@@ -247,12 +240,11 @@ export function ActionPadEditor({
     setLabelEditorRevision((revision) => revision + 1)
     setReferenceGuide(undefined)
     setCleanupConfirmation(undefined)
-    setHostPath(sourcePath)
-  }, [config, sourcePath])
+  }, [config, initialButtonLocation])
 
   useEffect(() => {
     pendingEditsCallback.current?.(pendingEdits)
-    return () => { pendingEditsCallback.current?.({ fieldEdits: false, pathEdit: false }) }
+    return () => { pendingEditsCallback.current?.({ fieldEdits: false }) }
   }, [pendingEdits])
 
   const menuIndex = Math.min(menuSelection, Math.max(0, config.menus.length - 1))
@@ -305,7 +297,7 @@ export function ActionPadEditor({
   function canApply(edit: ActionPadEdit): boolean {
     const latest = latestEditor.current
     if (busy || latest.busy) return false
-    // Native confirmation callbacks can outlive a host Load or reconnect.
+    // Native confirmation callbacks can outlive a local file reload or restart.
     if (latest.config !== config) {
       setOperationError('The configuration changed while the confirmation was open. Review the new document and try again.')
       return false
@@ -354,7 +346,7 @@ export function ActionPadEditor({
   }
 
   function runOperation(operation: () => Promise<void>) {
-    if (operationInFlight.current || hostBusy) return
+    if (operationInFlight.current || documentBusy) return
     operationInFlight.current = true
     setOperationPending(true)
     setOperationError('')
@@ -362,7 +354,7 @@ export function ActionPadEditor({
       try {
         await operation()
       } catch (error) {
-        setOperationError(error instanceof Error ? error.message : 'The host operation failed. Your unsaved edits are still open.')
+        setOperationError(error instanceof Error ? error.message : 'The local file operation failed. Your unsaved edits are still open.')
       } finally {
         operationInFlight.current = false
         setOperationPending(false)
@@ -560,14 +552,14 @@ export function ActionPadEditor({
       <View style={styles.header}>
         <View style={styles.titleBlock}>
           <Text accessibilityRole="header" style={styles.title}>Edit Action Pad</Text>
-          <Text style={styles.muted}>{dirty || hasPendingEdits ? 'Unsaved changes' : 'No unsaved changes'} · {connected ? 'Host connected' : 'Offline editing'}</Text>
+          <Text style={styles.muted}>{dirty || hasPendingEdits ? 'Unsaved changes' : 'No unsaved changes'} · {connected ? 'Neovim running' : 'Neovim stopped'}</Text>
         </View>
         <EditorButton label="Logs" onPress={onOpenLogs} />
         <EditorButton disabled={busy} label="Cancel" onPress={onCancel} />
         <EditorButton
-          disabled={!canWrite || hostPath.length === 0}
+          disabled={!canWrite || sourcePath.length === 0}
           label={busy ? 'Working…' : 'Save'}
-          onPress={() => runOperation(() => onSave(hostPath))}
+          onPress={() => runOperation(onSave)}
           primary
           testID="action-pad-editor-save"
         />
@@ -585,35 +577,19 @@ export function ActionPadEditor({
         testID="action-pad-editor-scroll"
       >
         <View style={styles.card}>
-          {pathKind === 'fixed-file' ? (
-            <Text selectable style={styles.muted}>
-              {hostPath.length > 0
-                ? `Saves to ${hostPath}`
-                : 'Choose a Neovim config folder before connecting.'}
-            </Text>
-          ) : (
-            <>
-              <FormField
-                disabled={busy}
-                fontLoaded={fontLoaded}
-                label="Host YAML path"
-                onChange={setHostPath}
-                placeholder="~/.config/nvim/codey/action-pad.yaml"
-                value={hostPath}
-              />
-              <View style={styles.actions}>
-                <EditorButton
-                  disabled={!connected || busy || hostPath.length === 0}
-                  label={hostPath === sourcePath ? 'Load / Reload' : 'Load'}
-                  onPress={() => runOperation(() => onLoad(hostPath))}
-                />
-              </View>
-              <Text style={styles.muted}>
-                Paths are on the Neovim host. Use an absolute path or ~/. Save activates these edits only after the file is written.
-              </Text>
-            </>
-          )}
-          {!connected ? <Text style={styles.notice}>You can keep editing while this screen stays open. Reconnect to load or save.</Text> : null}
+          <Text selectable style={styles.muted}>
+            {sourcePath.length > 0
+              ? `Local file: ${sourcePath}`
+              : 'Choose a Neovim config folder before starting Neovim.'}
+          </Text>
+          <View style={styles.actions}>
+            <EditorButton
+              disabled={!connected || busy || sourcePath.length === 0}
+              label="Reload"
+              onPress={() => runOperation(onLoad)}
+            />
+          </View>
+          {!connected ? <Text style={styles.notice}>You can keep editing while this screen stays open. Start Neovim to load or save.</Text> : null}
           {operation ? <OperationStatusCard operation={operation} onStopWaiting={onStopWaiting} /> : null}
           {displayedOperationNotice ? <NoticeStatusCard notice={displayedOperationNotice} /> : null}
           {connectionFailure ? (
@@ -1482,10 +1458,10 @@ function OperationStatusCard({
       </View>
       {operation.slow ? (
         <>
-          <Text style={styles.notice}>Taking longer than expected. The host request is still pending.</Text>
+          <Text style={styles.notice}>Taking longer than expected. The Neovim request is still pending.</Text>
           {onStopWaiting ? (
             <View style={styles.actions}>
-              <EditorButton danger label="Stop waiting and disconnect" onPress={onStopWaiting} />
+              <EditorButton danger label="Stop waiting and stop Neovim" onPress={onStopWaiting} />
             </View>
           ) : null}
         </>
@@ -1552,11 +1528,11 @@ function useOperationElapsed(operation: ActionPadOperation): number {
 function connectionFailureNotice(failure: ConnectionFailure): ActionPadNotice {
   return {
     severity: 'error',
-    summary: `Host connection failed: ${failure.message}`,
-    recommendedAction: 'Reconnect before loading or saving. Unsaved edits remain available until you close the editor.',
+    summary: `Local Neovim failed: ${failure.message}`,
+    recommendedAction: 'Start Neovim again before loading or saving. Unsaved edits remain available until you close the editor.',
     details: {
-      socketCode: failure.nativeCode ?? failure.code,
-      nativeSocketMessage: failure.nativeMessage ?? failure.message
+      nativeCode: failure.nativeCode ?? failure.code,
+      nativeMessage: failure.nativeMessage ?? failure.message
     }
   }
 }
@@ -1568,11 +1544,11 @@ function noticeDetailRows(notice: ActionPadNotice): readonly (readonly [string, 
   if (details.operation) rows.push(['Operation', operationLabel(details.operation)])
   if (details.phase) rows.push(['Phase', phaseLabel(details.phase)])
   if (details.durationMs !== undefined) rows.push(['Duration', formatDuration(details.durationMs)])
-  if (details.path) rows.push(['Host path', details.path])
+  if (details.path) rows.push(['Local path', details.path])
   if (details.byteCount !== undefined) rows.push(['Serialized bytes', String(details.byteCount)])
-  if (details.hostErrorCode) rows.push(['Host error code', details.hostErrorCode])
-  if (details.socketCode) rows.push(['Native socket code', details.socketCode])
-  if (details.nativeSocketMessage) rows.push(['Native socket message', details.nativeSocketMessage])
+  if (details.hostErrorCode) rows.push(['File error code', details.hostErrorCode])
+  if (details.nativeCode) rows.push(['Native process code', details.nativeCode])
+  if (details.nativeMessage) rows.push(['Native process message', details.nativeMessage])
   return rows
 }
 
@@ -1584,8 +1560,8 @@ function operationLabel(kind: ActionPadOperation['kind']): string {
 function phaseLabel(phase: ActionPadOperation['phase']): string {
   switch (phase) {
     case 'validating': return 'Validating edits'
-    case 'reading': return 'Reading host file'
-    case 'writing': return 'Writing host file'
+    case 'reading': return 'Reading local file'
+    case 'writing': return 'Writing local file'
   }
 }
 

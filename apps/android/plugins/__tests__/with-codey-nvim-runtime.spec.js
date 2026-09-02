@@ -4,8 +4,8 @@ const {
   UNUSED_EXPO_PERMISSIONS,
   configureGradleProperties,
   configureManifest,
-  configurePocSettingsGradle
-} = require('../with-codey-nvim-poc')
+  configureStandaloneSettingsGradle
+} = require('../with-codey-nvim-runtime')
 
 const DO_NOT_STRIP_PROPERTY = 'android.packagingOptions.doNotStrip'
 const EXPECTED_NVIM_NATIVE_LIBRARY_PATTERNS = [
@@ -24,14 +24,26 @@ const EXPECTED_NVIM_NATIVE_LIBRARY_PATTERNS = [
 describe('bundled NeoVim Android config plugin', () => {
   it('sets the API floor, arm64 ABI, and extracted native-library packaging', () => {
     const result = configureGradleProperties([
-      { type: 'property', key: 'reactNativeArchitectures', value: 'x86_64' }
+      { type: 'property', key: 'reactNativeArchitectures', value: 'x86_64' },
+      {
+        type: 'property',
+        key: 'org.gradle.jvmargs',
+        value: '-Xmx2048m -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=512m'
+      }
     ])
 
     expect(result).toEqual(expect.arrayContaining([
+      {
+        type: 'property',
+        key: 'org.gradle.jvmargs',
+        value: '-Xmx2048m -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1024m'
+      },
       { type: 'property', key: 'android.minSdkVersion', value: '30' },
       { type: 'property', key: 'reactNativeArchitectures', value: 'arm64-v8a' },
       { type: 'property', key: 'expo.useLegacyPackaging', value: 'true' }
     ]))
+    expect(result.filter((item) => item.key === 'org.gradle.jvmargs')).toHaveLength(1)
+    expect(configureGradleProperties(result)).toEqual(result)
   })
 
   it('preserves existing do-not-strip entries and adds every bundled NeoVim library once', () => {
@@ -69,6 +81,7 @@ describe('bundled NeoVim Android config plugin', () => {
       manifest: {
         $: { 'xmlns:android': 'http://schemas.android.com/apk/res/android' },
         'uses-permission': [
+          { $: { 'android:name': 'android.permission.INTERNET' } },
           { $: { 'android:name': ALL_FILES_PERMISSION } },
           { $: { 'android:name': ALL_FILES_PERMISSION } }
         ],
@@ -81,6 +94,9 @@ describe('bundled NeoVim Android config plugin', () => {
     expect(manifest.manifest['uses-permission'].filter(
       (permission) => permission.$['android:name'] === ALL_FILES_PERMISSION
     )).toHaveLength(1)
+    expect(manifest.manifest['uses-permission']).toContainEqual({
+      $: { 'android:name': 'android.permission.INTERNET' }
+    })
     for (const permissionName of UNUSED_EXPO_PERMISSIONS) {
       expect(manifest.manifest['uses-permission']).toContainEqual({
         $: {
@@ -93,14 +109,14 @@ describe('bundled NeoVim Android config plugin', () => {
     expect(manifest.manifest.application[0].$['android:extractNativeLibs']).toBe('true')
   })
 
-  it('excludes the development client graph from POC native autolinking', () => {
-    const result = configurePocSettingsGradle('before\nexpoAutolinking.useExpoModules()\nafter')
+  it('excludes the development client graph from standalone native autolinking', () => {
+    const result = configureStandaloneSettingsGradle('before\nexpoAutolinking.useExpoModules()\nafter')
 
     expect(result).toContain('expoAutolinking.exclude = [')
     for (const moduleName of DEV_CLIENT_NATIVE_MODULES) {
       expect(result).toContain(`'${moduleName}'`)
     }
     expect(result).toContain('expoAutolinking.useExpoModules()')
-    expect(configurePocSettingsGradle(result)).toBe(result)
+    expect(configureStandaloneSettingsGradle(result)).toBe(result)
   })
 })

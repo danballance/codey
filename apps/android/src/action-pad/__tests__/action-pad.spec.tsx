@@ -1,3 +1,4 @@
+import { useCallback, useState } from 'react'
 import { StyleSheet } from 'react-native'
 import { act, cleanup, fireEvent, render, within } from '@testing-library/react-native'
 
@@ -8,12 +9,14 @@ import {
 import {
   ACTION_PAD_LONG_PRESS_MS,
   DEFAULT_ACTION_PAD_CONFIG,
-  ActionPad,
+  ActionPad as ActionPadView,
+  ActionPadStatusBar,
   resolveActionPadConfig,
   type ActionButton,
   type ActionGroup,
   type ActionInteraction,
   type ActionMenu,
+  type ActionPadNavigationContext,
   type ActionPadProps
 } from '..'
 
@@ -58,13 +61,17 @@ type InteractionFixture =
       readonly group: GroupFixture
     })
 
-type ActionPadOverrides = Partial<Omit<ActionPadProps, 'rootMenu'>> & {
+type TestActionPadProps = ActionPadProps & {
+  readonly mode?: string
+}
+
+type ActionPadOverrides = Partial<Omit<TestActionPadProps, 'rootMenu'>> & {
   readonly rootMenu?: MenuFixture | ActionMenu
 }
 
 const DEFAULT_ROOT_MENU = resolveActionPadConfig(DEFAULT_ACTION_PAD_CONFIG)
 
-function actionPadProps(overrides: ActionPadOverrides = {}): ActionPadProps {
+function actionPadProps(overrides: ActionPadOverrides = {}): TestActionPadProps {
   const { rootMenu = DEFAULT_ROOT_MENU, ...rest } = overrides
   return {
     enabled: true,
@@ -74,6 +81,26 @@ function actionPadProps(overrides: ActionPadOverrides = {}): ActionPadProps {
     ...rest,
     rootMenu: addExplicitHalfSizes(rootMenu)
   }
+}
+
+function ActionPad({
+  mode = 'NORMAL',
+  onNavigationContextChange,
+  ...props
+}: TestActionPadProps) {
+  const [context, setContext] = useState<ActionPadNavigationContext>({ text: '' })
+  const reportNavigationContext = useCallback((next: ActionPadNavigationContext) => {
+    setContext(next)
+    onNavigationContextChange?.(next)
+  }, [onNavigationContextChange])
+
+  return <>
+    <ActionPadStatusBar compact={props.compact} context={context} mode={mode} />
+    <ActionPadView
+      {...props}
+      onNavigationContextChange={reportNavigationContext}
+    />
+  </>
 }
 
 function addExplicitHalfSizes(rootMenu: MenuFixture | ActionMenu): ActionMenu {
@@ -318,7 +345,7 @@ describe('ActionPad', () => {
     expect(StyleSheet.flatten(screen.getByText('Esc').props.style).fontWeight).toBe('400')
 
     jest.mocked(useCodeyNerdFontFaces).mockReturnValue([true, null])
-    screen.rerender(<ActionPad {...props} mode="INSERT" />)
+    screen.rerender(<ActionPad {...props} compact mode="INSERT" />)
 
     expect(StyleSheet.flatten(screen.getByText('INSERT').props.style)).toMatchObject({
       fontFamily: CODEY_NERD_FONT_FAMILIES.bold,
@@ -343,14 +370,67 @@ describe('ActionPad', () => {
     expect(StyleSheet.flatten(screen.getByText('Esc').props.style).fontWeight).toBe('400')
   })
 
+  it('renders mode and accessible navigation context in the separate status bar', () => {
+    const context: ActionPadNavigationContext = {
+      text: 'Leader / Search',
+      accessibilityLabel: 'Current action path: Leader / Search'
+    }
+    const screen = render(
+      <ActionPadStatusBar context={context} mode="INSERT" />
+    )
+    const status = screen.getByTestId('action-pad-status-bar')
+    const breadcrumb = screen.getByLabelText('Current action path: Leader / Search')
+
+    expect(StyleSheet.flatten(status.props.style)).toMatchObject({
+      height: 25,
+      flexDirection: 'row',
+      backgroundColor: '#16161e'
+    })
+    expect(StyleSheet.flatten(screen.getByText('INSERT').props.style)).toMatchObject({
+      color: '#9ece6a',
+      fontFamily: CODEY_NERD_FONT_FAMILIES.bold,
+      fontWeight: 'normal'
+    })
+    expect(breadcrumb.props).toMatchObject({
+      accessibilityLiveRegion: 'polite',
+      numberOfLines: 1,
+      children: ['› ', 'Leader / Search']
+    })
+    expect(StyleSheet.flatten(breadcrumb.props.style)).toMatchObject({
+      minWidth: 0,
+      flexShrink: 1,
+      color: '#73daca',
+      fontFamily: CODEY_NERD_FONT_FAMILIES.semiBold
+    })
+
+    screen.rerender(
+      <ActionPadStatusBar compact context={context} mode="VISUAL" />
+    )
+    expect(StyleSheet.flatten(status.props.style).height).toBe(20)
+    expect(StyleSheet.flatten(screen.getByText('VISUAL').props.style).fontSize).toBe(11)
+  })
+
+  it('omits the breadcrumb when the reported navigation context is empty', () => {
+    const screen = render(
+      <ActionPadStatusBar context={{ text: '' }} mode="NORMAL" />
+    )
+
+    expect(screen.getByTestId('action-pad-status-bar')).toBeTruthy()
+    expect(screen.queryByText(/^› /)).toBeNull()
+    expect(screen.queryByLabelText(/Current action/)).toBeNull()
+  })
+
   it('uses one scrollable ordered landscape rail', () => {
     const screen = render(<ActionPad {...actionPadProps()} />)
 
-    expect(StyleSheet.flatten(screen.getByTestId('action-pad').props.style)).toMatchObject({
+    const pad = screen.getByTestId('action-pad')
+    expect(StyleSheet.flatten(pad.props.style)).toMatchObject({
       flex: 1,
       minHeight: 0,
       borderLeftWidth: 2
     })
+    expect(within(pad).queryByTestId('action-pad-status-bar')).toBeNull()
+    expect(within(pad).queryByText('NORMAL')).toBeNull()
     const scroll = screen.getByTestId('action-pad-flow-scroll')
     expect(StyleSheet.flatten(scroll.props.contentContainerStyle)).toMatchObject({
       flexGrow: 1,
@@ -1225,6 +1305,66 @@ describe('ActionPad', () => {
     expect(screen.getByText('NORMAL')).toBeTruthy()
   })
 
+  it('reports context on mount, cluster and page navigation, Back, reset, disable, and replacement', () => {
+    const { rootMenu } = runtimeFixture()
+    const onNavigationContextChange = jest.fn()
+    const props: ActionPadProps = {
+      enabled: true,
+      onInput: jest.fn(),
+      onKeyboardPress: jest.fn(),
+      onNavigationContextChange,
+      resetKey: 'initial',
+      rootMenu: addExplicitHalfSizes(rootMenu)
+    }
+    const screen = render(<ActionPadView {...props} />)
+
+    expect(onNavigationContextChange).toHaveBeenLastCalledWith({ text: '' })
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    expect(onNavigationContextChange).toHaveBeenLastCalledWith({
+      text: 'Home · Alpha',
+      accessibilityLabel: 'Current action page path: Home; active action cluster: Alpha'
+    })
+
+    fireEvent.press(screen.getByTestId('action-pad-open-page-from-alpha'))
+    expect(onNavigationContextChange).toHaveBeenLastCalledWith({
+      text: 'Page',
+      accessibilityLabel: 'Current action path: Page'
+    })
+
+    fireEvent.press(screen.getByTestId('action-pad-back'))
+    expect(onNavigationContextChange).toHaveBeenLastCalledWith({ text: '' })
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    screen.rerender(<ActionPadView {...props} resetKey="reset" />)
+    expect(onNavigationContextChange).toHaveBeenLastCalledWith({ text: '' })
+
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    screen.rerender(<ActionPadView {...props} enabled={false} resetKey="reset" />)
+    expect(onNavigationContextChange).toHaveBeenLastCalledWith({ text: '' })
+
+    screen.rerender(<ActionPadView {...props} resetKey="reset" />)
+    fireEvent.press(screen.getByTestId('action-pad-open-alpha'))
+    const replacement: ActionMenu = {
+      id: 'replacement',
+      label: 'Replacement',
+      groups: [{
+        id: 'replacement-actions',
+        buttons: [{
+          id: 'replacement-input',
+          label: 'Replacement input',
+          styles: { size: '1/2' },
+          tap: input('new')
+        }]
+      }]
+    }
+    screen.rerender(
+      <ActionPadView {...props} resetKey="reset" rootMenu={replacement} />
+    )
+    expect(screen.getByTestId('action-pad-replacement-input')).toBeTruthy()
+    expect(onNavigationContextChange).toHaveBeenLastCalledWith({ text: '' })
+  })
+
   it('keeps navigation inputs open but returns command inputs to Home', () => {
     const onInput = jest.fn()
     const screen = render(<ActionPad {...actionPadProps({ onInput })} />)
@@ -1364,7 +1504,7 @@ describe('ActionPad', () => {
     expect(props.onInput).toHaveBeenCalledWith('fresh')
   })
 
-  it('does not rebuild its button tree when redraw-facing props are unchanged', () => {
+  it('does not rebuild its button tree when the separate status mode changes', () => {
     let groupReads = 0
     const rootMenu = {
       id: DEFAULT_ROOT_MENU.id,
@@ -1382,6 +1522,7 @@ describe('ActionPad', () => {
     expect(groupReads).toBe(readsAfterMount)
 
     screen.rerender(<ActionPad {...props} mode="INSERT" />)
-    expect(groupReads).toBeGreaterThan(readsAfterMount)
+    expect(screen.getByText('INSERT')).toBeTruthy()
+    expect(groupReads).toBe(readsAfterMount)
   })
 })

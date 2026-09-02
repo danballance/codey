@@ -1,4 +1,11 @@
-import { memo, useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import {
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef
+} from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 
 import {
@@ -66,21 +73,75 @@ export interface ActionPadProps {
   readonly enabled: boolean
   readonly interactionMode?: 'normal' | 'selection' | 'suspended'
   readonly onEditButton?: (target: ActionPadButtonTarget) => void
+  readonly onNavigationContextChange?: (
+    context: ActionPadNavigationContext
+  ) => void
   readonly compact?: boolean
   readonly resetKey?: string | number
-  readonly mode: string
   readonly onInput: (input: string) => void
   readonly onKeyboardPress: () => void
 }
+
+export interface ActionPadNavigationContext {
+  readonly text: string
+  readonly accessibilityLabel?: string
+}
+
+export interface ActionPadStatusBarProps {
+  readonly mode: string
+  readonly context: ActionPadNavigationContext
+  readonly compact?: boolean
+}
+
+export const ActionPadStatusBar = memo(function ActionPadStatusBar({
+  mode,
+  context,
+  compact = false
+}: ActionPadStatusBarProps) {
+  const [nerdFontFacesLoaded] = useCodeyNerdFontFaces()
+
+  return (
+    <View
+      style={[styles.statusBar, compact && styles.compactStatusBar]}
+      testID="action-pad-status-bar"
+    >
+      <View style={[styles.modeBadge, compact && styles.compactModeBadge]}>
+        <Text
+          style={[
+            styles.modeText,
+            nerdFontFacesLoaded && styles.nerdFontBold,
+            compact && styles.compactStatusText
+          ]}
+        >
+          {mode}
+        </Text>
+      </View>
+      {context.text.length > 0 ? (
+        <Text
+          accessibilityLabel={context.accessibilityLabel}
+          accessibilityLiveRegion="polite"
+          numberOfLines={1}
+          style={[
+            styles.breadcrumb,
+            nerdFontFacesLoaded && styles.nerdFontSemiBold,
+            compact && styles.compactStatusText
+          ]}
+        >
+          › {context.text}
+        </Text>
+      ) : null}
+    </View>
+  )
+})
 
 export const ActionPad = memo(function ActionPad({
   rootMenu,
   enabled,
   interactionMode = 'normal',
   onEditButton,
+  onNavigationContextChange,
   compact = false,
   resetKey,
-  mode,
   onInput,
   onKeyboardPress
 }: ActionPadProps) {
@@ -98,7 +159,7 @@ export const ActionPad = memo(function ActionPad({
     [rootMenu]
   )
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = configuration.current
     configuration.current = { resetKey, rootMenu }
     if (previous.rootMenu !== rootMenu || !Object.is(previous.resetKey, resetKey)) {
@@ -106,7 +167,7 @@ export const ActionPad = memo(function ActionPad({
     }
   }, [resetKey, rootMenu])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const wasEnabled = enabledState.current
     enabledState.current = enabled
     if (wasEnabled && !enabled) dispatchNavigation({ type: 'root' })
@@ -120,9 +181,25 @@ export const ActionPad = memo(function ActionPad({
     .map((frame) => frame.menu.label)
     .join(' / ')
   const activeClusterLabel = navigation.cluster?.menu.label
-  const navigationContext = activeClusterLabel === undefined
-    ? breadcrumb
-    : `${breadcrumb || currentMenu.label} · ${activeClusterLabel}`
+  const navigationContext = useMemo<ActionPadNavigationContext>(() => {
+    if (activeClusterLabel !== undefined) {
+      const page = breadcrumb || currentMenu.label
+      return {
+        text: `${page} · ${activeClusterLabel}`,
+        accessibilityLabel: `Current action page path: ${page}; active action cluster: ${activeClusterLabel}`
+      }
+    }
+    return breadcrumb.length === 0
+      ? { text: '' }
+      : {
+          text: breadcrumb,
+          accessibilityLabel: `Current action path: ${breadcrumb}`
+        }
+  }, [activeClusterLabel, breadcrumb, currentMenu.label])
+
+  useLayoutEffect(() => {
+    onNavigationContextChange?.(navigationContext)
+  }, [navigationContext, onNavigationContextChange])
 
   const runtime = useRef({
     enabled,
@@ -263,36 +340,6 @@ export const ActionPad = memo(function ActionPad({
       ]}
       testID="action-pad"
     >
-      <View style={[styles.header, compact && styles.compactHeader]}>
-        <View style={[styles.modeBadge, compact && styles.compactModeBadge]}>
-          <Text
-            style={[
-              styles.modeText,
-              nerdFontFacesLoaded && styles.nerdFontBold,
-              compact && styles.compactHeaderText
-            ]}
-          >
-            {mode}
-          </Text>
-        </View>
-        {navigationContext.length > 0 ? (
-          <Text
-            accessibilityLabel={activeClusterLabel === undefined
-              ? `Current action path: ${breadcrumb}`
-              : `Current action page path: ${breadcrumb || currentMenu.label}; active action cluster: ${activeClusterLabel}`}
-            accessibilityLiveRegion="polite"
-            numberOfLines={1}
-            style={[
-              styles.breadcrumb,
-              nerdFontFacesLoaded && styles.nerdFontSemiBold,
-              compact && styles.compactHeaderText
-            ]}
-          >
-            › {navigationContext}
-          </Text>
-        ) : null}
-      </View>
-
       <ScrollView
         contentContainerStyle={[
           styles.verticalGroups,
@@ -717,7 +764,6 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     padding: 24,
-    gap: 18,
     borderLeftWidth: 2,
     borderColor: '#10121a',
     borderRadius: 12,
@@ -725,7 +771,6 @@ const styles = StyleSheet.create({
   },
   compactPanel: {
     padding: 8,
-    gap: 6,
     borderRadius: 8
   },
   flowScroll: {
@@ -753,14 +798,15 @@ const styles = StyleSheet.create({
   compactRailGroup: {
     rowGap: 6
   },
-  header: {
+  statusBar: {
     height: 25,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12
+    gap: 12,
+    backgroundColor: '#16161e'
   },
-  compactHeader: {
+  compactStatusBar: {
     height: 20,
     gap: 6
   },
@@ -778,7 +824,7 @@ const styles = StyleSheet.create({
     height: 20,
     paddingHorizontal: 6
   },
-  compactHeaderText: {
+  compactStatusText: {
     fontSize: 11
   },
   nerdFontSemiBold: {

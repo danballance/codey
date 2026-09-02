@@ -24,19 +24,17 @@ import type { DuplexTransport } from '@codey/transport'
 import { Systrace } from 'react-native'
 
 import {
-  actionPadEndpointForTarget,
-  connectionTargetLabel,
-  createRemoteConnectionTarget,
-  validateConnectionTarget,
-  type ConnectionTarget
-} from './connection-target'
+  actionPadPathForSettings,
+  validateLocalConnectionSettings,
+  type LocalConnectionSettings
+} from './local-connection-settings'
 import {
+  diagnosticUtf8ByteLength,
   diagnosticLogger,
   type DiagnosticLogger,
   type DiagnosticOperation
 } from './diagnostics/logger'
 import { diagnosticOriginOf } from './diagnostics/origin'
-import type { Endpoint } from './endpoint'
 import { sameGridSize, type GridSize } from './grid'
 
 export type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -45,7 +43,7 @@ export interface ConnectionFailure {
   /** Stable app/native code suitable for diagnostics and recovery UI. */
   readonly code: string
   readonly message: string
-  /** Exact code emitted by the Android socket layer, when one was supplied. */
+  /** Exact code emitted by the Android process layer, when one was supplied. */
   readonly nativeCode?: string
   readonly nativeMessage?: string
 }
@@ -81,7 +79,6 @@ export interface MobileSession {
   input(keys: string): Promise<void>
   inputMouse(mouse: MouseInput): Promise<void>
   resize(width: number, height: number): Promise<void>
-  defaultActionPadPath(): Promise<string>
   readHostDocument(path: string): Promise<HostDocument>
   writeHostDocument(request: HostDocumentWrite): Promise<void>
   onRedraw(listener: (batch: RedrawBatch) => void): () => void
@@ -100,11 +97,9 @@ export interface ConnectionDiagnosticContext {
 }
 
 export type ConnectionFactory = (
-  target: ConnectionTarget,
+  settings: LocalConnectionSettings,
   diagnostics?: ConnectionDiagnosticContext
 ) => ConnectionResources
-
-export type ConnectionTargetInput = ConnectionTarget | Endpoint
 
 export interface FrameScheduler {
   request(callback: (timestampMs: number) => void): number
@@ -113,7 +108,7 @@ export interface FrameScheduler {
 
 interface ActiveConnection extends ConnectionResources {
   readonly generation: number
-  readonly target: ConnectionTarget
+  readonly settings: LocalConnectionSettings
   readonly connectOperation: DiagnosticOperation
   editorState: EditorState
   ready: boolean
@@ -145,7 +140,7 @@ export class TabletClientController {
 
   #state: ClientState = {
     phase: 'disconnected',
-    message: 'Not connected',
+    message: 'Stopped',
     connectionFailure: null,
     snapshot: null,
     gridSize: INITIAL_GRID,
@@ -177,15 +172,15 @@ export class TabletClientController {
     return () => this.#listeners.delete(listener)
   }
 
-  public async connect(input: ConnectionTargetInput): Promise<void> {
+  public async connect(input: LocalConnectionSettings): Promise<void> {
     this.#assertUsable()
-    const target = normalizeConnectionTarget(input)
+    const settings = validateLocalConnectionSettings(input)
     const generation = this.#nextGeneration++
     const connectOperation = this.#logger.operation({
       category: 'connection',
       event: 'connection.connect',
       message: 'Establishing a Neovim connection',
-      details: { generation, target }
+      details: { generation, settings }
     })
     this.#latestConnectRequest = generation
     try {
@@ -193,7 +188,7 @@ export class TabletClientController {
     } catch (reason) {
       connectOperation.failure(reason, {
         message: 'Could not safely close the previous Neovim connection',
-        details: { generation, target }
+        details: { generation, settings }
       })
       if (!this.#disposed) this.#setError(reason, 'Could not close the previous connection')
       return
@@ -208,28 +203,28 @@ export class TabletClientController {
 
     let resources: ConnectionResources
     try {
-      resources = this.#factory(target, {
+      resources = this.#factory(settings, {
         generation,
         operationId: connectOperation.id
       })
       connectOperation.checkpoint({
         event: 'connection.resources.created',
         message: 'Created connection resources',
-        details: { generation, target }
+        details: { generation, settings }
       })
     } catch (reason) {
       connectOperation.failure(reason, {
-        message: 'Could not create Android connection resources',
-        details: { generation, target }
+        message: 'Could not create local Neovim process resources',
+        details: { generation, settings }
       })
-      this.#setError(reason, 'Could not create the Android connection')
+      this.#setError(reason, 'Could not start local Neovim')
       return
     }
 
     const connection: ActiveConnection = {
       ...resources,
       generation,
-      target,
+      settings,
       connectOperation,
       editorState: createEditorState(),
       ready: false,
@@ -247,9 +242,7 @@ export class TabletClientController {
     this.#active = connection
     this.#replaceState({
       phase: 'connecting',
-      message: target.kind === 'local'
-        ? `Starting ${connectionTargetLabel(target)}…`
-        : `Connecting to ${remoteTargetAddress(target)}…`,
+      message: `Starting Neovim in ${settings.workspacePath}…`,
       connectionFailure: null,
       snapshot: null,
       performanceSamples: EMPTY_PERFORMANCE_SAMPLES
@@ -277,7 +270,7 @@ export class TabletClientController {
       if (!this.#isCurrent(connection)) {
         connectOperation.failure(this.#state.connectionFailure, {
           message: 'The Neovim connection closed while observers were being registered',
-          details: { generation, target }
+          details: { generation, settings }
         })
         await this.#closeConnection(connection).catch(() => undefined)
         return
@@ -318,14 +311,12 @@ export class TabletClientController {
       connection.ready = true
       this.#replaceState({
         phase: 'connected',
-        message: target.kind === 'local'
-          ? `Running ${connectionTargetLabel(target)}`
-          : `Connected to ${remoteTargetAddress(target)}`,
+        message: `Running in ${settings.workspacePath}`,
         connectionFailure: null
       })
       connectOperation.success({
         message: 'Neovim connection is ready',
-        details: { generation, target, grid: attachGrid }
+        details: { generation, settings, grid: attachGrid }
       })
 
       const latestGrid = this.#state.gridSize
@@ -351,12 +342,12 @@ export class TabletClientController {
         message: 'Neovim connection failed',
         details: {
           generation,
-          target,
+          settings,
           origin: diagnosticOriginOf(reason)
         }
       })
       await this.#closeConnection(connection).catch(() => undefined)
-      if (!this.#disposed) this.#setError(reason, 'Connection failed')
+      if (!this.#disposed) this.#setError(reason, 'Neovim failed to start')
     }
   }
 
@@ -371,7 +362,7 @@ export class TabletClientController {
       details: active === null ? { active: false } : {
         active: true,
         generation: active.generation,
-        target: active.target
+        settings: active.settings
       }
     })
     this.#latestConnectRequest = this.#nextGeneration++
@@ -422,7 +413,8 @@ export class TabletClientController {
           operationId: connection.connectOperation.id,
           details: {
             generation: connection.generation,
-            keys,
+            inputLength: keys.length,
+            byteLength: diagnosticUtf8ByteLength(keys),
             reason: diagnosticReason(reason)
           }
         })
@@ -455,40 +447,35 @@ export class TabletClientController {
     }
   }
 
-  public defaultActionPadPath(endpoint: Endpoint): Promise<string> {
-    return this.#documentOperation(endpoint, (session) => session.defaultActionPadPath())
+  public readActionPad(): Promise<HostDocument> {
+    return this.#documentOperation((session, settings) =>
+      session.readHostDocument(actionPadPathForSettings(settings))
+    )
   }
 
-  public readHostDocument(endpoint: Endpoint, path: string): Promise<HostDocument> {
-    return this.#documentOperation(endpoint, (session) => session.readHostDocument(path))
+  public writeActionPad(text: string): Promise<void> {
+    return this.#documentOperation((session, settings) =>
+      session.writeHostDocument({ path: actionPadPathForSettings(settings), text })
+    )
   }
 
-  public writeHostDocument(endpoint: Endpoint, request: HostDocumentWrite): Promise<void> {
-    return this.#documentOperation(endpoint, (session) => session.writeHostDocument(request))
-  }
-
-  async #documentOperation<T>(endpoint: Endpoint, operation: (session: MobileSession) => Promise<T>): Promise<T> {
+  async #documentOperation<T>(
+    operation: (session: MobileSession, settings: LocalConnectionSettings) => Promise<T>
+  ): Promise<T> {
     const connection = this.#active
-    const actionPadEndpoint = connection === null
-      ? null
-      : actionPadEndpointForTarget(connection.target)
-    if (
-      connection === null || !connection.ready || connection.closing ||
-      actionPadEndpoint === null ||
-      actionPadEndpoint.host !== endpoint.host || actionPadEndpoint.port !== endpoint.port
-    ) {
-      throw new Error('Connect to this configuration’s Neovim session before accessing its files.')
+    if (connection === null || !connection.ready || connection.closing) {
+      throw new Error('Start local Neovim before accessing the Action Pad.')
     }
 
     try {
       // Document RPCs have no client-side deadline. The Action Pad store marks
       // a pending request as slow after 15 seconds and lets the user explicitly
       // disconnect; abandoning a wait must never replay a write.
-      const result = await operation(connection.session)
+      const result = await operation(connection.session, connection.settings)
       if (!this.#isCurrent(connection) || !connection.ready || connection.closing) {
         const failure = this.#state.connectionFailure
         if (failure !== null) throw new ConnectionFailureError(failure)
-        throw new Error('The connection changed during the file operation. Reconnect and check the file before retrying.')
+        throw new Error('The Neovim process changed during the file operation. Restart it and check the file before retrying.')
       }
       return result
     } catch (reason) {
@@ -520,7 +507,7 @@ export class TabletClientController {
       details: active === null ? { active: false } : {
         active: true,
         generation: active.generation,
-        target: active.target
+        settings: active.settings
       }
     })
     this.#disposed = true
@@ -700,17 +687,15 @@ export class TabletClientController {
 
   #receiveClose(connection: ActiveConnection, error?: Error): void {
     if (!this.#isCurrent(connection)) return
-    const connectionFailure = connectionFailureOf(error, 'Neovim connection closed')
+    const connectionFailure = connectionFailureOf(error, 'Neovim process stopped')
     this.#logger.error({
-      category: connection.target.kind === 'local' ? 'nvim' : 'transport',
-      event: connection.target.kind === 'local'
-        ? 'nvim.process.unexpected_exit'
-        : 'transport.unexpected_close',
-      message: error?.message ?? 'Neovim connection closed unexpectedly',
+      category: 'nvim',
+      event: 'nvim.process.unexpected_exit',
+      message: error?.message ?? 'Neovim process stopped unexpectedly',
       operationId: connection.connectOperation.id,
       details: {
         generation: connection.generation,
-        target: connection.target,
+        settings: connection.settings,
         failure: connectionFailure,
         error: diagnosticReason(error)
       }
@@ -719,8 +704,8 @@ export class TabletClientController {
     this.#replaceState({
       phase: 'error',
       message: error?.message
-        ? `Neovim connection closed: ${error.message}`
-        : 'Neovim connection closed',
+        ? `Neovim process stopped: ${error.message}`
+        : 'Neovim process stopped',
       connectionFailure,
       snapshot: null,
       performanceSamples: EMPTY_PERFORMANCE_SAMPLES
@@ -753,7 +738,7 @@ export class TabletClientController {
       if (reportDisconnected && !this.#disposed) {
         this.#replaceState({
           phase: 'disconnected',
-          message: 'Disconnected',
+          message: 'Stopped',
           connectionFailure: null,
           snapshot: null,
           performanceSamples: EMPTY_PERFORMANCE_SAMPLES
@@ -784,7 +769,7 @@ export class TabletClientController {
           event: 'connection.cleanup_failed',
           message: 'Connection cleanup failed while closing the Neovim session',
           operationId: connection.connectOperation.id,
-          details: { generation: connection.generation, target: connection.target, reason }
+          details: { generation: connection.generation, settings: connection.settings, reason }
         })
         throw reason
       })
@@ -929,17 +914,6 @@ export class TabletClientController {
   }
 }
 
-function normalizeConnectionTarget(input: ConnectionTargetInput): ConnectionTarget {
-  return 'kind' in input
-    ? validateConnectionTarget(input)
-    : createRemoteConnectionTarget(input.host, input.port)
-}
-
-function remoteTargetAddress(target: Extract<ConnectionTarget, { readonly kind: 'remote' }>): string {
-  const host = target.host.includes(':') ? `[${target.host}]` : target.host
-  return `${host}:${target.port}`
-}
-
 function inputSampleFromTags(tags: PerformanceTags): PendingPerformanceSample | null {
   if (
     tags.sampleId === undefined ||
@@ -966,11 +940,11 @@ function connectionFailureOf(reason: unknown, fallback: string): ConnectionFailu
     ? candidate.nativeCode
     : typeof candidate?.code === 'string'
       ? candidate.code
-      : namedCode?.startsWith('E_TCP_') || namedCode?.startsWith('ECONN')
+      : namedCode?.startsWith('E_NVIM_')
         ? namedCode
         : undefined
   return {
-    code: nativeCode ?? (error === undefined ? 'E_CONNECTION_CLOSED' : 'E_CONNECTION'),
+    code: nativeCode ?? (error === undefined ? 'E_NVIM_CLOSED' : 'E_NVIM'),
     message: error?.message || fallback,
     ...(nativeCode === undefined ? {} : { nativeCode }),
     ...(error?.message ? { nativeMessage: error.message } : {})

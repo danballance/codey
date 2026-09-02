@@ -5,7 +5,6 @@ import {
   recordPerformance,
 } from "@codey/perf";
 import {
-  defaultActionPadPath,
   readHostDocument,
   writeHostDocument,
   type HostDocument,
@@ -46,7 +45,6 @@ export interface NvimSession {
   input(keys: string): Promise<void>;
   resize(width: number, height: number): Promise<void>;
   inputMouse(mouse: MouseInput): Promise<void>;
-  defaultActionPadPath(): Promise<string>;
   readHostDocument(path: string): Promise<HostDocument>;
   writeHostDocument(request: HostDocumentWrite): Promise<void>;
   onRedraw(listener: RedrawListener): () => void;
@@ -146,11 +144,6 @@ export class NvimSessionClient implements NvimSession {
     return () => {
       this.#redrawListeners.delete(listener);
     };
-  }
-
-  public async defaultActionPadPath(): Promise<string> {
-    this.#assertOpen();
-    return defaultActionPadPath(this.rpc);
   }
 
   public async readHostDocument(path: string): Promise<HostDocument> {

@@ -1,332 +1,217 @@
 # Architecture
 
-Codey now has two deliberately narrow, end-to-end client paths over the same
-shared packages.
+Codey has one supported editor path: an Android tablet UI controlling one
+bundled, app-scoped Neovim process.
 
 ```text
-Electron
-  canvas renderer + DOM input
-    -> narrow preload API
-    -> Electron main process
-    -> NvimSessionClient
-    -> MessagePackRpcClient
-    -> NodeTcpTransport
-    -> headless Neovim
-
-Android tablet
-  Skia renderer + native Android IME
-    -> app-local connection/editor controller
-    -> NvimSessionClient
-    -> MessagePackRpcClient
-    -> ExpoNvimProcessTransport -> CodeyNvim -> bundled nvim [--clean] --embed
-     or ExpoTcpTransport -> CodeyTcp -> remote headless Neovim
+Skia renderer + Android IME + Action Pad
+  -> TabletClientController
+  -> NvimSessionClient
+  -> MessagePackRpcClient
+  -> ExpoNvimProcessTransport
+  -> CodeyNvim Expo module
+  -> bundled nvim --embed
+       stdin  <- encoded RPC requests
+       stdout -> RPC responses and redraw notifications
+       stderr -> bounded diagnostic tail
 ```
 
-The Electron renderer has no Node.js access; its TCP socket remains in the main
-process. On Android, both JavaScript adapters satisfy the same byte-stream
-contract. Socket ownership or child-process blocking I/O remains in its Kotlin
-module, and the RPC/session/editor layers do not distinguish the transport.
-Platform orchestration stays inside each app, so proving the mobile path does
-not require an Electron refactor.
+No socket is opened for the editor session. The JavaScript transport crosses
+the Expo native bridge, while Kotlin owns blocking child-process I/O and process
+lifecycle. Neovim's stdin/stdout remain a continuous byte stream; the same RPC,
+session, and redraw layers above the transport do not need a special local
+protocol.
 
-## Shared package rules
+## Shared package boundaries
 
-- `transport` knows bytes and connection lifecycle, not MessagePack or Neovim.
-- `msgpack-rpc` frames a continuous byte stream, tracks request IDs, and exposes
-  requests and notifications without knowing Neovim methods.
-- `nvim-session` is the only package that names Neovim RPC methods.
-- `editor-core` reduces redraw events into a single-grid model. It has no socket,
-  Electron, React Native, DOM, canvas, or Skia dependencies.
-- Neovim is authoritative. The grid is a rendering projection, not an editable
-  document model.
+- `transport` defines byte-stream and close-lifecycle contracts.
+- `msgpack-rpc` frames the stream, assigns request IDs, and dispatches responses
+  and notifications without knowing Neovim methods.
+- `nvim-session` is the typed facade that names Neovim RPC methods.
+- `editor-core` reduces redraw batches into an immutable single-grid snapshot.
+  It has no Android, React Native, Skia, native-process, or filesystem
+  dependencies.
+- `perf` carries opt-in, content-free timing correlation.
 
-`DuplexTransport`, `MessagePackRpcClient`, `NvimSessionClient`, and the
-`editor-core` public API are unchanged. The mobile app consumes their raw
-TypeScript exports through Expo's standard pnpm-aware Metro configuration.
+Neovim is authoritative. The grid is a rendering projection, not a second text
+model. Codey never attempts to reproduce Neovim buffers, mappings, undo, modes,
+or plugin state.
 
-## Redraw and resize lifecycle
+## Native runtime boundary
 
-Neovim sends a `redraw` notification containing a batch of UI events. The core
-applies all events in order. A snapshot reaches either platform renderer only
-when the batch contains `flush`, so intermediate mutations never produce a
-partial frame.
+`CodeyNvim` owns one process manager. Its native API covers runtime status,
+all-files settings, workspace directory listing, process start/write/stop, and
+data/exit events. A monotonically increasing session ID binds every write and
+event to the process that produced it. Late events from an earlier generation
+are ignored.
 
-The Android Skia renderer draws grid backgrounds and glyphs, RGB highlights,
-reverse colors, text decorations, cursor, mode, and dimensions from those
-snapshots. Available canvas bounds are converted to rows and columns whenever
-system bars, the software keyboard, or multi-window bounds change, and the new
-grid size is sent to Neovim. A completed tap inside the rendered grid is
-converted through those same cell metrics and sent as a zero-based
-`nvim_input_mouse` left-button press with grid `0`, allowing Neovim to resolve
-the target screen window while retaining authority over its mouse option and
-mappings.
+Process startup performs these checks before spawning Neovim:
 
-The Android app bundles JetBrainsMono Nerd Font Mono for editor glyphs and all
-action-pad text so Nerd Font private-use characters share one known typeface.
-Each surface handles loading independently: the pad retains system typography
-while pending or unavailable, and the editor falls back to system monospace if
-its four-face load fails.
+- Android API level is at least 30;
+- the device exposes `arm64-v8a`;
+- the executable, dependent DSOs, and runtime bundle are present;
+- Android all-files access is granted;
+- the workspace is an existing writable directory; and
+- the config directory is an existing readable, writable, non-root directory.
 
-This slice opts into `ext_linegrid` and `rgb`, but not multigrid or externalized
-command-line, popup-menu, or message UIs.
+An existing `init.lua` must be a readable regular file. Without one, the command
+is `nvim --clean --embed`. With one, `XDG_CONFIG_HOME` and `NVIM_APPNAME` make
+the selected directory Neovim's real config root, and a strict post-start check
+turns config errors into a failed connection. Data, state, and cache live in an
+app-private profile keyed by the canonical config path. HOME, temporary files,
+and the extracted runtime are also app-private.
 
-## Android platform boundary
+The executable is launched directly from Android's extracted native-library
+directory. There is no intermediary shell, listener, service, or daemon.
+Stdout is reserved for MessagePack-RPC. Stderr is drained concurrently into a
+bounded 16 KiB tail so diagnostics cannot deadlock the process or grow without
+limit. Closing a session closes stdin, requests process termination, escalates
+to forced termination after a bounded wait, and drains terminal events
+idempotently.
 
-`ConnectionTarget` is the normalized discriminated union for a Local workspace
-plus config folder or a Remote endpoint. Version-3 connection settings own the
-device-wide Local config folder alongside the workspace and Remote endpoint.
-The form may hold an unset folder, but Local connection construction rejects it.
-Remote endpoints retain one selected YAML path each in the Action Pad store.
+The runtime archive is checksum-verified and extracted with traversal checks
+into a versioned private directory. Runtime data is not executable; only the
+packaged native-library executable is run.
 
-The POC native process module admits one session, launches the executable
-directly from Android's extracted native-library directory, and never invokes a
-shell or opens a loopback listener. Stdout is exclusively RPC data. Stderr is
-drained concurrently into a 16 KiB tail; an exit event carries that tail and a
-stable native error code. Runtime data is SHA-256 checked, extracted with path
-traversal protection into a versioned private directory, and never marked
-executable. Local startup also gates API level, ABI, bundle presence, workspace
-access, Android all-files permission, and the required config folder before
-spawning the process. The folder must be an existing readable, writable,
-non-root directory. An existing `init.lua` must be a readable regular file.
-Without one, startup preserves the exact `nvim --clean --embed` contract. With
-one, the folder is exposed as `stdpath('config')` through `XDG_CONFIG_HOME` and
-`NVIM_APPNAME`; Neovim loads `init.lua` plus normal `lua/`, `plugin/`, and
-`after/` content. Data, state, and cache use an app-private profile keyed by the
-canonical folder path. A post-start check turns config errors into a failed
-connection instead of silently continuing.
+## Connection and redraw lifecycle
 
-The app evaluates the active Android window before constructing any editor
-resource. Expo requests landscape in the generated manifest, and the runtime
-gate remains authoritative when a large-screen device ignores that request:
+The app-local controller owns one current process connection and exposes
+explicit disconnected, connecting, connected, and error states. It does not
+automatically reconnect. Every connection receives a generation number, and
+resources from superseded generations are closed or ignored.
 
-- portrait or square bounds, or a shortest side below `600dp`: unsupported; no
-  transport, session, renderer, or IME is created;
-- landscape bounds with a shortest side at least `600dp` and width below
-  `840dp`: supported condensed
-  tablet shell;
-- landscape bounds with a shortest side at least `600dp` and width at least
-  `840dp`: primary large-tablet shell.
+Neovim sends `redraw` notifications containing ordered event batches. The core
+applies a batch in order and publishes only at `flush`, so no renderer sees a
+partial frame. The Skia canvas draws backgrounds, glyphs, RGB highlights,
+reverse colours, decorations, cursor, mode, and dimensions from the published
+snapshot.
 
-Phones are not filtered from the manifest. If an active editor window becomes
-unsupported during multi-window resizing, the controller tears down the session
-idempotently before showing the unsupported-device screen. Returning to
-supported landscape constructs a fresh disconnected client. The supported
-workspace places the action pad in a fixed `336dp` right rail.
+Available canvas bounds are converted to rows and columns when system bars,
+the software keyboard, or multi-window geometry changes. Resize requests remain
+generation-bound. A completed editor tap is converted through the same cell
+metrics and sent as a zero-based `nvim_input_mouse` left-button press on grid
+`0`; Neovim resolves the actual window and retains authority over its mouse
+option and mappings.
 
-The app-local controller owns exactly one current connection. It validates and
-persists host/port settings, exposes explicit connect, disconnect, and reconnect
-states, rejects stale native events from earlier connection IDs, and performs
-no automatic reconnect.
+This slice enables `ext_linegrid` and RGB. It does not enable multigrid or
+externalized command-line, popup-menu, tabline, wildmenu, or message UIs.
 
-### TCP module
+## Device and window gate
 
-The local Expo module exposes this binary boundary:
+Expo requests landscape, and a runtime gate remains authoritative:
 
-```text
-open(host, port, timeoutMs) -> Promise<connectionId>
-write(connectionId, Uint8Array) -> Promise<void>
-close(connectionId) -> Promise<void>
-data event  { connectionId, bytes }
-close event { connectionId, code?, message? }
-```
+- portrait, square, or shortest side below `600dp`: unsupported and no editor
+  resource is constructed;
+- supported landscape below `840dp` wide: condensed shell;
+- supported landscape at least `840dp` wide: expanded shell.
 
-Each socket has TCP no-delay enabled, ordered writes, background reads, and one
-terminal close event. The TypeScript `ExpoTcpTransport` adapter translates this
-boundary to `DuplexTransport` and isolates reconnect generations.
+If resizing makes an active window unsupported, Codey tears down the session
+before showing the unsupported-device screen. Returning to supported landscape
+creates a fresh disconnected client. Both supported shells place compact **Set
+Workspace** and **Set Config Directory** controls in one toolbar row without
+permanently displaying either path. Below it, the workspace reserves a fixed
+`336dp` right rail for the Action Pad; the editor column owns a footer containing
+Neovim mode and the current page/cluster breadcrumb. Keeping that status outside
+the rail gives the pad the reclaimed vertical viewport while preserving its
+`52dp` normal and `48dp` compact button heights.
 
-### Input module
+## Workspace and configuration settings
 
-The local Expo native view exposes imperative `focus()`, `blur()`, structured-key,
-raw-input, and composition-settlement calls plus committed-text, structured
-special/hardware-key, and ordered-input events. Android composition updates are
-not forwarded as duplicate input. Physical keys, configured action-pad input
-sequences, and editor taps settle active composition before their input reaches
-Neovim, so touch commands cannot overtake unfinished software-keyboard text.
-Tapping the editor never changes IME focus; the root action pad exposes a configured
-Keyboard interaction for opening it.
+Codey persists one local workspace path and one local Neovim config directory.
+There is no target-kind discriminator, host, port, endpoint identity, or
+per-endpoint preference. The form may temporarily hold an unset config
+directory, but connection construction rejects it.
 
-### Contextual action pad
+The native browser returns canonical directories beneath primary shared
+storage. Directory selection is picker-only: each toolbar control reopens at
+its saved path, with an unset config selection falling back to the workspace.
+The browser displays its current path but does not translate Storage Access
+Framework `content://` URIs, enumerate cloud providers, or expose a virtual
+filesystem to Neovim.
 
-The Android command area is a small interpreter for a validated graph of menus,
-ordered groups, buttons, and interactions. Group IDs are arbitrary configuration
-labels with no built-in placement semantics. A button configures `tap`,
-`longPress`, or both from the same interaction union: direct Neovim input,
-opening a whole menu, substituting one destination group, going Back, or
-focusing the Android keyboard. Each interaction declares `after: 'root'` or
-`after: 'stay'`, so return behavior is local to the button gesture instead of
-inherited from its menu.
+The selected config directory has two roles:
 
-A group interaction resolves a destination menu and the exact destination group
-object, then renders that group in the invoking base group's fixed slot. Target
-definition identity and layout identity remain separate: selection mode edits
-the destination `{menuId, groupId, buttonId}`, while the outer rendered group is
-still identified by the current page and original host-group ID. Replacement
-buttons use their actual definition identity. This lets memoized sibling groups
-stay mounted while only the restored and newly substituted slots rerender.
+1. it is the optional executable Neovim configuration root; and
+2. it owns the fixed Action Pad file at `<config-directory>/action-pad.yaml`.
 
-Navigation state is reducer-owned and consists of a full-page stack plus at most
-one active cluster. A `group` interaction with `after: 'stay'` replaces the
-active cluster without adding history; a nested group interaction retains the
-same original host slot. Activating a cluster in another group restores the old
-host first. Opening a whole menu clears the cluster before pushing the page, so
-Back returns to a clean prior page. Back clears a cluster and pops one page; at
-Home it only clears the cluster. Any `after: 'root'`, disable/reset, or active
-configuration replacement clears both page and cluster state. Input and
-keyboard actions with `after: 'stay'`, layout/compact changes, selection mode,
-and suspension preserve it.
+Codey does not watch or automatically source changes to Lua files. Users source
+them deliberately or reconnect for a fresh startup.
 
-The bundled Up/Down buttons send `<Up>` or `<Down>` on tap and substitute their
-navigation choices on long press. Yank, Delete, Motions, and TextObjects use the
-same transient mechanism on tap. Their consolidated `options` groups contain no
-Back button; configured Back remains an ordinary interaction on full pages and
-the five bundled Back controls use the set-back Outline appearance. Special
-and modified keys are complete trusted `nvim_input` strings such as `<Esc>` and
-`<C-w>h`. Navigation and Back transitions are local, so Neovim receives nothing
-for either. Inputs can retain a cluster for repetition or return the complete
-pad to root.
+## Input ordering
 
-The action pad uses a `336dp` rail at full workspace height. When the software
-keyboard removes at least 120dp of usable height, the rail switches to its
-compact treatment while retaining 48dp touch targets. The trusted configuration
-still owns density and can overflow, but a cluster swap never changes sibling
-positions, the scroll-view instance, its content extent, or its scroll offset.
+The `CodeyIme` native view exposes focus, blur, committed-text, structured-key,
+raw-input, and composition-settlement operations. Terminal mode requests
+multiline visible-password input without suggestions so coding input is
+committed promptly. Composed mode remains available for compatibility testing.
 
-Each base-page slot has a fixed rail-capacity envelope computed by following
-only group-action targets reachable from that slot. Every button explicitly
-declares `styles.size` as `"1/1"`, `"1/2"`, `"1/3"`, `"1/4"`, or `"1/5"`.
-Sequential packing uses 60-unit rows, with those fractions consuming 60, 30, 20,
-15, and 12 units. Their rendered widths are 100%, 48%, 30.6667%, 22%, and 16.8%
-to preserve the 4% gaps. A slot reserves the maximum exact row height across its
-reachable variants using the normal or compact button height and existing gaps.
-The shared vertical overflow container keeps the same geometry through a
-substitution while preserving the existing press ownership, long-press,
-release, and stale-activation guards.
+Physical keys, Action Pad sequences, and editor taps settle active Android
+composition before their input enters the controller. This prevents a touch or
+configured command from overtaking unfinished software-keyboard text. Tapping
+the editor does not change IME focus; the root Action Pad contains the explicit
+Keyboard action.
 
-Button presentation is resolved from a small semantic style contract. Omitted
-or `filled` appearance uses a `#24283b` background and transparent outline;
-`outline` uses a transparent background and the existing 1dp `#353b52` outline.
-Optional background and outline colours override those defaults. Persisted
-colours are strict `#RRGGBB` strings, with `transparent` additionally accepted
-for button background and outline fields. The editor preview and live pad share
-the same width and appearance resolution.
+## Contextual Action Pad
 
-The current Neovim mode, full-page breadcrumb, and active-cluster label are
-projections in the action-pad header, not a second Neovim state machine. The
-visual context distinguishes them, for example `› Leader / Search · Delete`, and
-the accessibility announcement names the page path separately from the active
-cluster. Hardware-key input remains independent of the touch-menu path.
+The Action Pad interprets a validated YAML graph of menus, ordered groups,
+buttons, and tap/long-press interactions. Inputs are complete trusted Neovim
+notation strings. Navigation, Back, and group substitution are local UI state
+and do not send RPC input.
 
-The action document is YAML data, with `version`, `rootMenuId`, and ordered
-menus, groups, and buttons. A `group` interaction carries both `menuId` and
-`groupId`, and every button carries an explicit `styles.size` of `"1/2"` or
-`"1/4"`. A button label is either a legacy string or an ordered list of at most
-64 explicit `{text, fontSize, bold}` runs. The fixed font-size set is 10, 12, 15,
-18, and 22; compact mode uses 9, 10, 13, 16, and 19. Non-bold runs and scalar
-labels use regular weight; bold runs use the bold face, with system fallbacks
-of 400 and 700. Each editor run can contain both text and icons. Its icon picker
-inserts at the remembered selection without changing typography or run count;
-run identities and UTF-16 cursor state are editor-only and never persisted.
-Pending insertion is discarded when its document or target changes.
+A group interaction substitutes one destination group into the invoking base
+slot. The base slot reserves a fixed capacity envelope for every reachable
+variant, so swaps preserve sibling positions, scroll extent, and scroll offset.
+At most one transient cluster is active. Full-menu navigation uses a separate
+stack; root/reset and activated configuration changes clear both layers.
 
-Scalar button labels keep their React Native `Text` renderer. Rich labels use
-the local `codey-action-label` Expo view, shared by production and preview. The
-private bridge receives ordered text runs, resolved compact/normal sizes,
-concrete font-family names or system weights, and the existing colour/default
-typography; none of these bridge details add persisted fields. The native view
-fills the button's existing padded content bounds and does not handle input or
-accessibility. Its parent Pressable retains the full accessible name.
+Every button declares a semantic size (`1/1`, `1/2`, `1/3`, `1/4`, or `1/5`),
+appearance, and optional strict `#RRGGBB` colour overrides. Labels may be a
+legacy scalar or a bounded list of styled text/icon runs. The JavaScript and
+native rich-label renderers share the same bundled JetBrainsMono Nerd Font
+faces and semantic style resolution.
 
-Native rich text is one joined string with original UTF-16 run ranges. A
-metric-affecting span sets each run's face, size, and absolute baseline offset
-so its primary-font ascent/descent box is centred on the line baseline. An
-independent `ForegroundColorSpan` applies each run's resolved colour without
-changing measurement or line breaking. An
-unshifted `StaticLayout` discovers native line breaks and ellipsis; a second
-layout applies centred spans and explicit per-visible-line metrics. This
-separates stable alignment from fallback-glyph clipping protection and avoids
-making runs into indivisible blocks or introducing new shaping boundaries at
-line breaks. Elided text does not inflate the visible line's metrics. Font
-faces come from the same `ReactFontManager` cache populated by Expo Font, with
-system regular/bold while bundled faces are unavailable.
+The full-screen editor owns an in-memory working copy separate from the active
+pad. Invalid or incomplete IDs, labels, destinations, and colour values block
+Save. Opening the editor settles composition, blurs Neovim input, and suspends
+the live pad, so form typing cannot enter Neovim. Closing with unsaved changes
+requires explicit discard confirmation.
 
-The renderer tries two complete lines, then one with tail ellipsis, within the
-fixed 52dp/48dp button content area. It never shrinks configured text. If even
-one line exceeds the available height, a default-size regular ellipsis is used
-if it fits; otherwise it draws no ink while leaving the full accessibility
-name intact. Layout is cached until content, typography, dimensions, or Android
-configuration changes. There is no JavaScript measurement feedback loop and
-no per-run alignment setting. Native registration requires rebuilding the
-Android client; Metro refresh alone is insufficient.
+The destination is always `<config-directory>/action-pad.yaml`. It is displayed
+read-only; there is no arbitrary host path or remembered path selection. On the
+first successful connection, Codey reads that file or uses the bundled starter
+when it does not exist. Save serializes the validated working copy to the fixed
+file and activates the saved configuration.
 
-Strict semantic validation
-requires those fields and both destinations, rejects malformed or blank rich
-labels and colour values, rejects same-menu references and cycles mixed across
-menu/group links, and the resolver preserves destination object identity. The
-bundled starter and user-selected host files use the same parser. The renderer sees only a
-validated graph, whose identity changes after a successful Load/Save rather
-than on each form edit or editor redraw; replacement resets navigation to root.
-This prototype deliberately evolves schema version 1 in place. It provides no
-migration or implicit size for older documents, and older builds reject the new
-size values, style/colour fields, and rich labels even though legacy strings
-remain valid.
+Action Pad file operations remain generation-bound and preserve dirty edits
+across failures. A write that has begun cannot be assumed to be safely
+cancelled; failure recovery must report whether the file may be incomplete.
 
-The configuration store owns the active document, in-memory working copy, and
-one remembered YAML path per Remote endpoint. Connection setup injects the
-resolved `<config-folder>/action-pad.yaml` path for Local mode; the store neither
-persists nor chooses the Local folder and never falls back to a private Local
-file. The Local editor displays that destination read-only and exposes Save as
-its only file operation, while Remote retains editable path and Load controls.
-The separate editor
-does not mount an interactive action pad; its button-label form reuses the
-production text renderer in a noninteractive Normal/Compact preview. Entering
-the editor settles the prior IME composition, blurs the Neovim input target,
-and suspends active pad input; ordinary form text cannot enter the session.
-Editor access sits outside user configuration so an empty or unusable pad can
-always be repaired. The mounted editor may temporarily retain incomplete custom
-colour or ID text, but validation blocks Save and preview resolution falls back
-to the selected appearance default until the value is valid. Closing the editor
-discards unsaved work; only the YAML path survives a restart. The store loads
-that path on the endpoint's first successful connection, while later reconnects
-leave the in-memory active and working copies alone until an explicit Load /
-Reload.
+## Permissions and security
 
-Host document operations are typed `nvim-session` methods implemented by fixed
-`nvim_exec_lua` chunks with paths/content passed as RPC arguments. Reads do not
-create files. Saves create missing parent directories, open the destination
-directly, truncate it, write all bytes, and sync the file before returning.
-They are last-writer-wins, follow ordinary symlink behavior, and do not create
-temporary files, hard links, or rename publications. Controller checks bind
-results to the endpoint and connection generation. File failures and local wait
-timeouts do not tear down the editor session; a failure after opening may leave
-the destination incomplete and recovery is manual.
+The release keeps Android's `MANAGE_EXTERNAL_STORAGE` access because Neovim and
+ordinary plugins need real filesystem paths for workspace, config, Git, and
+shell operations. It also keeps `INTERNET` for Metro/Expo development services
+and possible non-editor app features. Neither permission changes editor
+transport: Neovim RPC remains on app-owned child-process file descriptors.
 
-User-selected configurations are executable code/input configuration, not a
-safe command sandbox. A selected Local `init.lua` and its runtime files execute
-at startup. Loading or editing Action Pad YAML does not dispatch its inputs, but
-active input buttons may execute arbitrary Neovim commands. Remote connections retain
-the trusted-private-network requirement for both input and file access. In
-Local mode those commands execute under the Android app UID and can reach files
-allowed by all-files access. There is no separate Android document-provider
-backend, cloud/Git synchronization, or remote file browser; Load and Save
-use explicit paths interpreted by the selected Neovim process.
+The local process is not a sandbox. Selected `init.lua`, plugins, Action Pad
+commands, Lua, `system()`, and `:!` execute with the Android app UID and can
+access files allowed by all-files permission. Only trusted configuration,
+workspaces, files, and Action Pad YAML should be used.
 
-Codey does not watch, source, or reload Local Lua files after startup. Users can
-edit the selected config folder through the same Local workspace access and then
-source files deliberately or reconnect for a fresh startup.
+## Generated and tracked native content
 
 Expo Continuous Native Generation owns the ignored `apps/android/android/`
-directory. Native module source remains tracked under `apps/android/modules/`.
+directory. Kotlin module source remains tracked under `apps/android/modules/`.
+Checksum locks, licence material, and native-runtime publication constraints are
+documented under `apps/android/native-runtime/`.
 
 ## Current limitations
 
-- One selected target and one active connection per client; Local and Remote
-  details are both retained.
-- One basic Neovim grid.
-- Remote mode requires manual host process startup; all modes require manual
-  reconnect.
-- Android requires a landscape tablet-sized window. Local mode is currently a
-  personal POC release, not an F-Droid-ready production build.
-- No TLS, authentication, discovery, daemon, or remote-access relay.
-- Mouse gestures beyond a single left-button tap, clipboard integration, iOS,
-  emulator support, advanced UI extensions, and Android phone layouts are out
-  of scope.
+- One process connection and one basic Neovim grid.
+- Android 11/API 30+, `arm64-v8a`, physical landscape tablet workflow.
+- Explicit connect/disconnect; no background process or automatic reconnect.
+- Fixed local Action Pad path and no cloud/Git configuration synchronization.
+- No clipboard integration, iOS client, emulator support, advanced external UI
+  extensions, Android phone layout, drag selection, or advanced mouse gestures.
+- The pinned binary runtime is suitable for personal sideloading, not yet a
+  reproducible public/F-Droid release pipeline.

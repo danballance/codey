@@ -60,7 +60,7 @@ export interface ModeState {
 
 /**
  * Plain arrays, objects, strings, booleans and numbers only: no Map, class
- * instances, or platform objects. It can be sent over Electron IPC as-is.
+ * instances, or platform objects. It can cross a transport boundary as-is.
  */
 export interface EditorState {
   readonly grids: Readonly<Record<number, Grid>>;

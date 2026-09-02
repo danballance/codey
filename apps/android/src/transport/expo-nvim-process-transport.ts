@@ -233,7 +233,7 @@ export class ExpoNvimProcessTransport implements DuplexTransport {
           workspacePath: this.#workspacePath,
           configDirectory: this.#configDirectory,
           sessionId,
-          bytes,
+          byteLength: bytes.byteLength,
           error
         }
       })

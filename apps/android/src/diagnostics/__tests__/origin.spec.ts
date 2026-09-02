@@ -7,13 +7,13 @@ import {
 describe('diagnostic origins', () => {
   it('preserves the first origin and finds it through nested causes', () => {
     const transport = new Error('native write failed')
-    markDiagnosticOrigin(transport, 'transport.tcp.write')
+    markDiagnosticOrigin(transport, 'transport.local.write')
     markDiagnosticOrigin(transport, 'rpc.client')
     const rpc = attachDiagnosticCause(new Error('RPC write failed'), transport)
     const controller = attachDiagnosticCause(new Error('Connection failed'), rpc)
 
-    expect(diagnosticOriginOf(controller)).toBe('transport.tcp.write')
-    expect(diagnosticOriginOf(transport)).toBe('transport.tcp.write')
+    expect(diagnosticOriginOf(controller)).toBe('transport.local.write')
+    expect(diagnosticOriginOf(transport)).toBe('transport.local.write')
   })
 
   it('handles frozen errors and cyclic cause graphs without throwing', () => {

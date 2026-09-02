@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   applyRedrawBatch,
@@ -7,9 +10,12 @@ import {
 } from "../packages/editor-core/src/index.js";
 import { MessagePackRpcClient } from "../packages/msgpack-rpc/src/index.js";
 import { NvimSessionClient } from "../packages/nvim-session/src/index.js";
-import { NodeTcpTransport } from "../packages/transport/src/node.js";
+import {
+  EmbeddedNvimTransport,
+  hasEmbeddedNvim,
+} from "../packages/nvim-session/test/embedded-nvim-transport.js";
 
-const shouldRun = process.env["CODEY_LIVE_NVIM"] === "1";
+const shouldRun = process.platform === "linux" && hasEmbeddedNvim();
 
 async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
@@ -26,9 +32,8 @@ async function waitUntil(
 
 describe.runIf(shouldRun)("live Neovim vertical slice", () => {
   it("attaches, reduces redraws, edits, resizes, and undoes", async () => {
-    const host = process.env["CODEY_NVIM_HOST"] ?? "127.0.0.1";
-    const port = Number(process.env["CODEY_NVIM_PORT"] ?? "6666");
-    const transport = new NodeTcpTransport({ host, port, connectTimeoutMs: 2_000 });
+    const directory = await mkdtemp(join(tmpdir(), "codey-live-nvim-"));
+    const transport = new EmbeddedNvimTransport(directory);
     const rpc = new MessagePackRpcClient(transport);
     const session = new NvimSessionClient(rpc);
     let editor = createEditorState();
@@ -64,7 +69,11 @@ describe.runIf(shouldRun)("live Neovim vertical slice", () => {
       );
     } finally {
       removeRedrawListener();
-      await session.close();
+      try {
+        await session.close();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
     }
   }, 10_000);
 });

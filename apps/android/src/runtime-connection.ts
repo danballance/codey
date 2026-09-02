@@ -2,44 +2,24 @@ import { MessagePackRpcClient } from '@codey/msgpack-rpc'
 import { NvimSessionClient, isRedrawBatch } from '@codey/nvim-session'
 
 import type { ConnectionFactory } from './controller'
-import { requireConfigDirectory } from './connection-target'
 import { diagnosticLogger } from './diagnostics/logger'
 import { diagnosticOriginOf, markDiagnosticOrigin } from './diagnostics/origin'
+import { requireConfigDirectory } from './local-connection-settings'
 import { ExpoNvimProcessTransport } from './transport/expo-nvim-process-transport'
-import { ExpoTcpTransport } from './transport/expo-tcp-transport'
 
-export const createRuntimeConnection: ConnectionFactory = (target, diagnostics) => {
-  const transport = target.kind === 'local'
-    ? diagnostics === undefined
-      ? new ExpoNvimProcessTransport({
-          workspacePath: target.workspacePath,
-          configDirectory: requireConfigDirectory(target.configDirectory)
-        })
-      : new ExpoNvimProcessTransport(
-          {
-            workspacePath: target.workspacePath,
-            configDirectory: requireConfigDirectory(target.configDirectory)
-          },
-          undefined,
-          diagnosticLogger,
-          diagnostics
-        )
-    : diagnostics === undefined
-      ? new ExpoTcpTransport({
-          host: target.host,
-          port: target.port,
-          connectTimeoutMs: 8_000
-        })
-      : new ExpoTcpTransport(
-          {
-            host: target.host,
-            port: target.port,
-            connectTimeoutMs: 8_000
-          },
-          undefined,
-          diagnosticLogger,
-          diagnostics
-        )
+export const createRuntimeConnection: ConnectionFactory = (settings, diagnostics) => {
+  const processOptions = {
+    workspacePath: settings.workspacePath,
+    configDirectory: requireConfigDirectory(settings.configDirectory)
+  }
+  const transport = diagnostics === undefined
+    ? new ExpoNvimProcessTransport(processOptions)
+    : new ExpoNvimProcessTransport(
+        processOptions,
+        undefined,
+        diagnosticLogger,
+        diagnostics
+      )
   const rpc = new MessagePackRpcClient(transport)
   const observerDisposers: Array<() => void> = []
   let diagnosticsActive = true
@@ -85,7 +65,7 @@ export const createRuntimeConnection: ConnectionFactory = (target, diagnostics) 
           event: 'rpc.redraw.malformed',
           message: 'Ignored a malformed Neovim redraw notification',
           operationId: diagnostics?.operationId,
-          details: { ...diagnostics, method, params }
+          details: { ...diagnostics, method, parameterCount: params.length }
         })
       })
       if (typeof remove === 'function') observerDisposers.push(remove)

@@ -5,14 +5,9 @@ import { createRuntimeConnection } from '../runtime-connection'
 import { diagnosticLogger } from '../diagnostics/logger'
 import { attachDiagnosticCause, markDiagnosticOrigin } from '../diagnostics/origin'
 import { ExpoNvimProcessTransport } from '../transport/expo-nvim-process-transport'
-import { ExpoTcpTransport } from '../transport/expo-tcp-transport'
 
 jest.mock('../transport/expo-nvim-process-transport', () => ({
   ExpoNvimProcessTransport: jest.fn(() => ({ transportKind: 'local' }))
-}))
-
-jest.mock('../transport/expo-tcp-transport', () => ({
-  ExpoTcpTransport: jest.fn(() => ({ transportKind: 'remote' }))
 }))
 
 let mockRpcErrorListener: ((error: Error) => void) | undefined
@@ -43,7 +38,7 @@ jest.mock('@codey/nvim-session', () => ({
   isRedrawBatch: jest.fn((params: unknown) => params === 'valid-redraw')
 }))
 
-describe('Android runtime connection selection', () => {
+describe('Android local runtime connection', () => {
   beforeEach(() => {
     diagnosticLogger.clear()
     mockRpcErrorListener = undefined
@@ -53,7 +48,7 @@ describe('Android runtime connection selection', () => {
 
   it('builds the shared RPC/session stack over the local process transport', () => {
     const resources = createRuntimeConnection({
-      kind: 'local',
+      version: 1,
       workspacePath: '/storage/emulated/0/Code',
       configDirectory: '/storage/emulated/0/Codey'
     })
@@ -62,32 +57,15 @@ describe('Android runtime connection selection', () => {
       workspacePath: '/storage/emulated/0/Code',
       configDirectory: '/storage/emulated/0/Codey'
     })
-    expect(ExpoTcpTransport).not.toHaveBeenCalled()
     expect(MessagePackRpcClient).toHaveBeenCalledWith(resources.transport)
     expect(NvimSessionClient).toHaveBeenCalledWith(expect.objectContaining({
       transport: resources.transport
     }))
   })
 
-  it('keeps remote targets on the TCP transport', () => {
-    const resources = createRuntimeConnection({
-      kind: 'remote',
-      host: 'nvim.test',
-      port: 7777
-    })
-
-    expect(ExpoTcpTransport).toHaveBeenCalledWith({
-      host: 'nvim.test',
-      port: 7777,
-      connectTimeoutMs: 8_000
-    })
-    expect(ExpoNvimProcessTransport).not.toHaveBeenCalled()
-    expect(MessagePackRpcClient).toHaveBeenCalledWith(resources.transport)
-  })
-
-  it('rejects a Local runtime connection without a config folder', () => {
+  it('rejects a local runtime connection without a config folder', () => {
     expect(() => createRuntimeConnection({
-      kind: 'local',
+      version: 1,
       workspacePath: '/storage/emulated/0/Code',
       configDirectory: null
     })).toThrow('Choose a Neovim config folder')
@@ -96,19 +74,19 @@ describe('Android runtime connection selection', () => {
 
   it('records RPC and malformed-redraw failures, skips transport-origin duplicates, and disposes once', () => {
     const resources = createRuntimeConnection({
-      kind: 'remote',
-      host: 'nvim.test',
-      port: 7777
+      version: 1,
+      workspacePath: '/storage/emulated/0/Code',
+      configDirectory: '/storage/emulated/0/Codey'
     }, { generation: 4, operationId: 'connection-4' })
 
     const rpcFailure = new Error('RPC parser failed')
     mockRpcErrorListener?.(rpcFailure)
     mockRpcNotificationListener?.('redraw', 'valid-redraw')
-    mockRpcNotificationListener?.('redraw', { raw: ['malformed', 42] })
+    mockRpcNotificationListener?.('redraw', ['private-redraw-text', 42])
     mockRpcNotificationListener?.('unrelated', { raw: true })
 
-    const transportFailure = new Error('socket failed')
-    markDiagnosticOrigin(transportFailure, 'transport.tcp.write')
+    const transportFailure = new Error('process pipe failed')
+    markDiagnosticOrigin(transportFailure, 'transport.local.write')
     const wrapped = attachDiagnosticCause(new Error('RPC wrapped transport failure'), transportFailure)
     mockRpcErrorListener?.(wrapped)
 
@@ -124,8 +102,9 @@ describe('Android runtime connection selection', () => {
       })
     })
     expect(diagnosticLogger.getSnapshot().entries[1]?.details).toMatchObject({
-      params: { raw: ['malformed', 42] }
+      parameterCount: 2
     })
+    expect(JSON.stringify(diagnosticLogger.getSnapshot())).not.toContain('private-redraw-text')
 
     resources.disposeDiagnostics?.()
     resources.disposeDiagnostics?.()
@@ -141,9 +120,9 @@ describe('Android runtime connection selection', () => {
     mockNotificationRegistrationFailure = new Error('notification observer unavailable')
 
     expect(() => createRuntimeConnection({
-      kind: 'remote',
-      host: 'nvim.test',
-      port: 7777
+      version: 1,
+      workspacePath: '/storage/emulated/0/Code',
+      configDirectory: '/storage/emulated/0/Codey'
     }, { generation: 2, operationId: 'connection-2' })).toThrow(
       'notification observer unavailable'
     )

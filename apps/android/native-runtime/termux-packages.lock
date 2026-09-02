@@ -1,4 +1,4 @@
-# Temporary arm64-v8a proof-of-concept inputs.
+# Pinned arm64-v8a native runtime inputs.
 #
 # This is intentionally a binary lock, not the eventual source-build recipe.
 # Format: package|version|url|sha256

@@ -137,20 +137,18 @@ describe("NvimSessionClient", () => {
     const text = "label: ''); vim.cmd('quit!'); --'\n";
     const document = { path, text };
     double.rpc.request
-      .mockResolvedValueOnce({ ok: true, path: "/host/config/codey/action-pad.yaml" })
       .mockResolvedValueOnce({ ok: true, document })
       .mockResolvedValueOnce({ ok: true });
 
-    expect(await session.defaultActionPadPath()).toBe("/host/config/codey/action-pad.yaml");
     expect(await session.readHostDocument(path)).toEqual(document);
     const request = { path, text };
     await expect(session.writeHostDocument(request)).resolves.toBeUndefined();
 
-    const [defaultCall, readCall, writeCall] = double.rpc.request.mock.calls as unknown as
+    const [readCall, writeCall] = double.rpc.request.mock.calls as unknown as
       [string, [string, unknown[]]][];
-    expect(defaultCall?.[0]).toBe("nvim_exec_lua");
-    expect(readCall?.[1]).toEqual([defaultCall?.[1][0], ["read", { path }]]);
-    expect(writeCall?.[1]).toEqual([defaultCall?.[1][0], ["write", request]]);
+    expect(readCall?.[0]).toBe("nvim_exec_lua");
+    expect(readCall?.[1]).toEqual([readCall?.[1][0], ["read", { path }]]);
+    expect(writeCall?.[1]).toEqual([readCall?.[1][0], ["write", request]]);
     expect(writeCall?.[1][0]).not.toContain(path);
     expect(writeCall?.[1][0]).not.toContain(text);
     expect(writeCall?.[1][0]).not.toContain("fs_mkstemp");
@@ -235,7 +233,6 @@ describe("NvimSessionClient", () => {
     await expect(session.readHostDocument("/tmp/pad.yaml")).rejects.toBe(failure);
     await session.close();
     double.rpc.request.mockClear();
-    await expect(session.defaultActionPadPath()).rejects.toThrow("closed");
     await expect(session.readHostDocument("/tmp/pad.yaml")).rejects.toThrow("closed");
     await expect(session.writeHostDocument({
       path: "/tmp/pad.yaml", text: "",

@@ -1,6 +1,9 @@
 export {
   ActionPad,
-  type ActionPadProps
+  ActionPadStatusBar,
+  type ActionPadNavigationContext,
+  type ActionPadProps,
+  type ActionPadStatusBarProps
 } from './ActionPad'
 export { DEFAULT_ACTION_PAD_CONFIG } from './config'
 export {

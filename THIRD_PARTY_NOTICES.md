@@ -1,8 +1,8 @@
 # Third-party notices
 
-Codey is licensed under Apache-2.0. The Android local-NeoVim proof of concept
-also packages the unmodified arm64 Termux artifacts pinned in
-`apps/android/native-poc/termux-packages.lock`.
+Codey is licensed under Apache-2.0. The Android native runtime packages the
+unmodified arm64 Termux artifacts pinned in
+`apps/android/native-runtime/termux-packages.lock`.
 
 | Component | Version | License |
 | --- | --- | --- |
@@ -20,10 +20,10 @@ also packages the unmodified arm64 Termux artifacts pinned in
 The preparation script verifies each package checksum and copies the license
 documents shipped in those packages into the generated APK assets. LPeg's
 license, which is not present in its Termux binary package, is retained in
-`apps/android/native-poc/LICENSES/lpeg-MIT.txt`.
+`apps/android/native-runtime/LICENSES/lpeg-MIT.txt`.
 
 The pinned Termux binaries are a temporary feasibility input, not the planned
-F-Droid supply chain. Do not redistribute an APK produced by this POC recipe.
+F-Droid supply chain. Do not redistribute an APK produced by this binary recipe.
 A public/F-Droid release must build NeoVim and every native dependency from
 source in a reproducible recipe, retain corresponding source archives and
 notices, and satisfy the LGPL source and relinking obligations rather than

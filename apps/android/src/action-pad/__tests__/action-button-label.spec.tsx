@@ -156,7 +156,7 @@ describe('ActionButtonLabel', () => {
     }
     const onInput = jest.fn()
     const onEditButton = jest.fn()
-    const padProps = { rootMenu, compact, enabled: true, mode: 'NORMAL', onInput, onEditButton, onKeyboardPress: jest.fn() }
+    const padProps = { rootMenu, compact, enabled: true, onInput, onEditButton, onKeyboardPress: jest.fn() }
     const screen = render(<ActionPad {...padProps} />)
 
     for (const [id, name, width] of [['half', 'Half', '48%'], ['quarter', 'Quarter', '22%']] as const) {
@@ -208,7 +208,6 @@ describe('ActionButtonLabel', () => {
     const screen = render(
       <ActionPad
         enabled
-        mode="NORMAL"
         onInput={jest.fn()}
         onKeyboardPress={jest.fn()}
         rootMenu={rootMenu}
@@ -220,7 +219,6 @@ describe('ActionButtonLabel', () => {
       <ActionPad
         enabled
         interactionMode="selection"
-        mode="NORMAL"
         onInput={jest.fn()}
         onKeyboardPress={jest.fn()}
         rootMenu={rootMenu}
@@ -274,7 +272,6 @@ describe('ActionButtonLabel', () => {
     const screen = render(
       <ActionPad
         enabled
-        mode="NORMAL"
         onInput={jest.fn()}
         onKeyboardPress={jest.fn()}
         rootMenu={rootMenu}

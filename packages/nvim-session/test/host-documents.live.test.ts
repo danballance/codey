@@ -1,6 +1,5 @@
 /// <reference types="node" />
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { once } from "node:events";
+import { spawnSync } from "node:child_process";
 import {
   chmod,
   lstat,
@@ -19,14 +18,16 @@ import { dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MessagePackRpcClient } from "../../msgpack-rpc/src/index.js";
-import type { DuplexTransport } from "../../transport/src/index.js";
 import { MAX_HOST_DOCUMENT_BYTES, NvimSessionClient } from "../src/index.js";
+import {
+  EmbeddedNvimTransport,
+  hasEmbeddedNvim,
+} from "./embedded-nvim-transport.js";
 
-const nvimBinary = process.env["CODEY_NVIM_BIN"] ?? "nvim";
-const hasNvim = spawnSync(nvimBinary, ["--version"], { stdio: "ignore" }).status === 0;
+const hasNvim = hasEmbeddedNvim();
 
-// These tests never connect to a running editor or TCP endpoint. Each test owns
-// an embedded --clean process and all files, state, and logs live in its temp dir.
+// Each test owns an embedded --clean process; all files, state, and logs live in
+// its temporary directory.
 describe.skipIf(!hasNvim || process.platform !== "linux")("isolated Neovim host documents", () => {
   let directory: string;
   let session: NvimSessionClient;
@@ -52,23 +53,22 @@ describe.skipIf(!hasNvim || process.platform !== "linux")("isolated Neovim host 
     return rpc.request<T>("nvim_exec_lua", [source, args]);
   }
 
-  it("loads a missing default without creating it, then directly creates it and its parents", async () => {
-    const defaultPath = await session.defaultActionPadPath();
-    expect(defaultPath).toBe(path("config/nvim/codey/action-pad.yaml"));
-    expect(await session.readHostDocument(defaultPath)).toEqual({ path: defaultPath, text: null });
-    await expect(stat(dirname(defaultPath))).rejects.toMatchObject({ code: "ENOENT" });
+  it("loads a missing path without creating it, then directly creates it and its parents", async () => {
+    const documentPath = path("config/nvim/codey/action-pad.yaml");
+    expect(await session.readHostDocument(documentPath)).toEqual({ path: documentPath, text: null });
+    await expect(stat(dirname(documentPath))).rejects.toMatchObject({ code: "ENOENT" });
 
     await expect(session.writeHostDocument({
-      path: defaultPath,
+      path: documentPath,
       text: "version: 1\n",
     })).resolves.toBeUndefined();
 
-    expect(await readFile(defaultPath, "utf8")).toBe("version: 1\n");
-    expect(await session.readHostDocument(defaultPath)).toEqual({
-      path: defaultPath,
+    expect(await readFile(documentPath, "utf8")).toBe("version: 1\n");
+    expect(await session.readHostDocument(documentPath)).toEqual({
+      path: documentPath,
       text: "version: 1\n",
     });
-    expect((await stat(defaultPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(documentPath)).mode & 0o777).toBe(0o600);
   });
 
   it("round-trips UTF-8 and truncates shorter and empty overwrites in place", async () => {
@@ -266,75 +266,3 @@ describe.skipIf(!hasNvim || process.platform !== "linux")("isolated Neovim host 
     }
   });
 });
-
-class EmbeddedNvimTransport implements DuplexTransport {
-  readonly #dataListeners = new Set<(data: Uint8Array) => void>();
-  readonly #closeListeners = new Set<(error?: Error) => void>();
-  #process: ChildProcessWithoutNullStreams | undefined;
-  #closed = false;
-  #stderr = "";
-
-  public constructor(private readonly directory: string) {}
-
-  public async connect(): Promise<void> {
-    const child = spawn(nvimBinary, ["--clean", "--headless", "--embed", "-i", "NONE", "-n"], {
-      cwd: this.directory,
-      env: {
-        ...process.env,
-        XDG_CONFIG_HOME: join(this.directory, "config"),
-        XDG_CACHE_HOME: join(this.directory, "cache"),
-        XDG_STATE_HOME: join(this.directory, "state"),
-        XDG_DATA_HOME: join(this.directory, "data"),
-        XDG_RUNTIME_DIR: this.directory,
-        NVIM_APPNAME: "nvim",
-        NVIM_LOG_FILE: join(this.directory, "nvim.log"),
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    this.#process = child;
-    child.stdout.on("data", (data: Buffer) => {
-      for (const listener of this.#dataListeners) listener(data);
-    });
-    child.stderr.on("data", (data: Buffer) => { this.#stderr += data.toString(); });
-    child.on("error", (error) => {
-      for (const listener of this.#closeListeners) listener(error);
-    });
-    child.on("close", (code) => {
-      if (this.#closed) return;
-      for (const listener of this.#closeListeners) {
-        listener(new Error("Isolated Neovim exited: " + code + "\n" + this.#stderr));
-      }
-    });
-    await once(child, "spawn");
-  }
-
-  public async write(data: Uint8Array): Promise<void> {
-    const child = this.#process;
-    if (!child || this.#closed) throw new Error("Isolated Neovim is closed");
-    await new Promise<void>((resolve, reject) => {
-      child.stdin.write(data, (error) => error ? reject(error) : resolve());
-    });
-  }
-
-  public onData(listener: (data: Uint8Array) => void): () => void {
-    this.#dataListeners.add(listener);
-    return () => this.#dataListeners.delete(listener);
-  }
-
-  public onClose(listener: (error?: Error) => void): () => void {
-    this.#closeListeners.add(listener);
-    return () => this.#closeListeners.delete(listener);
-  }
-
-  public async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    const child = this.#process;
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    const exited = once(child, "close");
-    child.kill("SIGTERM");
-    const timeout = setTimeout(() => child.kill("SIGKILL"), 1000);
-    timeout.unref();
-    try { await exited; } finally { clearTimeout(timeout); }
-  }
-}

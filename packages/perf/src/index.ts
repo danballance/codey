@@ -6,7 +6,6 @@ export type PerformanceInputSource =
   | "action-pad"
   | "rpc"
   | "redraw"
-  | "tcp"
   | "renderer";
 
 /**
@@ -20,7 +19,6 @@ export interface PerformanceTags {
   readonly inputLength?: number;
   readonly byteLength?: number;
   readonly connectionGeneration?: number;
-  readonly connectionId?: number;
   readonly flushCount?: number;
   readonly firstKeyAfterFocus?: boolean;
   readonly resizeInFlight?: boolean;

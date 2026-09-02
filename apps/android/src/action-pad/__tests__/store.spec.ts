@@ -1,32 +1,13 @@
-import type { HostDocument, HostDocumentWrite } from '@codey/nvim-session'
+import type { HostDocument } from '@codey/nvim-session'
 
-import {
-  actionPadEndpointForTarget,
-  LOCAL_ACTION_PAD_FILE_NAME,
-  DEFAULT_LOCAL_TARGET
-} from '../../connection-target'
 import { createDiagnosticLogger } from '../../diagnostics/logger'
 import { DEFAULT_ACTION_PAD_CONFIG } from '../config'
 import { parseActionPadConfig, serializeActionPadConfig, type ActionPadConfig } from '../document'
-import {
-  ActionPadConfigStore,
-  actionPadPathStorageKey,
-  legacyActionPadStorageKey,
-  type ActionPadHostDocuments
-} from '../store'
+import { ActionPadConfigStore, type ActionPadHostDocuments } from '../store'
 
-jest.mock('@react-native-async-storage/async-storage', () => ({
-  __esModule: true,
-  default: { getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }
-}))
+const sourcePath = '/storage/emulated/0/Codey/action-pad.yaml'
+const alternatePath = '/storage/emulated/0/Alternate/action-pad.yaml'
 
-const endpoint = { host: 'nvim.test', port: 6666 }
-const otherEndpoint = { host: 'other.test', port: 7777 }
-const localEndpoint = actionPadEndpointForTarget(DEFAULT_LOCAL_TARGET)
-const sourcePath = '/home/test/action-pad.yaml'
-const alternatePath = '/home/test/alternate.yaml'
-const localConfigDirectory = '/storage/emulated/0/Codey'
-const localActionPadPath = `${localConfigDirectory}/${LOCAL_ACTION_PAD_FILE_NAME}`
 const fixture: ActionPadConfig = {
   version: 1,
   rootMenuId: 'home',
@@ -49,7 +30,7 @@ function edited(label = 'Changed'): ActionPadConfig {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  let reject!: (reason: Error) => void
+  let reject!: (reason: unknown) => void
   const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
     reject = rejectPromise
@@ -57,57 +38,88 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function setup(initialText: string | null = serializeActionPadConfig(fixture)) {
-  const files = new Map<string, string>()
-  const storageRecords = new Map<string, string>()
-  if (initialText !== null) files.set(sourcePath, initialText)
-  const documents = {
-    defaultActionPadPath: jest.fn(async () => sourcePath),
-    readHostDocument: jest.fn(async (
-      _endpoint: typeof endpoint,
-      path: string
-    ): Promise<HostDocument> => ({ path, text: files.get(path) ?? null })),
-    writeHostDocument: jest.fn(async (
-      _endpoint: typeof endpoint,
-      request: HostDocumentWrite
-    ): Promise<void> => { files.set(request.path, request.text) })
-  } satisfies ActionPadHostDocuments
-  const storage = {
-    getItem: jest.fn(async (key: string): Promise<string | null> => storageRecords.get(key) ?? null),
-    setItem: jest.fn(async (key: string, value: string): Promise<void> => { storageRecords.set(key, value) }),
-    removeItem: jest.fn(async (key: string): Promise<void> => { storageRecords.delete(key) })
+async function waitForCalls(mock: jest.Mock, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (mock.mock.calls.length >= count) return
+    await Promise.resolve()
   }
-  const sink = jest.fn()
-  const logger = createDiagnosticLogger({ console: { debug: sink, error: sink, info: sink, warn: sink } })
-  const store = new ActionPadConfigStore(documents, storage, undefined, logger)
-  const connect = async () => {
-    await store.selectEndpoint(endpoint)
-    await store.setConnected(true)
-  }
-  return { connect, documents, files, storage, storageRecords, store }
+  throw new Error(`Expected ${count} calls, received ${mock.mock.calls.length}`)
 }
 
-describe('ActionPadConfigStore', () => {
-  it('loads the default file on first connection and persists only its path', async () => {
+async function settle(store: ActionPadConfigStore): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await Promise.resolve()
+    if (!store.getState().busy) {
+      await Promise.resolve()
+      if (!store.getState().busy) return
+    }
+  }
+  throw new Error('Action Pad store did not settle')
+}
+
+function setup(options: {
+  readonly initialSourcePath?: string
+  readonly initialText?: string | null
+} = {}) {
+  let activePath = options.initialSourcePath ?? sourcePath
+  const files = new Map<string, string>()
+  if (options.initialText !== null) {
+    files.set(sourcePath, options.initialText ?? serializeActionPadConfig(fixture))
+  }
+  const documents = {
+    readActionPad: jest.fn(async (): Promise<HostDocument> => ({
+      path: activePath,
+      text: files.get(activePath) ?? null
+    })),
+    writeActionPad: jest.fn(async (text: string): Promise<void> => {
+      files.set(activePath, text)
+    })
+  } satisfies ActionPadHostDocuments
+  const sink = jest.fn()
+  const logger = createDiagnosticLogger({
+    console: { debug: sink, error: sink, info: sink, warn: sink }
+  })
+  const store = new ActionPadConfigStore(documents, activePath, logger)
+
+  return {
+    documents,
+    files,
+    logger,
+    store,
+    async connect(preservation = { fieldEdits: false }) {
+      await store.setConnected(true, preservation)
+    },
+    selectSource(path: string | null) {
+      activePath = path ?? ''
+      store.selectSource(path)
+    }
+  }
+}
+
+describe('ActionPadConfigStore fixed local source', () => {
+  it('loads the fixed document on first connection without writing', async () => {
     const test = setup()
 
     await test.connect()
 
-    expect(test.documents.defaultActionPadPath).toHaveBeenCalledWith(endpoint)
-    expect(test.documents.readHostDocument).toHaveBeenCalledWith(endpoint, sourcePath)
-    expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
+    expect(test.documents.readActionPad).toHaveBeenCalledTimes(1)
+    expect(test.documents.readActionPad).toHaveBeenCalledWith()
+    expect(test.documents.writeActionPad).not.toHaveBeenCalled()
     expect(test.store.getState()).toMatchObject({
       sourcePath,
       activeConfig: fixture,
       workingConfig: fixture,
-      dirty: false
+      dirty: false,
+      busy: false,
+      connected: true,
+      initialLoadPending: false,
+      error: false
     })
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(sourcePath)
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).not.toContain('activeConfig')
   })
 
-  it('uses the starter for a missing selected file and creates it only on Save', async () => {
-    const test = setup(null)
+  it('uses the starter for a missing document and creates it only on Save', async () => {
+    const test = setup({ initialText: null })
+
     await test.connect()
 
     expect(test.store.getState()).toMatchObject({
@@ -117,486 +129,267 @@ describe('ActionPadConfigStore', () => {
       dirty: false
     })
     expect(test.store.getState().message).toContain('Save will create')
-    expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
+    expect(test.documents.writeActionPad).not.toHaveBeenCalled()
 
-    await test.store.save(sourcePath)
+    await test.store.save()
+
+    expect(test.documents.writeActionPad).toHaveBeenCalledTimes(1)
     expect(parseActionPadConfig(test.files.get(sourcePath)!)).toEqual(DEFAULT_ACTION_PAD_CONFIG)
   })
 
-  it('restores a remembered path without resolving the default', async () => {
-    const test = setup()
-    const alternate = edited('Remembered')
-    test.files.set(alternatePath, serializeActionPadConfig(alternate))
-    test.storageRecords.set(actionPadPathStorageKey(endpoint), alternatePath)
+  it('blocks initial access without a source, then loads when a fixed source is selected', async () => {
+    const test = setup({ initialSourcePath: '' })
 
     await test.connect()
 
-    expect(test.documents.defaultActionPadPath).not.toHaveBeenCalled()
-    expect(test.documents.readHostDocument).toHaveBeenCalledWith(endpoint, alternatePath)
-    expect(test.store.getState()).toMatchObject({ sourcePath: alternatePath, activeConfig: alternate })
-  })
-
-  it('loads the fixed Local Action Pad path supplied by connection setup', async () => {
-    const test = setup(null)
-    test.files.set(localActionPadPath, serializeActionPadConfig(fixture))
-    test.storageRecords.set(actionPadPathStorageKey(localEndpoint), localConfigDirectory)
-
-    await test.store.selectEndpoint(localEndpoint, localActionPadPath)
-    await test.store.setConnected(true)
-
-    expect(test.documents.defaultActionPadPath).not.toHaveBeenCalled()
-    expect(test.documents.readHostDocument).toHaveBeenCalledWith(localEndpoint, localActionPadPath)
-    expect(test.store.getState()).toMatchObject({
-      sourcePath: localActionPadPath,
-      activeConfig: fixture
-    })
-    expect(test.storage.setItem).not.toHaveBeenCalled()
-  })
-
-  it('does not resolve a private Local fallback when no config path was supplied', async () => {
-    const test = setup()
-
-    await test.store.selectEndpoint(localEndpoint)
-    await test.store.setConnected(true)
-
-    expect(test.documents.defaultActionPadPath).not.toHaveBeenCalled()
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
+    expect(test.documents.readActionPad).not.toHaveBeenCalled()
+    expect(test.store.getState()).toMatchObject({ sourcePath: '', initialLoadPending: true })
     expect(test.store.getState().message).toContain('Choose a Neovim config folder')
-    expect(test.storageRecords.has(actionPadPathStorageKey(localEndpoint))).toBe(false)
-  })
 
-  it('ignores an older Local YAML preference instead of treating it as a directory', async () => {
-    const test = setup(null)
-    const legacyFileLocation = '/storage/emulated/0/legacy-action-pad.yaml'
-    test.storageRecords.set(actionPadPathStorageKey(localEndpoint), legacyFileLocation)
-    test.files.set(localActionPadPath, serializeActionPadConfig(fixture))
+    test.files.set(alternatePath, serializeActionPadConfig(edited('Selected source')))
+    test.selectSource(alternatePath)
+    await settle(test.store)
 
-    await test.store.selectEndpoint(localEndpoint, localActionPadPath)
-    await test.store.setConnected(true)
-
-    expect(test.documents.readHostDocument).toHaveBeenCalledWith(localEndpoint, localActionPadPath)
-    expect(test.store.getState().sourcePath).toBe(localActionPadPath)
-    expect(test.storage.setItem).not.toHaveBeenCalled()
-  })
-
-  it('saves Local edits only to the fixed path without persisting a path preference', async () => {
-    const test = setup(null)
-    await test.store.selectEndpoint(localEndpoint, localActionPadPath)
-    await test.store.setConnected(true)
-    test.store.setWorkingConfig(edited())
-
-    await test.store.save(localActionPadPath)
-
-    expect(test.documents.writeHostDocument).toHaveBeenCalledWith(
-      localEndpoint,
-      expect.objectContaining({ path: localActionPadPath })
-    )
-    expect(test.storage.setItem).not.toHaveBeenCalled()
-  })
-
-  it('migrates only sourcePath from legacy recovery and removes the journal', async () => {
-    const test = setup()
-    const recoveredDraft = edited('Must not recover')
-    const legacyKey = legacyActionPadStorageKey(endpoint)
-    test.storageRecords.set(legacyKey, JSON.stringify({
-      version: 1,
-      sourcePath: alternatePath,
-      activeConfig: recoveredDraft,
-      draft: recoveredDraft,
-      idDrafts: { 'menus[0].id': 'local-only' },
-      baseline: { path: alternatePath, resolvedPath: alternatePath, revision: '1' },
-      pendingSave: { path: alternatePath, text: 'unconfirmed bytes' }
-    }))
-
-    await test.store.selectEndpoint(endpoint)
-
+    expect(test.documents.readActionPad).toHaveBeenCalledTimes(1)
     expect(test.store.getState()).toMatchObject({
       sourcePath: alternatePath,
-      activeConfig: DEFAULT_ACTION_PAD_CONFIG,
-      workingConfig: DEFAULT_ACTION_PAD_CONFIG,
-      dirty: false
+      activeConfig: edited('Selected source'),
+      initialLoadPending: false
     })
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(alternatePath)
-    expect(test.storageRecords.has(legacyKey)).toBe(false)
-    expect(test.storage.removeItem).toHaveBeenCalledWith(legacyKey)
   })
 
-  it('falls back to the default after an invalid stored path', async () => {
-    const test = setup()
-    test.storageRecords.set(actionPadPathStorageKey(endpoint), 'relative/action-pad.yaml')
-
-    await test.store.selectEndpoint(endpoint)
-    expect(test.store.getState()).toMatchObject({ sourcePath: '', busy: false })
-    expect(test.store.getState().notice?.severity).toBe('warning')
-
-    await test.store.setConnected(true)
-    expect(test.documents.defaultActionPadPath).toHaveBeenCalled()
-    expect(test.store.getState().sourcePath).toBe(sourcePath)
-  })
-
-  it('keeps working edits separate from the active pad and discards them in memory', async () => {
+  it('reloads the same source after confirmed dirty-edit discard', async () => {
     const test = setup()
     await test.connect()
-    const workingConfig = edited()
+    test.store.setWorkingConfig(edited('Unsaved local edit'))
+    const external = edited('Reloaded from disk')
+    test.files.set(sourcePath, serializeActionPadConfig(external))
 
-    test.store.setWorkingConfig(workingConfig)
-    expect(test.store.getState()).toMatchObject({ activeConfig: fixture, workingConfig, dirty: true })
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(sourcePath)
+    await test.store.load()
 
-    test.store.discardWorkingConfig()
-    expect(test.store.getState()).toMatchObject({
-      activeConfig: fixture,
-      workingConfig: fixture,
-      dirty: false
-    })
-    expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
-  })
-
-  it('saves directly with last-writer-wins semantics and never pre-reads', async () => {
-    const test = setup()
-    await test.connect()
-    const workingConfig = edited('Local wins')
-    test.store.setWorkingConfig(workingConfig)
-    test.files.set(sourcePath, serializeActionPadConfig(edited('Outside change')))
-    test.documents.readHostDocument.mockClear()
-
-    await test.store.save(sourcePath)
-
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
-    expect(test.documents.writeHostDocument).toHaveBeenCalledWith(endpoint, {
-      path: sourcePath,
-      text: serializeActionPadConfig(workingConfig)
-    })
+    expect(test.documents.readActionPad).toHaveBeenCalledTimes(2)
     expect(test.store.getState()).toMatchObject({
       sourcePath,
-      activeConfig: workingConfig,
-      workingConfig,
+      activeConfig: external,
+      workingConfig: external,
       dirty: false,
       error: false
     })
   })
 
-  it('selects and remembers a new Save destination only after write success', async () => {
+  it('keeps the current active and working state when reload data is invalid', async () => {
     const test = setup()
     await test.connect()
-    const workingConfig = edited('New destination')
-    test.store.setWorkingConfig(workingConfig)
-    const destination = '/home/test/new/action-pad.yaml'
+    const working = edited('Keep this edit')
+    test.store.setWorkingConfig(working)
+    test.files.set(sourcePath, 'version: 99\n')
 
-    await test.store.save(destination)
-
-    expect(test.store.getState()).toMatchObject({ sourcePath: destination, activeConfig: workingConfig })
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(destination)
-    expect(test.files.get(destination)).toBe(serializeActionPadConfig(workingConfig))
-  })
-
-  it('retains active and working state when a direct save fails and warns about partial data', async () => {
-    const test = setup()
-    await test.connect()
-    const workingConfig = edited('Still in memory')
-    test.store.setWorkingConfig(workingConfig)
-    const destination = '/home/test/failing.yaml'
-    test.documents.writeHostDocument.mockRejectedValueOnce(new Error('Write failed after truncation'))
-
-    await test.store.save(destination)
+    await test.store.load()
 
     expect(test.store.getState()).toMatchObject({
       sourcePath,
       activeConfig: fixture,
-      workingConfig,
+      workingConfig: working,
       dirty: true,
+      busy: false,
       error: true
     })
-    expect(test.store.getState().notice?.recommendedAction).toContain('incomplete')
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(sourcePath)
+    expect(test.store.getState().message).toContain('version')
   })
 
-  it('validates the working snapshot before invoking the host write', async () => {
+  it('keeps edits separate from the active pad and discards them only in memory', async () => {
+    const test = setup()
+    await test.connect()
+    const working = edited()
+
+    test.store.setWorkingConfig(working)
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: fixture,
+      workingConfig: working,
+      dirty: true
+    })
+
+    test.store.discardWorkingConfig()
+
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: fixture,
+      workingConfig: fixture,
+      dirty: false
+    })
+    expect(test.documents.writeActionPad).not.toHaveBeenCalled()
+  })
+
+  it('serializes and saves the working snapshot without a pre-read', async () => {
+    const test = setup()
+    await test.connect()
+    const working = edited('Serialized locally')
+    test.store.setWorkingConfig(working)
+    test.documents.readActionPad.mockClear()
+
+    await test.store.save()
+
+    expect(test.documents.readActionPad).not.toHaveBeenCalled()
+    expect(test.documents.writeActionPad).toHaveBeenCalledWith(
+      serializeActionPadConfig(working)
+    )
+    expect(parseActionPadConfig(test.files.get(sourcePath)!)).toEqual(working)
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: working,
+      workingConfig: working,
+      dirty: false,
+      error: false
+    })
+  })
+
+  it('rejects a semantically invalid snapshot before invoking the write', async () => {
     const test = setup()
     await test.connect()
     const menu = fixture.menus[0]!
     const invalid = { ...fixture, menus: [menu, { ...menu }] }
     test.store.setWorkingConfig(invalid)
 
-    await test.store.save(sourcePath)
+    await test.store.save()
 
-    expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
-    expect(test.store.getState()).toMatchObject({ activeConfig: fixture, workingConfig: invalid, dirty: true })
+    expect(test.documents.writeActionPad).not.toHaveBeenCalled()
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: fixture,
+      workingConfig: invalid,
+      dirty: true,
+      error: true
+    })
   })
 
-  it('activates the saved snapshot while preserving edits made during the write', async () => {
+  it('activates the written snapshot while preserving newer edits made during the write', async () => {
     const test = setup()
     await test.connect()
-    const saved = edited('Saved snapshot')
-    const newer = edited('Newer edit')
+    const saved = edited('Written snapshot')
+    const newer = edited('Newer unsaved edit')
     test.store.setWorkingConfig(saved)
     const write = deferred<void>()
-    test.documents.writeHostDocument.mockImplementationOnce(() => write.promise)
+    test.documents.writeActionPad.mockImplementationOnce(() => write.promise)
 
-    const saving = test.store.save(sourcePath)
-    while (test.documents.writeHostDocument.mock.calls.length === 0) await Promise.resolve()
+    const saving = test.store.save()
+    await waitForCalls(test.documents.writeActionPad, 1)
     test.store.setWorkingConfig(newer)
     write.resolve()
     await saving
 
-    expect(test.store.getState()).toMatchObject({ activeConfig: saved, workingConfig: newer, dirty: true })
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: saved,
+      workingConfig: newer,
+      dirty: true
+    })
     expect(test.store.getState().message).toContain('Newer edits')
   })
 
-  it('loads another file and selects a missing file as a starter-backed destination', async () => {
+  it('ignores concurrent load/save requests while one write is active', async () => {
     const test = setup()
     await test.connect()
-    const alternate = edited('Loaded alternate')
-    test.files.set(alternatePath, serializeActionPadConfig(alternate))
-    test.store.setWorkingConfig(edited('Discarded by confirmed UI action'))
+    test.store.setWorkingConfig(edited('One write'))
+    const write = deferred<void>()
+    test.documents.writeActionPad.mockImplementationOnce(() => write.promise)
+    test.documents.readActionPad.mockClear()
 
-    await test.store.load(alternatePath)
-    expect(test.store.getState()).toMatchObject({
-      sourcePath: alternatePath,
-      activeConfig: alternate,
-      workingConfig: alternate,
-      dirty: false
-    })
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(alternatePath)
+    const saving = test.store.save()
+    await waitForCalls(test.documents.writeActionPad, 1)
+    await test.store.load()
+    await test.store.save()
 
-    const missing = '/home/test/missing.yaml'
-    await test.store.load(missing)
-    expect(test.store.getState()).toMatchObject({
-      sourcePath: missing,
-      activeConfig: DEFAULT_ACTION_PAD_CONFIG,
-      workingConfig: DEFAULT_ACTION_PAD_CONFIG,
-      dirty: false
-    })
-    expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
+    expect(test.documents.writeActionPad).toHaveBeenCalledTimes(1)
+    expect(test.documents.readActionPad).not.toHaveBeenCalled()
+    write.resolve()
+    await saving
   })
 
-  it('leaves the current path and configurations unchanged when Load is invalid', async () => {
-    const test = setup()
-    await test.connect()
-    const workingConfig = edited('Keep me')
-    test.store.setWorkingConfig(workingConfig)
-    test.files.set(alternatePath, 'version: 99\n')
-
-    await test.store.load(alternatePath)
-
-    expect(test.store.getState()).toMatchObject({
-      sourcePath,
-      activeConfig: fixture,
-      workingConfig,
-      dirty: true,
-      error: true
-    })
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(sourcePath)
-  })
-
-  it('does not reload or upload dirty in-memory edits on reconnect', async () => {
+  it('does not reload or upload dirty offline edits on reconnect', async () => {
     const test = setup()
     await test.connect()
     await test.store.setConnected(false)
-    const workingConfig = edited('Offline edit')
-    test.store.setWorkingConfig(workingConfig)
-    test.documents.readHostDocument.mockClear()
+    const working = edited('Offline edit')
+    test.store.setWorkingConfig(working)
+    test.documents.readActionPad.mockClear()
+    test.documents.writeActionPad.mockClear()
 
-    await test.store.save(sourcePath)
-    expect(test.documents.writeHostDocument).not.toHaveBeenCalled()
-    expect(test.store.getState().message).toContain('Connect')
+    await test.store.save()
+    expect(test.documents.writeActionPad).not.toHaveBeenCalled()
+    expect(test.store.getState().message).toContain('Start local Neovim')
 
     await test.store.setConnected(true)
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
+
+    expect(test.documents.readActionPad).not.toHaveBeenCalled()
     expect(test.store.getState()).toMatchObject({
       activeConfig: fixture,
-      workingConfig,
+      workingConfig: working,
       dirty: true
     })
   })
 
-  it('does not silently reload a clean configuration on reconnect', async () => {
+  it('defers the first load for preserved field edits and resumes exactly once when cleared', async () => {
     const test = setup()
-    await test.connect()
-    test.files.set(sourcePath, serializeActionPadConfig(edited('Outside change')))
-    test.documents.readHostDocument.mockClear()
 
-    await test.store.setConnected(false)
-    await test.store.setConnected(true)
+    await test.connect({ fieldEdits: true })
 
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
-    expect(test.store.getState()).toMatchObject({ activeConfig: fixture, workingConfig: fixture, dirty: false })
-  })
+    expect(test.documents.readActionPad).not.toHaveBeenCalled()
+    expect(test.store.getState()).toMatchObject({ initialLoadPending: true, dirty: false })
 
-  it.each([
-    { fieldEdits: false, storeEdit: true },
-    { fieldEdits: true, storeEdit: false }
-  ])('resumes the deferred load when config or field edits are manually reverted', async ({
-    fieldEdits,
-    storeEdit
-  }) => {
-    const test = setup()
-    await test.store.selectEndpoint(endpoint)
-    const workingConfig = edited('Offline edit')
-    if (storeEdit) test.store.setWorkingConfig(workingConfig)
-
-    await test.store.setConnected(true, { fieldEdits, pathEdit: false })
-
-    expect(test.documents.defaultActionPadPath).toHaveBeenCalledWith(endpoint)
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
-    expect(test.storageRecords.get(actionPadPathStorageKey(endpoint))).toBe(sourcePath)
-    expect(test.store.getState()).toMatchObject({
-      sourcePath,
-      activeConfig: DEFAULT_ACTION_PAD_CONFIG,
-      workingConfig: storeEdit ? workingConfig : DEFAULT_ACTION_PAD_CONFIG,
-      dirty: storeEdit,
-      initialLoadPending: true
-    })
-
-    if (storeEdit) test.store.setWorkingConfig(DEFAULT_ACTION_PAD_CONFIG)
-    else test.store.setConnectionPreservation({ fieldEdits: false, pathEdit: false })
-    expect(test.store.getState()).toMatchObject({ busy: true, initialLoadPending: true })
-    while (test.store.getState().busy) await Promise.resolve()
-
-    expect(test.documents.readHostDocument).toHaveBeenCalledWith(endpoint, sourcePath)
-    expect(test.store.getState()).toMatchObject({
-      sourcePath,
-      activeConfig: fixture,
-      workingConfig: fixture,
-      dirty: false,
-      initialLoadPending: false
-    })
-  })
-
-  it('resumes the deferred load when a locally edited path is manually reverted', async () => {
-    const test = setup()
-    await test.store.selectEndpoint(endpoint)
-
-    await test.store.setConnected(true, { fieldEdits: false, pathEdit: true })
-
-    expect(test.documents.defaultActionPadPath).not.toHaveBeenCalled()
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
-    expect(test.store.getState()).toMatchObject({
-      sourcePath: '',
-      activeConfig: DEFAULT_ACTION_PAD_CONFIG,
-      initialLoadPending: true
-    })
-
-    test.store.setConnectionPreservation({ fieldEdits: false, pathEdit: false })
-    expect(test.store.getState()).toMatchObject({ busy: true, initialLoadPending: true })
-    while (test.store.getState().busy) await Promise.resolve()
-
-    expect(test.documents.defaultActionPadPath).toHaveBeenCalledWith(endpoint)
-    expect(test.documents.readHostDocument).toHaveBeenCalledWith(endpoint, sourcePath)
-    expect(test.store.getState()).toMatchObject({
-      sourcePath,
-      activeConfig: fixture,
-      workingConfig: fixture,
-      initialLoadPending: false
-    })
-  })
-
-  it('queues only one resumed read when preservation clears during a busy deferred refresh', async () => {
-    const test = setup()
-    await test.store.selectEndpoint(endpoint)
-    await test.store.setConnected(true, { fieldEdits: true, pathEdit: false })
     const read = deferred<HostDocument>()
-    test.documents.readHostDocument.mockImplementationOnce(() => read.promise)
-
-    test.store.setConnectionPreservation({ fieldEdits: false, pathEdit: false })
-    test.store.setConnectionPreservation({ fieldEdits: false, pathEdit: false })
-    while (test.documents.readHostDocument.mock.calls.length === 0) await Promise.resolve()
+    test.documents.readActionPad.mockImplementationOnce(() => read.promise)
+    test.store.setConnectionPreservation({ fieldEdits: false })
+    test.store.setConnectionPreservation({ fieldEdits: false })
+    await waitForCalls(test.documents.readActionPad, 1)
     read.resolve({ path: sourcePath, text: serializeActionPadConfig(fixture) })
-    while (test.store.getState().busy) await Promise.resolve()
+    await settle(test.store)
 
-    expect(test.documents.readHostDocument).toHaveBeenCalledTimes(1)
-    expect(test.store.getState()).toMatchObject({ activeConfig: fixture, initialLoadPending: false })
-  })
-
-  it('does not retry a failed initial read queued by repeated preservation-clear notifications', async () => {
-    const test = setup()
-    await test.store.selectEndpoint(endpoint)
-    const read = deferred<HostDocument>()
-    test.documents.readHostDocument.mockImplementationOnce(() => read.promise)
-
-    const connecting = test.store.setConnected(true)
-    while (test.documents.readHostDocument.mock.calls.length === 0) await Promise.resolve()
-    test.store.setConnectionPreservation({ fieldEdits: false, pathEdit: false })
-    test.store.setConnectionPreservation({ fieldEdits: false, pathEdit: false })
-    read.reject(new Error('Initial Action Pad read failed'))
-    await connecting
-    await Promise.resolve()
-
-    expect(test.documents.readHostDocument).toHaveBeenCalledTimes(1)
+    expect(test.documents.readActionPad).toHaveBeenCalledTimes(1)
     expect(test.store.getState()).toMatchObject({
-      busy: false,
-      error: true,
-      initialLoadPending: true,
-      message: 'Initial Action Pad read failed'
+      activeConfig: fixture,
+      workingConfig: fixture,
+      initialLoadPending: false
     })
   })
 
-  it.each(['config', 'field', 'path'] as const)(
-    'does not publish an automatic first load when a new %s edit appears during the host read',
-    async (editKind) => {
-      const test = setup()
-      await test.store.selectEndpoint(endpoint)
-      const firstRead = deferred<HostDocument>()
-      test.documents.readHostDocument.mockImplementationOnce(() => firstRead.promise)
-
-      const connecting = test.store.setConnected(true)
-      while (test.documents.readHostDocument.mock.calls.length === 0) await Promise.resolve()
-
-      if (editKind === 'config') test.store.setWorkingConfig(edited('Edit during read'))
-      else test.store.setConnectionPreservation({
-        fieldEdits: editKind === 'field',
-        pathEdit: editKind === 'path'
-      })
-      firstRead.resolve({ path: sourcePath, text: serializeActionPadConfig(fixture) })
-      await connecting
-
-      expect(test.store.getState()).toMatchObject({
-        activeConfig: DEFAULT_ACTION_PAD_CONFIG,
-        dirty: editKind === 'config',
-        initialLoadPending: true
-      })
-      expect(test.documents.readHostDocument).toHaveBeenCalledTimes(1)
-
-      if (editKind === 'config') test.store.setWorkingConfig(DEFAULT_ACTION_PAD_CONFIG)
-      else test.store.setConnectionPreservation({ fieldEdits: false, pathEdit: false })
-      while (test.store.getState().busy) await Promise.resolve()
-
-      expect(test.documents.readHostDocument).toHaveBeenCalledTimes(2)
-      expect(test.store.getState()).toMatchObject({
-        activeConfig: fixture,
-        workingConfig: fixture,
-        dirty: false,
-        initialLoadPending: false
-      })
-    }
-  )
-
-  it('resumes a deferred initial load on reconnect when edits were discarded offline', async () => {
-    const test = setup()
-    await test.store.selectEndpoint(endpoint)
-    test.store.setWorkingConfig(edited('Offline edit'))
-    await test.store.setConnected(true, { fieldEdits: false, pathEdit: false })
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
-
-    await test.store.setConnected(false)
-    test.store.discardWorkingConfig()
-    expect(test.documents.readHostDocument).not.toHaveBeenCalled()
-
-    await test.store.setConnected(true)
-    expect(test.documents.readHostDocument).toHaveBeenCalledWith(endpoint, sourcePath)
-    expect(test.store.getState()).toMatchObject({ activeConfig: fixture, workingConfig: fixture, dirty: false })
-  })
-
-  it('stops waiting for a write without treating it as saved', async () => {
+  it('marks a slow write and still accepts its eventual result', async () => {
     const test = setup()
     await test.connect()
-    const workingConfig = edited('Possibly partial')
-    test.store.setWorkingConfig(workingConfig)
+    const saved = edited('Slow save')
+    test.store.setWorkingConfig(saved)
     const write = deferred<void>()
-    test.documents.writeHostDocument.mockImplementationOnce(() => write.promise)
+    test.documents.writeActionPad.mockImplementationOnce(() => write.promise)
+    jest.useFakeTimers()
 
-    const saving = test.store.save(sourcePath)
-    while (test.documents.writeHostDocument.mock.calls.length === 0) await Promise.resolve()
+    try {
+      const saving = test.store.save()
+      await waitForCalls(test.documents.writeActionPad, 1)
+      expect(test.store.getState().operation).toMatchObject({
+        kind: 'save', phase: 'writing', slow: false, writeStarted: true
+      })
+
+      await jest.advanceTimersByTimeAsync(15_000)
+      expect(test.store.getState().operation).toMatchObject({ slow: true })
+
+      write.resolve()
+      await saving
+      expect(test.store.getState()).toMatchObject({
+        activeConfig: saved,
+        dirty: false,
+        busy: false,
+        operation: null
+      })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('stops waiting for a write without treating a late completion as saved', async () => {
+    const test = setup()
+    await test.connect()
+    const working = edited('Possibly partial')
+    test.store.setWorkingConfig(working)
+    const write = deferred<void>()
+    test.documents.writeActionPad.mockImplementationOnce(() => write.promise)
+
+    const saving = test.store.save()
+    await waitForCalls(test.documents.writeActionPad, 1)
     test.store.stopWaiting()
     await saving
 
@@ -604,80 +397,166 @@ describe('ActionPadConfigStore', () => {
       busy: false,
       operation: null,
       activeConfig: fixture,
-      workingConfig,
+      workingConfig: working,
       dirty: true
     })
     expect(test.store.getState().notice?.recommendedAction).toContain('may be incomplete')
+
     write.resolve()
     await Promise.resolve()
+    expect(test.store.getState()).toMatchObject({ activeConfig: fixture, dirty: true })
   })
 
-  it('ignores late completion after an endpoint switch', async () => {
+  it('cancels before a scheduled write starts when the process disconnects', async () => {
     const test = setup()
     await test.connect()
-    test.store.setWorkingConfig(edited('Old endpoint edit'))
-    const write = deferred<void>()
-    test.documents.writeHostDocument.mockImplementationOnce(() => write.promise)
+    test.store.setWorkingConfig(edited('Never written'))
+    test.documents.writeActionPad.mockClear()
 
-    const saving = test.store.save(sourcePath)
-    while (test.documents.writeHostDocument.mock.calls.length === 0) await Promise.resolve()
-    await test.store.selectEndpoint(otherEndpoint)
-    write.resolve()
+    const saving = test.store.save()
+    await test.store.setConnected(false)
     await saving
+
+    expect(test.documents.writeActionPad).not.toHaveBeenCalled()
+    expect(test.store.getState()).toMatchObject({ busy: false, connected: false, dirty: true })
+    expect(test.store.getState().message).toContain('before any write began')
+    expect(test.store.getState().notice?.recommendedAction).toContain('Start Neovim again')
+  })
+
+  it('cancels a pending write on disconnect and ignores its late completion', async () => {
+    const test = setup()
+    await test.connect()
+    const working = edited('Interrupted write')
+    test.store.setWorkingConfig(working)
+    const write = deferred<void>()
+    test.documents.writeActionPad.mockImplementationOnce(() => write.promise)
+
+    const saving = test.store.save()
+    await waitForCalls(test.documents.writeActionPad, 1)
+    await test.store.setConnected(false)
+    await saving
+
+    expect(test.store.getState()).toMatchObject({
+      connected: false,
+      activeConfig: fixture,
+      workingConfig: working,
+      dirty: true
+    })
+    expect(test.store.getState().message).toContain('save was in progress')
+    expect(test.store.getState().notice?.recommendedAction).toContain('incomplete')
+
+    write.resolve()
+    await Promise.resolve()
+    expect(test.store.getState()).toMatchObject({ activeConfig: fixture, dirty: true })
+  })
+
+  it('ignores a late load result after the selected source generation changes', async () => {
+    const test = setup()
+    await test.connect()
+    const oldRead = deferred<HostDocument>()
+    test.documents.readActionPad.mockImplementationOnce(() => oldRead.promise)
+    const previousCalls = test.documents.readActionPad.mock.calls.length
+
+    const loading = test.store.load()
+    await waitForCalls(test.documents.readActionPad, previousCalls + 1)
+    const alternate = edited('New source')
+    test.files.set(alternatePath, serializeActionPadConfig(alternate))
+    test.selectSource(alternatePath)
+    await settle(test.store)
+
+    oldRead.resolve({ path: sourcePath, text: serializeActionPadConfig(edited('Stale source')) })
+    await loading
     await Promise.resolve()
 
     expect(test.store.getState()).toMatchObject({
-      endpoint: otherEndpoint,
-      sourcePath: '',
-      activeConfig: DEFAULT_ACTION_PAD_CONFIG,
-      workingConfig: DEFAULT_ACTION_PAD_CONFIG,
+      sourcePath: alternatePath,
+      activeConfig: alternate,
+      workingConfig: alternate,
       dirty: false
     })
   })
 
-  it('keeps a successful load or save usable when path persistence fails', async () => {
-    const loadTest = setup()
-    await loadTest.connect()
-    const alternate = edited('Loaded despite storage')
-    loadTest.files.set(alternatePath, serializeActionPadConfig(alternate))
-    loadTest.storage.setItem.mockRejectedValueOnce(new Error('Storage full'))
+  it('ignores a late write completion after the selected source generation changes', async () => {
+    const test = setup()
+    await test.connect()
+    const oldWorking = edited('Old source write')
+    test.store.setWorkingConfig(oldWorking)
+    const oldWrite = deferred<void>()
+    test.documents.writeActionPad.mockImplementationOnce(() => oldWrite.promise)
 
-    await loadTest.store.load(alternatePath)
-    expect(loadTest.store.getState()).toMatchObject({ sourcePath: alternatePath, activeConfig: alternate })
-    expect(loadTest.store.getState().notice?.severity).toBe('warning')
+    const saving = test.store.save()
+    await waitForCalls(test.documents.writeActionPad, 1)
+    const alternate = edited('New source content')
+    test.files.set(alternatePath, serializeActionPadConfig(alternate))
+    test.selectSource(alternatePath)
+    await settle(test.store)
 
-    const saveTest = setup()
-    await saveTest.connect()
-    const saved = edited('Saved despite storage')
-    saveTest.store.setWorkingConfig(saved)
-    saveTest.storage.setItem.mockRejectedValueOnce(new Error('Storage full'))
-    await saveTest.store.save(alternatePath)
-    expect(saveTest.store.getState()).toMatchObject({ sourcePath: alternatePath, activeConfig: saved })
-    expect(saveTest.store.getState().notice?.severity).toBe('warning')
-    expect(saveTest.files.get(alternatePath)).toBe(serializeActionPadConfig(saved))
+    oldWrite.resolve()
+    await saving
+    await Promise.resolve()
+
+    expect(test.store.getState()).toMatchObject({
+      sourcePath: alternatePath,
+      activeConfig: alternate,
+      workingConfig: alternate,
+      dirty: false
+    })
   })
 
-  it('marks a pending host operation slow and still accepts its result', async () => {
-    jest.useFakeTimers()
+  it('surfaces native process failures without replacing in-memory edits', async () => {
     const test = setup()
-    try {
-      await test.connect()
-      const saved = edited('Slow save')
-      test.store.setWorkingConfig(saved)
-      const write = deferred<void>()
-      test.documents.writeHostDocument.mockImplementationOnce(() => write.promise)
-      const saving = test.store.save(sourcePath)
-      while (test.documents.writeHostDocument.mock.calls.length === 0) await Promise.resolve()
+    await test.connect()
+    const working = edited('Keep after process exit')
+    test.store.setWorkingConfig(working)
+    const failure = Object.assign(new Error('Local Neovim exited'), {
+      failure: {
+        code: 'E_NVIM_EXIT',
+        nativeCode: 'E_NVIM_EXIT',
+        message: 'Local Neovim exited',
+        nativeMessage: 'Process exited with code 1'
+      }
+    })
+    test.documents.readActionPad.mockRejectedValueOnce(failure)
 
-      expect(test.store.getState().operation).toMatchObject({ kind: 'save', phase: 'writing', slow: false })
-      await jest.advanceTimersByTimeAsync(15_000)
-      expect(test.store.getState().operation).toMatchObject({ slow: true })
+    await test.store.load()
 
-      write.resolve()
-      await saving
-      expect(test.store.getState()).toMatchObject({ activeConfig: saved, busy: false, operation: null })
-    } finally {
-      jest.useRealTimers()
-    }
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: fixture,
+      workingConfig: working,
+      dirty: true,
+      error: true
+    })
+    expect(test.store.getState().notice).toMatchObject({
+      details: {
+        nativeCode: 'E_NVIM_EXIT',
+        nativeMessage: 'Process exited with code 1'
+      },
+      recommendedAction: expect.stringContaining('Restart Neovim')
+    })
+  })
+
+  it('retains dirty state and warns about possible partial data after a host write failure', async () => {
+    const test = setup()
+    await test.connect()
+    const working = edited('Failed write')
+    test.store.setWorkingConfig(working)
+    const failure = Object.assign(new Error('Permission denied after open'), {
+      name: 'HostDocumentError',
+      code: 'permission'
+    })
+    test.documents.writeActionPad.mockRejectedValueOnce(failure)
+
+    await test.store.save()
+
+    expect(test.store.getState()).toMatchObject({
+      activeConfig: fixture,
+      workingConfig: working,
+      dirty: true,
+      error: true
+    })
+    expect(test.store.getState().notice).toMatchObject({
+      details: { hostErrorCode: 'permission', phase: 'writing' },
+      recommendedAction: expect.stringContaining('incomplete')
+    })
   })
 })
