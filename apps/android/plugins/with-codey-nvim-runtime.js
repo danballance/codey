@@ -5,6 +5,8 @@ const {
   withGradleProperties,
   withSettingsGradle
 } = require('expo/config-plugins')
+const fs = require('node:fs')
+const path = require('node:path')
 
 const ALL_FILES_PERMISSION = 'android.permission.MANAGE_EXTERNAL_STORAGE'
 const UNUSED_EXPO_PERMISSIONS = [
@@ -22,18 +24,51 @@ const DEV_CLIENT_NATIVE_MODULES = [
   'expo-manifests',
   'expo-updates-interface'
 ]
-const BUNDLED_NVIM_NATIVE_LIBRARIES = [
-  'libandroid-support.so',
-  'libcodey_nvim.so',
-  'libiconv.so',
-  'liblpeg-5.1.so',
-  'libluajit-5.1.so',
-  'libluv.so',
-  'libtree-sitter.so',
-  'libunibilium.so',
-  'libutf8proc.so',
-  'libuv.so'
-].map((libraryName) => `**/${libraryName}`)
+const NATIVE_LIBRARIES_LOCK_PATH = path.resolve(
+  __dirname,
+  '../native-runtime/native-libraries.lock'
+)
+const NATIVE_LIBRARY_NAME_PATTERN = /^lib[A-Za-z0-9_.+-]+\.so$/
+
+function parseNativeLibrariesLock(contents, source = 'native-libraries.lock') {
+  const libraryNames = []
+  for (const [index, line] of String(contents).split(/\r?\n/).entries()) {
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('#')) continue
+    if (line !== trimmed) {
+      throw new Error(`${source}:${index + 1}: native library entry has surrounding whitespace`)
+    }
+    if (!NATIVE_LIBRARY_NAME_PATTERN.test(line)) {
+      throw new Error(`${source}:${index + 1}: invalid native library filename: ${line}`)
+    }
+    libraryNames.push(line)
+  }
+
+  if (libraryNames.length === 0) throw new Error(`${source}: native library lock is empty`)
+  if (new Set(libraryNames).size !== libraryNames.length) {
+    throw new Error(`${source}: native library entries must be unique`)
+  }
+  const sortedLibraryNames = [...libraryNames].sort()
+  if (libraryNames.some((libraryName, index) => libraryName !== sortedLibraryNames[index])) {
+    throw new Error(`${source}: native library entries must be bytewise sorted`)
+  }
+  return libraryNames
+}
+
+function readNativeLibrariesLock(lockPath = NATIVE_LIBRARIES_LOCK_PATH) {
+  let contents
+  try {
+    contents = fs.readFileSync(lockPath, 'utf8')
+  } catch (error) {
+    throw new Error(`Unable to read native library lock ${lockPath}: ${error.message}`)
+  }
+  return parseNativeLibrariesLock(contents, lockPath)
+}
+
+const BUNDLED_NVIM_NATIVE_LIBRARY_NAMES = Object.freeze(readNativeLibrariesLock())
+const BUNDLED_NVIM_NATIVE_LIBRARIES = Object.freeze(
+  BUNDLED_NVIM_NATIVE_LIBRARY_NAMES.map((libraryName) => `**/${libraryName}`)
+)
 const DO_NOT_STRIP_PROPERTY = 'android.packagingOptions.doNotStrip'
 const GRADLE_JVM_ARGS_PROPERTY = 'org.gradle.jvmargs'
 const GRADLE_METASPACE_ARGUMENT = '-XX:MaxMetaspaceSize=1024m'
@@ -131,8 +166,12 @@ const plugin = createRunOncePlugin(withCodeyNvimRuntime, 'with-codey-nvim-runtim
 
 module.exports = plugin
 module.exports.ALL_FILES_PERMISSION = ALL_FILES_PERMISSION
+module.exports.BUNDLED_NVIM_NATIVE_LIBRARIES = BUNDLED_NVIM_NATIVE_LIBRARIES
+module.exports.BUNDLED_NVIM_NATIVE_LIBRARY_NAMES = BUNDLED_NVIM_NATIVE_LIBRARY_NAMES
 module.exports.DEV_CLIENT_NATIVE_MODULES = DEV_CLIENT_NATIVE_MODULES
+module.exports.NATIVE_LIBRARIES_LOCK_PATH = NATIVE_LIBRARIES_LOCK_PATH
 module.exports.UNUSED_EXPO_PERMISSIONS = UNUSED_EXPO_PERMISSIONS
 module.exports.configureGradleProperties = configureGradleProperties
 module.exports.configureManifest = configureManifest
 module.exports.configureStandaloneSettingsGradle = configureStandaloneSettingsGradle
+module.exports.parseNativeLibrariesLock = parseNativeLibrariesLock

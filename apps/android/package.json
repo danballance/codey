@@ -22,8 +22,8 @@
     "typecheck": "tsc --noEmit",
     "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-action-label:testDebugUnitTest :codey-nvim:testDebugUnitTest",
     "native:verify": "./scripts/verify-native.sh",
-    "assemble:debug": "pnpm run prepare:nvim && NODE_ENV=development ./android/gradlew -p android assembleDebug",
-    "assemble:release": "pnpm run prepare:nvim && NODE_ENV=production ./android/gradlew -p android assembleRelease"
+    "assemble:debug": "CODEY_BUILD_PROFILE=development pnpm run prebuild:clean && NODE_ENV=development ./android/gradlew -p android assembleDebug",
+    "assemble:release": "CODEY_BUILD_PROFILE=standalone pnpm run prebuild:clean && NODE_ENV=production ./android/gradlew -p android assembleRelease"
   },
   "dependencies": {
     "@codey/editor-core": "workspace:*",

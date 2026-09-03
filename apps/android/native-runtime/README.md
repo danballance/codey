@@ -6,8 +6,9 @@ starts one app-scoped `nvim --embed` child process and carries MessagePack-RPC
 over its stdin/stdout file descriptors. Stderr is drained separately into a
 bounded diagnostic tail.
 
-This directory contains the checksum lock and licence input for that bundle. It
-does not contain generated binaries.
+This directory contains checksum locks, licence inputs, and the portable
+single-file Kickstart configuration for that bundle. It does not contain
+generated binaries.
 
 ## Current scope
 
@@ -33,6 +34,29 @@ fail the connection.
 The executable is launched directly. There is no intermediary shell, listener,
 service, or daemon, and the child is stopped when its app session closes.
 
+## Bundled command scope
+
+The APK includes the tools required by the Codey Kickstart variant: Git with
+HTTPS transport and a private CA bundle, ripgrep, StyLua, Lua Language Server,
+and eleven Tree-sitter parsers. Git's compiled shell path is relocated to
+`/system/bin/sh`; its non-essential sample hook templates are omitted because
+some advertise Perl or Watchman. Interactive credential prompting is disabled,
+so private HTTPS repositories need a non-interactive credential configuration.
+
+This is not a general Termux userland. SSH transport, `make`, a C/C++ compiler,
+`fd`, Node.js, Python, Perl, Watchman, and arbitrary language servers or
+formatters are not bundled. The Codey configuration therefore skips clipboard
+provider probing, gates optional native plugin builds on `make`, disables Mason
+and on-device Tree-sitter installation, and uses syntax fallback for languages
+outside the pinned parser set.
+
+The current binary feasibility recipe also retains dormant Termux defaults in
+some imported libraries. The launcher overrides active HOME, temporary, Git,
+TLS, Neovim, LuaLS, and runtime paths, but direct Lua `os.tmpname()` calls and
+optional OpenSSL-provider, BFD-plugin, or terminal-info discovery can still be
+limited. These are not needed by the supplied Kickstart path; eliminating every
+such default is part of the source-build work required before distribution.
+
 ## Prepare the runtime
 
 From the repository root inside `nix develop`:
@@ -50,19 +74,67 @@ pnpm run prepare:nvim
 
 `scripts/prepare-nvim.sh` reads `termux-packages.lock`, downloads the pinned
 official Termux arm64 packages into an ignored cache, and verifies every SHA-256
-checksum. It then:
+checksum. It also invokes `scripts/prepare-treesitter-parsers.sh`, which reads
+`tree-sitter-parsers.lock` and builds the generated parser sources with the
+project's pinned Android NDK. `native-libraries.lock` is the shared allowlist
+used both for ELF staging validation and Gradle's do-not-strip rules. The
+combined process:
 
-1. extracts Neovim and its dependent shared libraries;
+1. extracts Neovim, the selected command-line tools, and their shared-library
+   closure;
 2. renames the executable to `libcodey_nvim.so` for Android packaging;
-3. patches every runpath to the APK native-library directory;
-4. verifies arm64 ELF type, dynamic linker, dependency closure, absence of text
-   relocations and Termux runpaths, and 16 KiB load alignment;
-5. creates a deterministic runtime-data archive and checksum metadata; and
-6. stages bundled licence texts and third-party notices.
+3. cross-compiles the pinned Bash, C, Diff, HTML, Lua, LuaDoc, Markdown,
+   Markdown-inline, Query, Vim, and Vimdoc Tree-sitter parsers as APK JNI
+   libraries;
+4. adds the matching pinned nvim-treesitter Lua/plugin files and only those
+   languages' query directories (plus the `html_tags` query dependency);
+5. patches every imported runpath and dependency name for the APK
+   native-library directory, relocates Git's compiled shell path to Android's
+   system shell, and redirects LuaLS's embedded sibling-file lookup to its
+   checksum-verified runtime bootstrap;
+6. verifies checksums, parser ABI 13--15, exported parser symbols, arm64 ELF
+   type, dynamic linker, dependency closure, valid GNU property notes, absence
+   of text relocations and Termux runpaths, and 16 KiB load alignment;
+7. creates a deterministic runtime-data archive and checksum/revision metadata;
+   and
+8. stages bundled licence texts and third-party notices.
+
+The parser `.so` files live in Android's extracted, read-only native-library
+directory. They are deliberately not downloaded or compiled in the writable
+Neovim data directory: modern Android will not load arbitrary executable code
+from that location. Parser source archives, nvim-treesitter, and their SHA-256
+checksums and exact commits are independently auditable in
+`tree-sitter-parsers.lock`.
+
+At the current pins, HTML uses Tree-sitter language ABI 14 and the other ten
+parsers use ABI 15. Neovim 0.12.5 accepts language ABI 13 through 15; the helper
+extracts each generated `LANGUAGE_VERSION` and rejects a future incompatible
+update before packaging it.
 
 Generated JNI libraries and assets live under the `codey-nvim` module's ignored
 build inputs. Downloaded packages and the generated Android project are also
 ignored by Git.
+
+## Use the bundled Kickstart configuration
+
+Copy `native-runtime/kickstart-codey/init.lua` to the `init.lua` at the config
+directory selected in Codey. Its upstream commit, upstream source checksum, and
+Codey-adapted checksum are in `native-runtime/kickstart-codey/upstream.lock` and
+are validated while preparing the runtime.
+
+The Android launcher sets `CODEY_NVIM=1` plus the native-library,
+nvim-treesitter runtime/revision, command-alias, and Lua-language-server paths
+documented beside the configuration. The configuration validates those values,
+prepends the bundled nvim-treesitter runtime, and loads all eleven parser
+libraries by absolute path. It disables Tree-sitter install/update and Mason
+downloads on Android, enables Codey's bundled Lua language server directly,
+and falls back to ordinary Vim syntax for an unbundled language. Without the
+Codey marker, the same file keeps upstream Kickstart's desktop behavior.
+
+Update Kickstart, nvim-treesitter, its queries, and all parser revisions as one
+compatibility unit. Never update only the Lua/query half or only a parser
+library. The detailed update checklist is in
+`native-runtime/kickstart-codey/README.md`.
 
 ## Build the standalone APK
 
@@ -111,8 +183,10 @@ cleanup escalates after a bounded wait and is idempotent.
 
 Android all-files access is retained because Neovim, Git, plugins, configuration,
 and shell commands need real filesystem paths. The app manifest also retains
-`INTERNET` for Metro/Expo development services and possible future app features;
-Neovim's editor session itself uses only the child-process file descriptors.
+`INTERNET` for Metro/Expo development services and configured Neovim child
+processes. In particular, bundled Git/libcurl uses HTTPS to fetch Kickstart
+plugins. The embedded editor transport itself remains local: Neovim RPC uses
+only the child process's app-owned file descriptors and opens no listener.
 
 Neither `--clean` nor configured startup is a sandbox. A selected `init.lua`,
 plugins, Action Pad commands, Lua, `system()`, and `:!` execute with the Android

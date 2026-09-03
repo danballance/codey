@@ -3,13 +3,29 @@
 # This is intentionally a binary lock, not the eventual source-build recipe.
 # Format: package|version|url|sha256
 neovim|0.12.5|https://packages.termux.dev/apt/termux-main/pool/main/n/neovim/neovim_0.12.5_aarch64.deb|fafd4a9ff83d5252c362b61d3e296b4bb79c579d916936506164075fbc9fcf8c
+binutils|2.47|https://packages.termux.dev/apt/termux-main/pool/main/b/binutils/binutils_2.47_aarch64.deb|332175eb2621c591f4ef80e335ddd42af8fef0d34cccd28123fc19ace8be8f74
+ca-certificates|1:2026.08.13|https://packages.termux.dev/apt/termux-main/pool/main/c/ca-certificates/ca-certificates_1:2026.08.13_all.deb|8e894fb885da738b4ca9a7932703e414d730fa32e78aba33046a747822547d5a
+git|2.55.0|https://packages.termux.dev/apt/termux-main/pool/main/g/git/git_2.55.0_aarch64.deb|21b16fa06837e5bf94ad257da532c40eb049c120d21f6cb60a6411c0bcee7197
 libandroid-support|29-1|https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-support/libandroid-support_29-1_aarch64.deb|f2f145d6135ad4843ac9670153be3e3944dc1e6f1736d46d2306c28f2b86f517
+libc++|29|https://packages.termux.dev/apt/termux-main/pool/main/libc/libc++/libc++_29_aarch64.deb|bb9f12113c137aa0e8513bb51cc49fe77a5ce3ca39ab9e92c57d228ecdf00222
+libcurl|8.22.0|https://packages.termux.dev/apt/termux-main/pool/main/libc/libcurl/libcurl_8.22.0_aarch64.deb|e780d925d977c32a3cfe6a2c7d340f0726618786deee98b0cb8b601efb93a8c9
 libiconv|1.18-1|https://packages.termux.dev/apt/termux-main/pool/main/libi/libiconv/libiconv_1.18-1_aarch64.deb|b19e6f348034bb48d2a5590b5cb242769f682c476717374d134d004cc663dc84
+libnghttp2|1.70.0|https://packages.termux.dev/apt/termux-main/pool/main/libn/libnghttp2/libnghttp2_1.70.0_aarch64.deb|ab2e0a3408fe4934ffdf774bd5049a265db2e6db62dcb651baecbecfb81e3f0b
+libnghttp3|1.18.0|https://packages.termux.dev/apt/termux-main/pool/main/libn/libnghttp3/libnghttp3_1.18.0_aarch64.deb|0be2ee96def3608afaf24eb0b4b55f3484a37c95ea21bb1d6d85c7d543467603
+libngtcp2|1.25.0|https://packages.termux.dev/apt/termux-main/pool/main/libn/libngtcp2/libngtcp2_1.25.0_aarch64.deb|f471bad7f4329b6b0b4aedf124e0a23a35f6ac99bfbae73304136f8bfd570fc3
+libssh2|1.11.1-2|https://packages.termux.dev/apt/termux-main/pool/main/libs/libssh2/libssh2_1.11.1-2_aarch64.deb|1add4e0a926b848814e7e2f1817ea28b123c54cabd5bbc4e5cfd65291cbad84e
 libunibilium|2.1.4|https://packages.termux.dev/apt/termux-main/pool/main/libu/libunibilium/libunibilium_2.1.4_aarch64.deb|998bd50f035d0722cb5b3abe314ea87ed00eeb5a6942a37a5586fada65349c02
 libuv|1.52.1|https://packages.termux.dev/apt/termux-main/pool/main/libu/libuv/libuv_1.52.1_aarch64.deb|874f556fddccf3f5cfc6c6be18c1cd927c94771bac7c1c660522aa90576b7b45
 lua51-lpeg|1.1.0-6|https://packages.termux.dev/apt/termux-main/pool/main/l/lua51-lpeg/lua51-lpeg_1.1.0-6_aarch64.deb|0cfbb76ba375e9e89d53599d59698359a58ee9b8eb4bc204a967403ee8fbb988
+lua-language-server|3.19.1|https://packages.termux.dev/apt/termux-main/pool/main/l/lua-language-server/lua-language-server_3.19.1_aarch64.deb|74db889a8147f02e327b7700b96e0a96cea8daae97aeb70e222480e39a579e6d
 luajit|2.1.1787165859-g1ee778a|https://packages.termux.dev/apt/termux-main/pool/main/l/luajit/luajit_1%3A2.1.1787165859%2Bg1ee778a_aarch64.deb|9b332d02579ba90e666e81952c2af40e5362d5bb855af63817e721e3f5ca7bef
 luv|1.52.1-0-0|https://packages.termux.dev/apt/termux-main/pool/main/l/luv/luv_1.52.1-0-0_aarch64.deb|a414fc96e977ccc987222799e325a9edc50f3906d09bd39a40de4e2ed1c10a13
+openssl|1:3.6.3|https://packages.termux.dev/apt/termux-main/pool/main/o/openssl/openssl_1:3.6.3_aarch64.deb|86760e9ce736f463236f2c15b1eb3a3fdcfc5778d0fd7077a917448dcc90f3aa
+pcre2|10.47|https://packages.termux.dev/apt/termux-main/pool/main/p/pcre2/pcre2_10.47_aarch64.deb|51f915d22de639bfca6ec029ae613987bbe3bc73626eede13319fd2e95f50b63
+ripgrep|15.2.0|https://packages.termux.dev/apt/termux-main/pool/main/r/ripgrep/ripgrep_15.2.0_aarch64.deb|38e28bc297000517b24702568a483eca7dc3323eb6bdccc9033f031776bdcc6c
+stylua|2.5.2|https://packages.termux.dev/apt/termux-main/pool/main/s/stylua/stylua_2.5.2_aarch64.deb|58f76a22974f6bbb33eed389f41245b0d72a2866daa2a3c946079f8ec9728b81
 tree-sitter|0.26.13|https://packages.termux.dev/apt/termux-main/pool/main/t/tree-sitter/tree-sitter_0.26.13_aarch64.deb|8c6d7740d989c0605a71bb547b1ec2cbb6c1f34e125ce3ec7f2c13a2f6be0207
 utf8proc|2.11.3|https://packages.termux.dev/apt/termux-main/pool/main/u/utf8proc/utf8proc_2.11.3_aarch64.deb|375c4fdde5ec0ea0176d73d688604ae2934f9ffda85ee5d6256109ffedab9bdc
+zlib|1.3.2|https://packages.termux.dev/apt/termux-main/pool/main/z/zlib/zlib_1.3.2_aarch64.deb|75e7d0af17fcc3b40004309fdc00a1ddb9ae08346dce5e269902c34ac3966ac9
+zstd|1.5.7-1|https://packages.termux.dev/apt/termux-main/pool/main/z/zstd/zstd_1.5.7-1_aarch64.deb|e1b4a5113648da8de189620ba1fce74c48b2d0833d9043391b9a1c91fb606fd3
 termux-licenses|2.2|https://packages.termux.dev/apt/termux-main/pool/main/t/termux-licenses/termux-licenses_2.2_all.deb|a3265cd1cf7d04754f2fb683eaf5b21918263792fd714457127900c1d6d9bcd9

@@ -48,6 +48,12 @@ The config directory may contain `init.lua` and normal `lua/`, `plugin/`, and
 `init.lua`. The Action Pad configuration has one fixed location:
 `<config-directory>/action-pad.yaml`.
 
+The optional single-file Codey Kickstart variant is paired with an APK-bundled
+toolchain: Git over HTTPS, ripgrep, StyLua, Lua Language Server, and a pinned
+eleven-language Tree-sitter set. It does not assume a general Unix userland or
+download native executables at runtime; see the bundled runtime guide for the
+exact supported and intentionally absent commands.
+
 ## Development environment
 
 The checked-in Nix flake provides Node.js, pnpm, Neovim, JDK 17, ADB, Android
@@ -123,10 +129,11 @@ commands, Lua, `system()`, and `:!` execute with the Android app UID. With
 all-files access, that UID can reach broad shared-storage content. Select only
 trusted workspaces, config directories, files, plugins, and Action Pad YAML.
 
-The Android manifest intentionally retains `INTERNET`. Development clients need
-it for Metro and Expo development services, and future app features may use it.
-Codey does not use that permission for editor transport; Neovim RPC remains on
-the child process's app-owned file descriptors.
+The Android manifest intentionally retains `INTERNET`. Development clients use
+it for Metro and Expo services, while configured Neovim sessions can use it
+through child commands—for example, bundled Git/libcurl fetches Kickstart
+plugins over HTTPS. Codey does not use that permission for editor transport;
+Neovim RPC remains on the child process's app-owned file descriptors.
 
 The directory browser is limited to primary shared storage and works with real
 filesystem paths. It does not turn Storage Access Framework `content://` URIs
