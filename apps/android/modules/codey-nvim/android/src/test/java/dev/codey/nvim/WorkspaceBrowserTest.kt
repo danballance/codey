@@ -88,6 +88,24 @@ class WorkspaceBrowserTest {
   }
 
   @Test
+  fun `clone parents require writable primary storage without listing children`() {
+    val files = FakeWorkspaceFiles(
+      nodes = mapOf(ROOT to directory(), "$ROOT/read-only" to directory(writable = false)),
+      canonicalAliases = mapOf("$ROOT/escape" to "/outside")
+    )
+    val browser = browser(files)
+
+    assertEquals(File(ROOT), browser.requireWritableDirectory(ROOT))
+    assertFailure("Local workspace directory is not writable") {
+      browser.requireWritableDirectory("$ROOT/read-only")
+    }
+    assertFailure("Local workspace path must be inside primary shared storage") {
+      browser.requireWritableDirectory("$ROOT/escape")
+    }
+    assertTrue(files.listRequests.isEmpty())
+  }
+
+  @Test
   fun `listing includes hidden readable directories filters unsafe entries and sorts stably`() {
     val files = FakeWorkspaceFiles(
       nodes = mapOf(

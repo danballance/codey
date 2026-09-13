@@ -39,9 +39,10 @@ or plugin state.
 
 ## Native runtime boundary
 
-`CodeyNvim` owns one process manager. Its native API covers runtime status,
-all-files settings, workspace directory listing, process start/write/stop, and
-data/exit events. A monotonically increasing session ID binds every write and
+`CodeyNvim` owns the editor process manager and a separate repository clone
+manager. Its native API covers runtime status, all-files settings, workspace
+directory listing, repository cloning and cancellation, process start/write/stop,
+and data/exit events. A monotonically increasing session ID binds every write and
 event to the process that produced it. Late events from an earlier generation
 are ignored.
 
@@ -123,11 +124,28 @@ per-endpoint preference. The form may temporarily hold an unset config
 directory, but connection construction rejects it.
 
 The native browser returns canonical directories beneath primary shared
-storage. Directory selection is picker-only: each toolbar control reopens at
-its saved path, with an unset config selection falling back to the workspace.
+storage. **Set Workspace** offers an existing directory or a public GitHub
+clone; **Set Config Directory** remains a directory picker. Each browser opens
+at its saved path, with an unset config selection falling back to the workspace.
 The browser displays its current path but does not translate Storage Access
 Framework `content://` URIs, enumerate cloud providers, or expose a virtual
 filesystem to Neovim.
+
+Repository cloning is an independent native operation and can run before a
+Neovim config is selected. Its operation ID binds progress, cancellation, and
+completion across the Expo bridge. A separate native manager prepares the
+bundled Git/HTTPS environment, validates the destination, and runs a clone-only
+supervisor in the packaged dispatcher. The supervisor owns a process group so
+cancellation and loss of the app's control pipe stop Git and its helpers.
+
+Each clone uses an owned staging directory beneath the selected parent. Only
+a successful clone is promoted with a no-replace move and handed to the
+existing workspace-settings flow. A private journal and supervisor quiescence
+marker restrict cleanup to owned, stopped operations; uncertain interrupted
+attempts are retained. Cleanup never follows repository symlinks or removes a
+promoted workspace. Cloning does not start Neovim, alter the config selection,
+or introduce a remote-workspace settings type. Editor startup and conflicting
+directory controls remain blocked until cloning/cancellation finishes.
 
 The selected config directory has two roles:
 
@@ -156,6 +174,13 @@ The Action Pad interprets a validated YAML graph of menus, ordered groups,
 buttons, and tap/long-press interactions. Inputs are complete trusted Neovim
 notation strings. Navigation, Back, and group substitution are local UI state
 and do not send RPC input.
+
+Live long-press interactions arm after `300ms` but do not execute until the
+touch is released inside the valid press region. While armed, the button shows
+its optional `longPressDisplay` overrides or a default accent outline; leaving
+the press region or losing the responder cancels the interaction. Button
+selection mode and the separate Action Pad editor control retain their longer
+`450ms` editing gesture.
 
 A group interaction substitutes one destination group into the invoking base
 slot. The base slot reserves a fixed capacity envelope for every reachable

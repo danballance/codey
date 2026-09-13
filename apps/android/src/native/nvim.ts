@@ -64,6 +64,34 @@ export interface NativeNvimWorkspaceModule {
   listWorkspaceDirectory(path: string): Promise<NativeWorkspaceListing>
 }
 
+export type NativeRepositoryCloneResult =
+  | { readonly status: 'success'; readonly path: string }
+  | { readonly status: 'cancelled'; readonly message: string }
+  | { readonly status: 'error'; readonly code: string; readonly message: string }
+
+export interface NativeRepositoryCloneProgress {
+  readonly operationId: string
+  readonly message: string
+}
+
+export interface NativeRepositoryCloneModule {
+  cloneRepository(
+    operationId: string,
+    repositoryUrl: string,
+    parentPath: string,
+    directoryName: string
+  ): Promise<NativeRepositoryCloneResult>
+  cancelRepositoryClone(operationId: string): Promise<void>
+  addListener(
+    eventName: 'repositoryCloneProgress',
+    listener: (event: NativeRepositoryCloneProgress) => void
+  ): NativeSubscription
+}
+
+export function getNativeRepositoryClone(): NativeRepositoryCloneModule {
+  return requireNativeModule<NativeRepositoryCloneModule>('CodeyNvim')
+}
+
 export function getNativeNvim(): NativeNvimModule & NativeNvimWorkspaceModule {
   return requireNativeModule<NativeNvimModule & NativeNvimWorkspaceModule>('CodeyNvim')
 }

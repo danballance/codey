@@ -35,7 +35,7 @@ export interface WorkspaceDirectoryPickerProps {
   readonly onCancel: () => void
   readonly onOpenLogs: () => void
   readonly onSelect: (path: string) => void
-  readonly purpose?: 'workspace' | 'config'
+  readonly purpose?: 'workspace' | 'config' | 'clone-destination'
   readonly logger?: DiagnosticLogger
 }
 
@@ -434,7 +434,8 @@ export function WorkspaceDirectoryPicker({
         <View style={styles.header}>
           <View style={styles.titleBlock}>
             <Text accessibilityRole="header" style={styles.title}>
-              {purpose === 'config' ? 'Choose Codey config folder' : 'Choose workspace'}
+              {purpose === 'config' ? 'Choose Codey config folder' : purpose === 'clone-destination'
+                ? 'Choose repository parent folder' : 'Choose workspace'}
             </Text>
             <Text style={styles.subtitle}>
               {root === null ? 'Shared storage' : `${root.label} · ${root.path}`}
@@ -452,8 +453,8 @@ export function WorkspaceDirectoryPicker({
             </Pressable>
             <Pressable
               accessibilityLabel={purpose === 'config'
-                ? 'Cancel config folder selection'
-                : 'Cancel workspace selection'}
+                ? 'Cancel config folder selection' : purpose === 'clone-destination'
+                  ? 'Cancel repository parent folder selection' : 'Cancel workspace selection'}
               accessibilityRole="button"
               onPress={() => { cancel('button') }}
               style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
@@ -513,8 +514,8 @@ export function WorkspaceDirectoryPicker({
               <Text style={styles.errorMessage}>{error}</Text>
               <Pressable
                 accessibilityLabel={purpose === 'config'
-                  ? 'Retry loading config folders'
-                  : 'Retry loading workspace folders'}
+                  ? 'Retry loading config folders' : purpose === 'clone-destination'
+                    ? 'Retry loading repository parent folders' : 'Retry loading workspace folders'}
                 accessibilityRole="button"
                 onPress={retry}
                 style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
@@ -564,12 +565,14 @@ export function WorkspaceDirectoryPicker({
 
         <View style={styles.footer}>
           <Text style={styles.footerHint}>
-            Choosing a folder changes the path only. It does not start NeoVim.
+            {purpose === 'clone-destination'
+              ? 'The repository will be cloned into a new folder inside this folder.'
+              : 'Choosing a folder changes the path only. It does not start NeoVim.'}
           </Text>
           <Pressable
             accessibilityLabel={purpose === 'config'
-              ? 'Use current folder as Codey config folder'
-              : 'Use current folder as workspace'}
+              ? 'Use current folder as Codey config folder' : purpose === 'clone-destination'
+                ? 'Use current folder as repository parent folder' : 'Use current folder as workspace'}
             accessibilityRole="button"
             accessibilityState={{ disabled: !canUseCurrentFolder }}
             disabled={!canUseCurrentFolder}
@@ -582,7 +585,8 @@ export function WorkspaceDirectoryPicker({
             testID="workspace-directory-use"
           >
             <Text style={styles.useButtonText}>
-              {purpose === 'config' ? 'Use config folder' : 'Use this folder'}
+              {purpose === 'config' ? 'Use config folder' : purpose === 'clone-destination'
+                ? 'Use parent folder' : 'Use this folder'}
             </Text>
           </Pressable>
         </View>

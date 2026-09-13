@@ -350,6 +350,35 @@ class NvimRuntimeInstallerTest {
     assertEquals("cat", environment["PAGER"])
   }
 
+  @Test
+  fun `clone environment disables credentials hooks and inherited editor configuration`() {
+    val bundle = NvimRuntimeInstaller(
+      context,
+      RuntimeAssets(version = "0.11.3", runtimeZip = validRuntimeZip())::open
+    ).installIfNeeded()
+    val native = File(testRoot, "native").apply { mkdir() }
+    val commands = File(testRoot, "commands").apply { mkdir() }
+    val home = File(testRoot, "clone-home").apply { mkdir() }
+    val temp = File(testRoot, "tmp").apply { mkdir() }
+
+    val environment = gitCloneEnvironment(PreparedBundledTools(bundle, native, commands), home, temp)
+
+    assertEquals(home.canonicalPath, environment["HOME"])
+    assertEquals("/dev/null", environment["GIT_CONFIG_GLOBAL"])
+    assertEquals("1", environment["GIT_CONFIG_NOSYSTEM"])
+    assertEquals("0", environment["GIT_TERMINAL_PROMPT"])
+    assertEquals("https", environment["GIT_ALLOW_PROTOCOL"])
+    assertEquals("core.hooksPath", environment["GIT_CONFIG_KEY_0"])
+    assertEquals("/dev/null", environment["GIT_CONFIG_VALUE_0"])
+    assertEquals(commands.canonicalPath, environment["GIT_EXEC_PATH"])
+    assertEquals(native.canonicalPath, environment["LD_LIBRARY_PATH"])
+    assertEquals(bundle.resolve(bundle.metadata.data.caBundle).canonicalPath, environment["GIT_SSL_CAINFO"])
+    assertFalse(environment.containsKey("LD_PRELOAD"))
+    assertFalse(environment.containsKey("NVIM_APPNAME"))
+    assertFalse(environment.containsKey("GIT_ASKPASS"))
+    assertFalse(environment.containsKey("SSH_ASKPASS"))
+  }
+
   private fun runtimeRoot(): File = File(context.filesDir, "codey-nvim/runtimes")
 
   private class FilesContext(base: Context, private val files: File) : ContextWrapper(base) {

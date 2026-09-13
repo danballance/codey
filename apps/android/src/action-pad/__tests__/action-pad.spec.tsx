@@ -7,7 +7,8 @@ import {
   useCodeyNerdFontFaces
 } from '../../fonts'
 import {
-  ACTION_PAD_LONG_PRESS_MS,
+  ACTION_PAD_ACTION_LONG_PRESS_MS,
+  ACTION_PAD_EDIT_LONG_PRESS_MS,
   DEFAULT_ACTION_PAD_CONFIG,
   ActionPad as ActionPadView,
   ActionPadStatusBar,
@@ -64,6 +65,8 @@ type InteractionFixture =
 type TestActionPadProps = ActionPadProps & {
   readonly mode?: string
 }
+
+type TestInstance = ReturnType<ReturnType<typeof render>['getByTestId']>
 
 type ActionPadOverrides = Partial<Omit<TestActionPadProps, 'rootMenu'>> & {
   readonly rootMenu?: MenuFixture | ActionMenu
@@ -318,6 +321,34 @@ function capturePress(screen: ReturnType<typeof render>, testId: string): () => 
   }
   expect(typeof target.props.onPress).toBe('function')
   return target.props.onPress
+}
+
+const ACTIVE_TOUCH_EVENT = { nativeEvent: { touches: [{}] } }
+const RELEASED_TOUCH_EVENT = { nativeEvent: { touches: [] } }
+
+function beginActionHold(button: TestInstance): void {
+  fireEvent(button, 'touchStart', ACTIVE_TOUCH_EVENT)
+  fireEvent(button, 'pressIn', ACTIVE_TOUCH_EVENT)
+  fireEvent(button, 'longPress', ACTIVE_TOUCH_EVENT)
+}
+
+function releaseActionHold(button: TestInstance): void {
+  // React Native dispatches the responder release (and therefore Pressable's
+  // pressOut) before the bubbling touchEnd event used to commit a held action.
+  fireEvent(button, 'pressOut', RELEASED_TOUCH_EVENT)
+  fireEvent(button, 'touchEnd', RELEASED_TOUCH_EVENT)
+}
+
+function completeActionHold(button: TestInstance): void {
+  beginActionHold(button)
+  releaseActionHold(button)
+}
+
+function configuredLongPressDelay(button: TestInstance): number | undefined {
+  const responder = button.props.onStartShouldSetResponder as {
+    testOnly_pressabilityConfig?: () => { readonly delayLongPress?: number }
+  }
+  return responder.testOnly_pressabilityConfig?.().delayLongPress
 }
 
 function expectHeaderContext(
@@ -961,14 +992,182 @@ describe('ActionPad', () => {
 
     fireEvent.press(screen.getByTestId('action-pad-back'))
     const rootGesture = screen.getByTestId('action-pad-gesture')
-    expect(ACTION_PAD_LONG_PRESS_MS).toBe(450)
-    fireEvent(rootGesture, 'pressIn')
-    fireEvent(rootGesture, 'longPress')
+    expect(ACTION_PAD_ACTION_LONG_PRESS_MS).toBe(300)
+    expect(configuredLongPressDelay(rootGesture)).toBe(300)
+    beginActionHold(rootGesture)
     fireEvent.press(rootGesture)
+
+    expect(onInput).not.toHaveBeenCalled()
+    expect(screen.queryByLabelText('Current action path: Tap Destination')).toBeNull()
+
+    releaseActionHold(rootGesture)
 
     expect(onInput).toHaveBeenCalledTimes(1)
     expect(onInput).toHaveBeenCalledWith('<C-x>')
     expect(screen.queryByLabelText('Current action path: Tap Destination')).toBeNull()
+  })
+
+  it('shows the configured held display until release and otherwise uses the yellow armed outline', () => {
+    const onInput = jest.fn()
+    const rootMenu = {
+      id: 'home',
+      label: 'Home',
+      groups: [{
+        id: 'actions',
+        buttons: [
+          {
+            id: 'configured',
+            label: 'Hold me',
+            styles: {
+              size: '1/4' as const,
+              backgroundColor: '#123456',
+              outlineColor: '#654321'
+            },
+            tap: input('tap-configured'),
+            longPress: input('hold-configured'),
+            longPressDisplay: {
+              label: 'Release now',
+              styles: {
+                appearance: 'outline' as const,
+                backgroundColor: '#2b271f',
+                outlineColor: '#ff7b72'
+              }
+            }
+          },
+          {
+            id: 'default',
+            label: 'Default display',
+            styles: {
+              size: '1/2' as const,
+              backgroundColor: '#345678',
+              outlineColor: '#456789'
+            },
+            tap: input('tap-default'),
+            longPress: input('hold-default')
+          }
+        ]
+      }]
+    } satisfies MenuFixture
+    const screen = render(<ActionPad {...actionPadProps({ onInput, rootMenu })} />)
+    const configured = screen.getByTestId('action-pad-configured')
+
+    expect(StyleSheet.flatten(configured.props.style)).toMatchObject({
+      width: '22%', backgroundColor: '#123456', borderColor: '#654321'
+    })
+    beginActionHold(configured)
+
+    expect(onInput).not.toHaveBeenCalled()
+    expect(screen.getByTestId('action-pad-configured-label', { includeHiddenElements: true })).toHaveTextContent('Release now')
+    expect(StyleSheet.flatten(configured.props.style)).toMatchObject({
+      width: '22%', backgroundColor: '#2b271f', borderColor: '#ff7b72', opacity: 1
+    })
+
+    fireEvent(configured, 'pressOut', RELEASED_TOUCH_EVENT)
+    expect(onInput).not.toHaveBeenCalled()
+    expect(screen.getByTestId('action-pad-configured-label', { includeHiddenElements: true })).toHaveTextContent('Hold me')
+    fireEvent(configured, 'touchEnd', RELEASED_TOUCH_EVENT)
+    fireEvent(configured, 'touchEnd', RELEASED_TOUCH_EVENT)
+    expect(onInput.mock.calls).toEqual([['hold-configured']])
+
+    const fallback = screen.getByTestId('action-pad-default')
+    beginActionHold(fallback)
+    expect(screen.getByTestId('action-pad-default-label', { includeHiddenElements: true })).toHaveTextContent('Default display')
+    expect(StyleSheet.flatten(fallback.props.style)).toMatchObject({
+      width: '48%', backgroundColor: '#345678', borderColor: '#e0af68', opacity: 1
+    })
+    releaseActionHold(fallback)
+    expect(onInput.mock.calls).toEqual([['hold-configured'], ['hold-default']])
+  })
+
+  it('permanently cancels an armed hold after leaving the press region or receiving touch cancellation', () => {
+    const onInput = jest.fn()
+    const rootMenu = {
+      id: 'home', label: 'Home', groups: [{
+        id: 'actions', buttons: [{
+          id: 'gesture', label: 'Ready', styles: { size: '1/2' as const },
+          tap: input('tap'), longPress: input('hold'),
+          longPressDisplay: { label: 'Armed' }
+        }]
+      }]
+    } satisfies MenuFixture
+    const screen = render(<ActionPad {...actionPadProps({ onInput, rootMenu })} />)
+    const button = screen.getByTestId('action-pad-gesture')
+
+    fireEvent(button, 'touchStart', ACTIVE_TOUCH_EVENT)
+    fireEvent(button, 'pressIn', ACTIVE_TOUCH_EVENT)
+    fireEvent(button, 'pressOut', RELEASED_TOUCH_EVENT)
+    fireEvent.press(button)
+    fireEvent(button, 'touchEnd', RELEASED_TOUCH_EVENT)
+    expect(onInput.mock.calls).toEqual([['tap']])
+    onInput.mockClear()
+
+    beginActionHold(button)
+    expect(screen.getByText('Armed')).toBeTruthy()
+    fireEvent(button, 'pressOut', ACTIVE_TOUCH_EVENT)
+    expect(screen.queryByText('Armed')).toBeNull()
+
+    // Re-entering the same native gesture cannot re-arm or turn release into tap.
+    fireEvent(button, 'pressIn', ACTIVE_TOUCH_EVENT)
+    fireEvent(button, 'longPress', ACTIVE_TOUCH_EVENT)
+    fireEvent(button, 'pressOut', RELEASED_TOUCH_EVENT)
+    fireEvent.press(button)
+    fireEvent(button, 'touchEnd', RELEASED_TOUCH_EVENT)
+    expect(onInput).not.toHaveBeenCalled()
+
+    beginActionHold(button)
+    expect(screen.getByText('Armed')).toBeTruthy()
+    fireEvent(button, 'pressOut', RELEASED_TOUCH_EVENT)
+    fireEvent(button, 'touchCancel', RELEASED_TOUCH_EVENT)
+    fireEvent(button, 'longPress', ACTIVE_TOUCH_EVENT)
+    fireEvent.press(button)
+    fireEvent(button, 'touchEnd', RELEASED_TOUCH_EVENT)
+    expect(screen.queryByText('Armed')).toBeNull()
+    expect(onInput).not.toHaveBeenCalled()
+
+    completeActionHold(button)
+    expect(onInput.mock.calls).toEqual([['hold']])
+  })
+
+  it('drops an armed release after disable, document replacement, or unmount', () => {
+    const onInput = jest.fn()
+    const buttonDefinition = {
+      id: 'same', label: 'Original', styles: { size: '1/2' as const },
+      longPress: input('old'), longPressDisplay: { label: 'Original armed' }
+    }
+    const rootMenu = {
+      id: 'home', label: 'Home', groups: [{ id: 'actions', buttons: [buttonDefinition] }]
+    } satisfies MenuFixture
+    const props = actionPadProps({ onInput, rootMenu })
+    const screen = render(<ActionPad {...props} />)
+    let button = screen.getByTestId('action-pad-same')
+
+    beginActionHold(button)
+    const disabledRelease = button.props.onTouchEnd as (event: typeof RELEASED_TOUCH_EVENT) => void
+    screen.rerender(<ActionPad {...props} enabled={false} />)
+    act(() => disabledRelease(RELEASED_TOUCH_EVENT))
+    expect(onInput).not.toHaveBeenCalled()
+
+    screen.rerender(<ActionPad {...props} enabled />)
+    button = screen.getByTestId('action-pad-same')
+    beginActionHold(button)
+    const replacedRelease = button.props.onTouchEnd as (event: typeof RELEASED_TOUCH_EVENT) => void
+    const replacement: ActionMenu = {
+      id: 'home', label: 'Replacement', groups: [{
+        id: 'actions', buttons: [{
+          id: 'same', label: 'Replacement', styles: { size: '1/2' }, longPress: input('new')
+        }]
+      }]
+    }
+    screen.rerender(<ActionPad {...props} rootMenu={replacement} />)
+    act(() => replacedRelease(RELEASED_TOUCH_EVENT))
+    expect(onInput).not.toHaveBeenCalled()
+
+    button = screen.getByTestId('action-pad-same')
+    beginActionHold(button)
+    const unmountedRelease = button.props.onTouchEnd as (event: typeof RELEASED_TOUCH_EVENT) => void
+    screen.unmount()
+    act(() => unmountedRelease(RELEASED_TOUCH_EVENT))
+    expect(onInput).not.toHaveBeenCalled()
   })
 
   it('supports a long-press-only button with a configuration-provided hint', () => {
@@ -994,9 +1193,14 @@ describe('ActionPad', () => {
     const button = screen.getByTestId('action-pad-hold-only')
 
     expect(button.props.onPress).toBeUndefined()
-    expect(ACTION_PAD_LONG_PRESS_MS).toBe(450)
+    expect(ACTION_PAD_ACTION_LONG_PRESS_MS).toBe(300)
+    expect(configuredLongPressDelay(button)).toBe(300)
     expect(button.props.accessibilityHint).toBe('Hold to send the mapping.')
-    fireEvent(button, 'longPress')
+    beginActionHold(button)
+
+    expect(onInput).not.toHaveBeenCalled()
+
+    releaseActionHold(button)
 
     expect(onInput).toHaveBeenCalledWith('held')
   })
@@ -1090,10 +1294,13 @@ describe('ActionPad', () => {
       const button = screen.getByTestId(`action-pad-${id}`)
       fireEvent(button, 'pressIn')
       fireEvent.press(button)
-      fireEvent(button, 'pressIn')
+      fireEvent(button, 'touchStart', ACTIVE_TOUCH_EVENT)
+      fireEvent(button, 'pressIn', ACTIVE_TOUCH_EVENT)
+      expect(configuredLongPressDelay(button)).toBe(ACTION_PAD_EDIT_LONG_PRESS_MS)
       fireEvent(button, 'longPress')
       fireEvent(button, 'longPress')
       fireEvent.press(button)
+      releaseActionHold(button)
       expect(screen.getByLabelText('Current action path: Child')).toBeTruthy()
     }
 
@@ -1190,7 +1397,8 @@ describe('ActionPad', () => {
   it('does not reinterpret an in-progress gesture when switching between selection and normal mode', () => {
     const props = actionPadProps({ onEditButton: jest.fn() })
     const screen = render(<ActionPad {...props} />)
-    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn')
+    fireEvent(screen.getByTestId('action-pad-up'), 'touchStart', ACTIVE_TOUCH_EVENT)
+    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn', ACTIVE_TOUCH_EVENT)
     screen.rerender(<ActionPad {...props} interactionMode="selection" />)
     fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
     fireEvent.press(screen.getByTestId('action-pad-up'))
@@ -1198,7 +1406,8 @@ describe('ActionPad', () => {
     expect(props.onInput).not.toHaveBeenCalled()
     expect(screen.queryByLabelText('Current action path: Up Arrow – Navigation')).toBeNull()
 
-    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn')
+    fireEvent(screen.getByTestId('action-pad-up'), 'touchStart', ACTIVE_TOUCH_EVENT)
+    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn', ACTIVE_TOUCH_EVENT)
     fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
     screen.rerender(<ActionPad {...props} interactionMode="suspended" />)
     screen.rerender(<ActionPad {...props} />)
@@ -1207,7 +1416,8 @@ describe('ActionPad', () => {
     expect(props.onInput).not.toHaveBeenCalled()
     expect(screen.queryByLabelText('Current action path: Up Arrow – Navigation')).toBeNull()
 
-    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn')
+    fireEvent(screen.getByTestId('action-pad-up'), 'touchStart', ACTIVE_TOUCH_EVENT)
+    fireEvent(screen.getByTestId('action-pad-up'), 'pressIn', ACTIVE_TOUCH_EVENT)
     fireEvent.press(screen.getByTestId('action-pad-up'))
     expect(props.onInput).toHaveBeenCalledWith('<Up>')
   })
@@ -1370,9 +1580,7 @@ describe('ActionPad', () => {
     const screen = render(<ActionPad {...actionPadProps({ onInput })} />)
     const up = screen.getByTestId('action-pad-up')
 
-    fireEvent(up, 'pressIn')
-    fireEvent(up, 'longPress')
-    fireEvent.press(up)
+    completeActionHold(up)
     expect(screen.getByLabelText(
       'Current action page path: Home; active action cluster: Up Arrow – Navigation'
     )).toBeTruthy()
@@ -1418,10 +1626,17 @@ describe('ActionPad', () => {
     const screen = render(<ActionPad {...actionPadProps({ onInput })} />)
     const up = screen.getByTestId('action-pad-up')
 
-    expect(ACTION_PAD_LONG_PRESS_MS).toBe(450)
-    fireEvent(up, 'pressIn')
-    fireEvent(up, 'longPress')
+    expect(ACTION_PAD_ACTION_LONG_PRESS_MS).toBe(300)
+    beginActionHold(up)
+
+    expect(onInput).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('action-pad-top')).toBeNull()
+
     fireEvent.press(up)
+    expect(onInput).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('action-pad-top')).toBeNull()
+
+    releaseActionHold(up)
 
     expect(onInput).not.toHaveBeenCalled()
     expect(screen.getByLabelText(

@@ -73,7 +73,7 @@ describe('action pad YAML document', () => {
       menu.id,
       createHash('sha256').update(JSON.stringify(canonicalValue(menu)), 'utf8').digest('hex')
     ])).toEqual([
-      ['home', 'ffe1e7af5487b51ac855182339cce696bc819e8dd12db72fa9c74e036c035c6d'],
+      ['home', '8af883698380522500876f07a2810e9fb82c0247fedfde9c5c1d5cae21ee5d8b'],
       ['command', '8a4ba1d167a6a77b46b2f43afced7806f72ad0e96cef8999752be6f436dda8ef'],
       ['leader', 'e5bfc04f3305e6a1b51e47133adb07c2f458eb6a63fca9b816aab6725cf7dc87'],
       ['motions', '45b4cebeae35790fb2118839fc5ad2f4ef465eb8e382cf564d2ea29fb2ab19f0'],
@@ -143,6 +143,45 @@ describe('action pad YAML document', () => {
     expect(source).toContain("appearance: 'outline'")
     expect(source).toContain("backgroundColor: 'transparent'")
     expect(source).toContain("outlineColor: '#ABCDEF'")
+  })
+
+  it('round trips optional long-press label and style overrides without changing button geometry', () => {
+    const longPressDisplay = {
+      label: [
+        { text: '\uf0a4 ', fontSize: 22, bold: false, color: '#9ece6a' },
+        { text: 'Release', fontSize: 12, bold: true }
+      ],
+      styles: {
+        appearance: 'outline' as const,
+        backgroundColor: 'transparent',
+        outlineColor: '#E0AF68'
+      }
+    } as const
+    const value = config([{
+      ...inputButton,
+      longPress: { type: 'keyboard', after: 'stay' },
+      longPressDisplay
+    }])
+
+    const source = serializeActionPadConfig(value)
+    const parsed = parseActionPadConfig(source)
+    const resolved = resolveActionPadConfig(parsed)
+
+    expect(source).toContain('longPressDisplay:')
+    expect(source).not.toContain('longPressDisplay:\n    size:')
+    expect(parsed).toEqual(value)
+    expect(resolved.groups[0]?.buttons[0]?.longPressDisplay).toEqual(longPressDisplay)
+    expect(serializeActionPadConfig(parsed)).toBe(source)
+  })
+
+  it('normalizes an empty long-press styles object away when a label override exists', () => {
+    const value = parseActionPadConfig(JSON.stringify(config([{
+      ...inputButton,
+      longPress: { type: 'input', nvimInput: '<C-x>', after: 'stay' },
+      longPressDisplay: { label: 'Release', styles: {} }
+    }])))
+
+    expect(value.menus[0]?.groups[0]?.buttons[0]?.longPressDisplay).toEqual({ label: 'Release' })
   })
 
   it('keeps legacy labels as scalar strings when normalizing and serializing', () => {
@@ -280,6 +319,51 @@ describe('action pad document validation', () => {
       path: `menus[0].groups[0].buttons[0].${suffix}`
     }))
     expect(() => serializeActionPadConfig(value as ActionPadConfig)).toThrow(ActionPadConfigError)
+  })
+
+  it.each([
+    [{}, 'longPressDisplay'],
+    [{ styles: {} }, 'longPressDisplay'],
+    [{ label: '   ' }, 'longPressDisplay.label'],
+    [{ label: [] }, 'longPressDisplay.label'],
+    [{ styles: { size: '1/2' } }, 'longPressDisplay.styles.size'],
+    [{ styles: { appearance: 'raised' } }, 'longPressDisplay.styles.appearance'],
+    [{ styles: { backgroundColor: '#fff' } }, 'longPressDisplay.styles.backgroundColor'],
+    [{ styles: { outlineColor: '#12345678' } }, 'longPressDisplay.styles.outlineColor'],
+    [{ typo: true }, 'longPressDisplay.typo']
+  ])('rejects an invalid long-press display at %s', (longPressDisplay, suffix) => {
+    const value = candidateWithButton({
+      ...inputButton,
+      longPress: { type: 'input', nvimInput: '<C-x>', after: 'stay' },
+      longPressDisplay
+    })
+
+    expect(validateActionPadConfig(value)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: `menus[0].groups[0].buttons[0].${suffix}` })
+    ]))
+    expect(() => parseActionPadConfig(JSON.stringify(value))).toThrow(ActionPadConfigError)
+  })
+
+  it('allows label-only and style-only long-press displays but requires a long-press action', () => {
+    const longPress = { type: 'input' as const, nvimInput: '<C-x>', after: 'stay' as const }
+    expect(validateActionPadConfig(config([{
+      ...inputButton,
+      longPress,
+      longPressDisplay: { label: 'Release' }
+    }]))).toEqual([])
+    expect(validateActionPadConfig(config([{
+      ...inputButton,
+      longPress,
+      longPressDisplay: { styles: { backgroundColor: '#2b271f' } }
+    }]))).toEqual([])
+
+    expect(validateActionPadConfig(config([{
+      ...inputButton,
+      longPressDisplay: { label: 'Release' }
+    }]))).toContainEqual(expect.objectContaining({
+      path: 'menus[0].groups[0].buttons[0].longPressDisplay',
+      message: 'Requires a longPress action.'
+    }))
   })
 
   it('allows whitespace separator runs when the combined rich label has visible text', () => {
@@ -437,7 +521,17 @@ describe('action pad document validation', () => {
     const incompleteColorDrafts = [
       config([{ ...inputButton, styles: { size: '1/2', backgroundColor: '#' } }]),
       config([{ ...inputButton, styles: { size: '1/2', outlineColor: '#123' } }]),
-      config([{ ...inputButton, label: [{ text: 'Text', fontSize: 15, bold: false, color: '' }] }])
+      config([{ ...inputButton, label: [{ text: 'Text', fontSize: 15, bold: false, color: '' }] }]),
+      config([{
+        ...inputButton,
+        longPress: { type: 'input', nvimInput: '<C-x>', after: 'stay' },
+        longPressDisplay: {}
+      }]),
+      config([{
+        ...inputButton,
+        longPress: { type: 'input', nvimInput: '<C-x>', after: 'stay' },
+        longPressDisplay: { styles: { backgroundColor: '#' } }
+      }])
     ]
 
     for (const value of [draft, brokenReference, cycle, incompleteGroup, emptyRunDraft, ...incompleteColorDrafts]) {

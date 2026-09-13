@@ -9,6 +9,7 @@ import kotlinx.coroutines.cancel
 
 class CodeyNvimModule : Module() {
   private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private val processLifecycleLock = Any()
   private val nvimRuntimeDelegate = lazy {
     val context = checkNotNull(appContext.reactContext) {
       "CodeyNvim requires an attached Android application context"
@@ -51,14 +52,27 @@ class CodeyNvimModule : Module() {
     )
   }
   private val manager by managerDelegate
+  private val cloneManagerDelegate = lazy {
+    RepositoryCloneManager(
+      runtimeProvider = { parent -> nvimRuntime.prepareRepositoryClone(parent) },
+      journalDirectoryProvider = { nvimRuntime.cloneJournalDirectory() },
+      onProgress = { operationId, message ->
+        sendEvent("repositoryCloneProgress", mapOf("operationId" to operationId, "message" to message))
+      },
+      lifecycleLock = processLifecycleLock,
+      editorRunning = { manager.isRunning }
+    )
+  }
+  private val cloneManager by cloneManagerDelegate
 
   override fun definition() = ModuleDefinition {
     Name("CodeyNvim")
 
-    Events("data", "exit")
+    Events("data", "exit", "repositoryCloneProgress")
 
     AsyncFunction("getStatus") {
       val status = nvimRuntime.status(managerDelegate.value.isRunning)
+      if (status.supported && status.allFilesAccess) cloneManager.recoverInterrupted()
       buildMap<String, Any> {
         put("supported", status.supported)
         put("running", status.running)
@@ -97,7 +111,19 @@ class CodeyNvimModule : Module() {
     }.runOnQueue(ioScope)
 
     AsyncFunction("start") { cwd: String, configDirectory: String ->
-      manager.start(cwd, configDirectory)
+      synchronized(processLifecycleLock) {
+        check(!cloneManager.isCloning) { "Wait for repository cloning to finish before starting the editor" }
+        manager.start(cwd, configDirectory)
+      }
+    }.runOnQueue(ioScope)
+
+    AsyncFunction("cloneRepository") {
+      operationId: String, repositoryUrl: String, parentPath: String, directoryName: String ->
+      cloneManager.cloneRepository(operationId, repositoryUrl, parentPath, directoryName).toMap()
+    }.runOnQueue(ioScope)
+
+    AsyncFunction("cancelRepositoryClone") { operationId: String ->
+      cloneManager.cancelRepositoryClone(operationId)
     }.runOnQueue(ioScope)
 
     AsyncFunction("write") { sessionId: Int, bytes: ByteArray ->
@@ -110,7 +136,10 @@ class CodeyNvimModule : Module() {
 
     OnDestroy {
       // Instantiate the manager to close the race with an already queued start.
-      manager.closeAll()
+      synchronized(processLifecycleLock) {
+        cloneManager.close()
+        manager.closeAll()
+      }
       ioScope.cancel()
     }
   }

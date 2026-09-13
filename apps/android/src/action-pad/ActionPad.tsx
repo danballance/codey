@@ -4,7 +4,8 @@ import {
   useLayoutEffect,
   useMemo,
   useReducer,
-  useRef
+  useRef,
+  useState
 } from 'react'
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 
@@ -20,7 +21,8 @@ import {
   resolveActionButtonStyles
 } from './style'
 import {
-  ACTION_PAD_LONG_PRESS_MS,
+  ACTION_PAD_ACTION_LONG_PRESS_MS,
+  ACTION_PAD_EDIT_LONG_PRESS_MS,
   type ActionButton,
   type ActionGroup,
   type ActionInteraction,
@@ -455,6 +457,14 @@ const ActionButtonView = memo(function ActionButtonView({
   const selecting = interactionMode === 'selection'
   const available = selecting || (interactionMode === 'normal' && enabled)
   const resolvedStyles = resolveActionButtonStyles(button.styles)
+  const longPressDisplayStyles = button.longPressDisplay?.styles
+  const resolvedLongPressStyles = resolveActionButtonStyles({
+    size: button.styles.size,
+    appearance: longPressDisplayStyles?.appearance ?? button.styles.appearance,
+    backgroundColor: longPressDisplayStyles?.backgroundColor ?? button.styles.backgroundColor,
+    outlineColor: longPressDisplayStyles?.outlineColor ?? ACTION_PAD_ARMED_OUTLINE_COLOR
+  })
+  const [longPressArmed, setLongPressArmed] = useState(false)
   const latest = useRef({
     activationContext,
     button,
@@ -477,18 +487,61 @@ const ActionButtonView = memo(function ActionButtonView({
   }
   const gesture = useRef<{
     readonly button: ActionButton
+    readonly activationContext: ActivationContext
     readonly interactionMode: NonNullable<ActionPadProps['interactionMode']>
     readonly editTarget: ActionPadButtonTarget
-    readonly held: boolean
+    readonly phase: 'pressing' | 'armed' | 'canceled' | 'committed'
   } | null>(null)
 
-  function activate(held: boolean) {
+  useLayoutEffect(() => {
+    if (gesture.current !== null) {
+      gesture.current = { ...gesture.current, phase: 'canceled' }
+    }
+    setLongPressArmed(false)
+  }, [
+    activationContext,
+    available,
+    button,
+    editTarget.buttonId,
+    editTarget.groupId,
+    editTarget.menuId,
+    interactionMode
+  ])
+
+  useLayoutEffect(() => () => {
+    gesture.current = null
+  }, [])
+
+  function matchesCurrentGesture(started: NonNullable<typeof gesture.current>): boolean {
     const current = latest.current
+    return current.available
+      && current.button === started.button
+      && current.interactionMode === started.interactionMode
+      && sameButtonTarget(current.editTarget, started.editTarget)
+      && current.isCurrentActivation(
+        started.activationContext,
+        started.button,
+        started.editTarget,
+        started.interactionMode
+      )
+  }
+
+  function startGesture() {
+    gesture.current = { ...latest.current, phase: 'pressing' }
+    setLongPressArmed(false)
+  }
+
+  function activateTap() {
+    const current = latest.current
+    const started = gesture.current
+    if (started?.phase === 'armed' || started?.phase === 'canceled' || started?.phase === 'committed') return
+    gesture.current = null
+
     // Accessibility activation can arrive without pressIn. Keep even those
     // callbacks bound to the document and mode that rendered the target.
     if (
-      current.button !== button ||
-      current.interactionMode !== interactionMode
+      current.button !== button
+      || current.interactionMode !== interactionMode
       || !sameButtonTarget(current.editTarget, editTarget)
       || !current.isCurrentActivation(
         activationContext,
@@ -496,25 +549,67 @@ const ActionButtonView = memo(function ActionButtonView({
         editTarget,
         interactionMode
       )
+      || (started !== null && !matchesCurrentGesture(started))
     ) return
-    const started = gesture.current
-    if (!held) gesture.current = null
-    if (!current.available || started?.held) return
-    // A mode or document change during a native gesture must not turn its
-    // release into an action in the newly visible pad.
-    if (started !== null && (
-      started.button !== current.button || started.interactionMode !== current.interactionMode ||
-      !sameButtonTarget(started.editTarget, current.editTarget)
-    )) return
-    if (held) gesture.current = { ...current, held: true }
+
     if (current.interactionMode === 'selection') {
       current.onEditButton?.(current.editTarget)
       return
     }
-    const interaction = held ? current.button.longPress : current.button.tap
-    if (interaction !== undefined) {
-      current.onInteraction(interaction, current.activationContext)
+    if (current.button.tap !== undefined) {
+      current.onInteraction(current.button.tap, current.activationContext)
     }
+  }
+
+  function handleLongPress() {
+    const current = latest.current
+    const started = gesture.current
+    if (started?.phase !== 'pressing' || !matchesCurrentGesture(started)) return
+
+    if (current.interactionMode === 'selection') {
+      gesture.current = { ...started, phase: 'committed' }
+      current.onEditButton?.(current.editTarget)
+      return
+    }
+    if (current.interactionMode !== 'normal' || current.button.longPress === undefined) return
+
+    gesture.current = { ...started, phase: 'armed' }
+    setLongPressArmed(true)
+  }
+
+  function commitLongPress() {
+    const started = gesture.current
+    if (started?.phase !== 'armed') {
+      if (started !== null) gesture.current = null
+      return
+    }
+
+    gesture.current = { ...started, phase: 'committed' }
+    setLongPressArmed(false)
+    queueMicrotask(() => {
+      if (gesture.current?.phase === 'committed' && gesture.current.button === started.button) {
+        gesture.current = null
+      }
+    })
+
+    if (!matchesCurrentGesture(started) || started.button.longPress === undefined) return
+    latest.current.onInteraction(started.button.longPress, started.activationContext)
+  }
+
+  function cancelArmedLongPress() {
+    const started = gesture.current
+    if (started?.phase === 'armed') {
+      gesture.current = { ...started, phase: 'canceled' }
+    }
+    setLongPressArmed(false)
+  }
+
+  function cancelGesture() {
+    const started = gesture.current
+    if (started?.phase === 'pressing' || started?.phase === 'armed') {
+      gesture.current = { ...started, phase: 'canceled' }
+    }
+    setLongPressArmed(false)
   }
 
   const accessibleLabel = button.accessibilityLabel?.trim()
@@ -527,31 +622,49 @@ const ActionButtonView = memo(function ActionButtonView({
       accessibilityLabel={`${selecting ? 'Edit ' : ''}${accessibleLabel}`}
       accessibilityRole="button"
       accessibilityState={{ disabled: !available }}
-      delayLongPress={selecting || button.longPress !== undefined ? ACTION_PAD_LONG_PRESS_MS : undefined}
+      delayLongPress={selecting
+        ? ACTION_PAD_EDIT_LONG_PRESS_MS
+        : button.longPress !== undefined ? ACTION_PAD_ACTION_LONG_PRESS_MS : undefined}
       disabled={!available}
-      onLongPress={selecting || button.longPress !== undefined ? () => activate(true) : undefined}
-      onPress={selecting || button.tap !== undefined ? () => activate(false) : undefined}
+      onLongPress={selecting || button.longPress !== undefined ? handleLongPress : undefined}
+      onPress={selecting || button.tap !== undefined ? activateTap : undefined}
       onPressIn={() => {
-        gesture.current = { ...latest.current, held: false }
+        if (gesture.current === null || gesture.current.phase === 'committed') startGesture()
       }}
+      onPressOut={(event) => {
+        if (event.nativeEvent.touches.length > 0) cancelArmedLongPress()
+        else setLongPressArmed(false)
+      }}
+      onTouchCancel={cancelGesture}
+      onTouchEnd={(event) => {
+        if (event.nativeEvent.touches.length === 0) commitLongPress()
+      }}
+      onTouchStart={startGesture}
       style={({ pressed }) => [
         styles.button,
         compact && styles.compactButton,
         styles.railButton,
         {
           width: resolvedStyles.width,
-          backgroundColor: resolvedStyles.backgroundColor,
-          borderColor: resolvedStyles.outlineColor
+          backgroundColor: longPressArmed
+            ? resolvedLongPressStyles.backgroundColor
+            : resolvedStyles.backgroundColor,
+          borderColor: longPressArmed
+            ? resolvedLongPressStyles.outlineColor
+            : resolvedStyles.outlineColor
         },
         !available && styles.disabled,
-        pressed && available && styles.pressed
+        pressed && available && styles.pressed,
+        longPressArmed && styles.longPressArmed
       ]}
       testID={`action-pad-${button.id}`}
     >
       <ActionButtonLabel
         compact={compact}
         fontFacesLoaded={fontFacesLoaded}
-        label={button.label}
+        label={longPressArmed
+          ? button.longPressDisplay?.label ?? button.label
+          : button.label}
         testID={`action-pad-${button.id}-label`}
       />
       {selecting ? (
@@ -575,6 +688,7 @@ function sameButtonTarget(first: ActionPadButtonTarget, second: ActionPadButtonT
 }
 
 const EMPTY_SLOT_TOKEN = {}
+const ACTION_PAD_ARMED_OUTLINE_COLOR = '#e0af68'
 const definitionKeys = new WeakMap<ActionButton, number>()
 let nextDefinitionKey = 0
 
@@ -884,5 +998,8 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.72
+  },
+  longPressArmed: {
+    opacity: 1
   }
 })

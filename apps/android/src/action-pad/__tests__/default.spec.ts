@@ -63,11 +63,19 @@ describe('bundled action pad', () => {
     })))
     expect(button('home', 'down')).toMatchObject({
       tap: { type: 'input', nvimInput: '<Down>', after: 'root' },
-      longPress: { type: 'group', menuId: 'down-navigation', groupId: 'options', after: 'stay' }
+      longPress: { type: 'group', menuId: 'down-navigation', groupId: 'options', after: 'stay' },
+      longPressDisplay: {
+        label: 'Navigation',
+        styles: { backgroundColor: '#2b271f', outlineColor: '#e0af68' }
+      }
     })
     expect(button('home', 'up')).toMatchObject({
       tap: { type: 'input', nvimInput: '<Up>', after: 'root' },
-      longPress: { type: 'group', menuId: 'up-navigation', groupId: 'options', after: 'stay' }
+      longPress: { type: 'group', menuId: 'up-navigation', groupId: 'options', after: 'stay' },
+      longPressDisplay: {
+        label: 'Navigation',
+        styles: { backgroundColor: '#2b271f', outlineColor: '#e0af68' }
+      }
     })
   })
 

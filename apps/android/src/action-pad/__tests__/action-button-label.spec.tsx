@@ -167,9 +167,11 @@ describe('ActionButtonLabel', () => {
       expect(label.props.runs[0].fontSize).toBe(compact ? 19 : 22)
       fireEvent(button, 'pressIn')
       fireEvent.press(button)
-      fireEvent(button, 'pressIn')
-      fireEvent(button, 'longPress')
-      fireEvent.press(button)
+      fireEvent(button, 'touchStart', { nativeEvent: { touches: [{}] } })
+      fireEvent(button, 'pressIn', { nativeEvent: { touches: [{}] } })
+      fireEvent(button, 'longPress', { nativeEvent: { touches: [{}] } })
+      fireEvent(button, 'pressOut', { nativeEvent: { touches: [] } })
+      fireEvent(button, 'touchEnd', { nativeEvent: { touches: [] } })
     }
     expect(onInput.mock.calls).toEqual([['tap-half'], ['hold-half'], ['tap-quarter'], ['hold-quarter']])
 
@@ -181,7 +183,8 @@ describe('ActionButtonLabel', () => {
       expect(StyleSheet.flatten(label.props.style)).toEqual({ flex: 1, alignSelf: 'stretch' })
       const indicator = screen.getByTestId(`action-pad-${id}-edit-indicator`, { includeHiddenElements: true })
       expect(StyleSheet.flatten(indicator.props.style).position).toBe('absolute')
-      fireEvent(button, 'pressIn')
+      fireEvent(button, 'touchStart', { nativeEvent: { touches: [{}] } })
+      fireEvent(button, 'pressIn', { nativeEvent: { touches: [{}] } })
       fireEvent.press(button)
     }
     expect(onInput).toHaveBeenCalledTimes(4)

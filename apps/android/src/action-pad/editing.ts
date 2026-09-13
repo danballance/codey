@@ -292,6 +292,16 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
         id: createActionPadId(button.id, menu.groups.flatMap((candidate) => candidate.buttons.map(({ id }) => id))),
         label: duplicateButtonLabel(button.label),
         styles: { ...button.styles },
+        ...(button.longPressDisplay === undefined ? {} : {
+          longPressDisplay: {
+            ...(button.longPressDisplay.label === undefined
+              ? {}
+              : { label: cloneButtonLabel(button.longPressDisplay.label) }),
+            ...(button.longPressDisplay.styles === undefined
+              ? {}
+              : { styles: { ...button.longPressDisplay.styles } })
+          }
+        }),
         ...(button.tap === undefined ? {} : { tap: { ...button.tap } }),
         ...(button.longPress === undefined ? {} : { longPress: { ...button.longPress } })
       }
@@ -317,9 +327,10 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
           ? button.styles
           : mergeActionButtonStyles(button.styles, edit.patch.styles)
       }
-      for (const optional of ['tap', 'longPress', 'accessibilityLabel', 'accessibilityHint'] as const) {
+      for (const optional of ['tap', 'longPress', 'longPressDisplay', 'accessibilityLabel', 'accessibilityHint'] as const) {
         if (updated[optional] === undefined) delete updated[optional]
       }
+      if (updated.longPress === undefined) delete updated.longPressDisplay
       return replaceGroup(config, edit.location, {
         ...group,
         buttons: group.buttons.map((candidate, index) => index === edit.location.buttonIndex ? updated : candidate)
@@ -356,6 +367,10 @@ export function editActionPad(config: ActionPadConfig, edit: ActionPadEdit): Act
       return replaceGroup(removed, edit.destination, { ...destination, buttons: [...destination.buttons, button] })
     }
   }
+}
+
+function cloneButtonLabel(label: ActionButtonLabel): ActionButtonLabel {
+  return typeof label === 'string' ? label : label.map((run) => ({ ...run }))
 }
 
 function duplicateButtonLabel(label: ActionButtonLabel): ActionButtonLabel {

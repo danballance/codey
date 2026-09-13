@@ -168,6 +168,15 @@ requirements below are complete.
 
 ## Runtime integrity and lifecycle
 
+The workspace clone flow uses bundled Git independently of Neovim. A
+clone-specific mode in the packaged dispatcher supervises Git and its helper
+process group, treating control-pipe EOF as cancellation. It promotes a
+successful staging checkout with a no-replace rename; unsupported filesystems
+fail safely instead of replacing an existing directory. Native cleanup waits
+for a supervisor quiescence marker and removes only owned temporary paths.
+No credentials, recursive submodule initialization, Git LFS downloads, or
+background download service are supplied by this flow.
+
 Android extracts the packaged executable and dependent shared libraries. Codey
 checksum-verifies the runtime-data archive, rejects unsafe archive paths and
 symbolic links, and installs it into a versioned app-private directory. Runtime

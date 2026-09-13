@@ -146,6 +146,16 @@ internal class WorkspaceBrowser(
     return WorkspaceRoot(resolved.volume.label, resolved.directory.path)
   }
 
+  fun requireWritableDirectory(path: String): File {
+    requireAllFilesAccess()
+    val root = resolveRoot()
+    val directory = directoryValidator.resolveAbsolute(path)
+    require(contains(root.directory, directory)) {
+      "Local workspace path must be inside primary shared storage"
+    }
+    return directoryValidator.requireWritableDirectory(directory.path)
+  }
+
   fun listDirectory(path: String): WorkspaceListing {
     requireAllFilesAccess()
     val resolvedRoot = resolveRoot()

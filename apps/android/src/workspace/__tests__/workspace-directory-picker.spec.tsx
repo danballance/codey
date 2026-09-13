@@ -114,6 +114,17 @@ afterEach(() => {
 })
 
 describe('WorkspaceDirectoryPicker', () => {
+  it('selects a clone parent with purpose-specific labels without treating it as a workspace', async () => {
+    const screen = renderPicker({ purpose: 'clone-destination' })
+    expect(screen.getByRole('header', { name: 'Choose repository parent folder' })).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: 'Use current folder as repository parent folder'
+    })).toBeEnabled())
+    expect(screen.getByText('The repository will be cloned into a new folder inside this folder.')).toBeTruthy()
+    fireEvent.press(screen.getByRole('button', { name: 'Use current folder as repository parent folder' }))
+    expect(screen.props.onSelect).toHaveBeenCalledWith('/storage/emulated/0/Projects')
+  })
+
   it('loads the initial directory, preserves hidden names, navigates, and selects explicitly', async () => {
     const initial = workspaceListing({
       directories: [

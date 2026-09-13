@@ -53,13 +53,16 @@ export {
 } from './document'
 export {
   ACTION_BUTTON_FONT_SIZES,
-  ACTION_PAD_LONG_PRESS_MS,
+  ACTION_PAD_ACTION_LONG_PRESS_MS,
+  ACTION_PAD_EDIT_LONG_PRESS_MS,
   type ActionAfter,
   type ActionButtonAppearance,
   type ActionButton,
   type ActionButtonFontSize,
   type ActionButtonLabel,
   type ActionButtonLabelRun,
+  type ActionButtonLongPressDisplay,
+  type ActionButtonLongPressDisplayStyles,
   type ActionButtonSize,
   type ActionButtonStyles,
   type ActionGroup,

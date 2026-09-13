@@ -25,7 +25,7 @@ import {
 } from '@codey/perf'
 
 import {
-  ACTION_PAD_LONG_PRESS_MS,
+  ACTION_PAD_EDIT_LONG_PRESS_MS,
   ActionPad,
   ActionPadStatusBar,
   type ActionPadButtonTarget,
@@ -67,6 +67,7 @@ import { createRuntimeConnection } from './runtime-connection'
 import { diagnosticLogger, diagnosticUtf8ByteLength } from './diagnostics/logger'
 import type { TabletCapability } from './tablet'
 import { WorkspaceDirectoryPicker } from './workspace/WorkspaceDirectoryPicker'
+import { WorkspacePicker } from './workspace/WorkspacePicker'
 
 interface TabletClientProps {
   readonly capability: TabletCapability
@@ -147,6 +148,10 @@ export function TabletClient({
   const [nativeNvimStatusLoading, setNativeNvimStatusLoading] = useState(true)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const workspacePickerOpenRef = useRef(false)
+  const [repositoryCloneBusy, setRepositoryCloneBusy] = useState(false)
+  const repositoryCloneBusyRef = useRef(false)
+  const [preparingLocalStart, setPreparingLocalStart] = useState(false)
+  const preparingLocalStartRef = useRef(false)
   const [configPickerOpen, setConfigPickerOpen] = useState(false)
   const configPickerOpenRef = useRef(false)
   const [formError, setFormError] = useState('')
@@ -161,6 +166,11 @@ export function TabletClient({
   logsVisibleRef.current = logsVisible
   workspacePickerOpenRef.current = workspacePickerOpen
   configPickerOpenRef.current = configPickerOpen
+
+  const setCloneBusy = useCallback((busy: boolean) => {
+    repositoryCloneBusyRef.current = busy
+    if (clientMountedRef.current) setRepositoryCloneBusy(busy)
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -268,6 +278,7 @@ export function TabletClient({
       if (state === 'active') {
         void refreshNativeNvimStatus()
       } else {
+        if (repositoryCloneBusyRef.current) setWorkspacePickerOpen(false)
         void controller.disconnect()
       }
     })
@@ -329,6 +340,8 @@ export function TabletClient({
   }, [])
 
   const startLocalNeovim = useCallback(async (): Promise<void> => {
+    if (workspacePickerOpenRef.current || configPickerOpenRef.current || repositoryCloneBusyRef.current ||
+      preparingLocalStartRef.current) return
     setFormError('')
     if (!connectionSettingsLoaded) {
       setFormError('Local settings are still loading.')
@@ -346,6 +359,8 @@ export function TabletClient({
       grantAllFilesAccess()
       return
     }
+    preparingLocalStartRef.current = true
+    setPreparingLocalStart(true)
     try {
       const settings = createLocalConnectionSettings(
         workspacePath,
@@ -374,6 +389,9 @@ export function TabletClient({
         }
       })
       setFormError(reason instanceof Error ? reason.message : 'Invalid local Neovim settings')
+    } finally {
+      preparingLocalStartRef.current = false
+      if (clientMountedRef.current) setPreparingLocalStart(false)
     }
   }, [
     actionPadStore,
@@ -613,7 +631,8 @@ export function TabletClient({
   const localUnavailable = !connected && nativeNvimStatus?.supported === false
     ? nativeNvimStatus.unavailableReason ?? 'Bundled NeoVim is unavailable on this device'
     : ''
-  const workspaceBrowseDisabled = connecting || connected || !connectionSettingsLoaded ||
+  const workspaceBrowseDisabled = connecting || connected || workspacePickerOpen || configPickerOpen ||
+    repositoryCloneBusy || preparingLocalStart || !connectionSettingsLoaded ||
     nativeNvimStatusLoading ||
     nativeNvimStatus?.supported !== true || !nativeNvimStatus.allFilesAccess
   const configBrowseDisabled = workspaceBrowseDisabled
@@ -885,7 +904,8 @@ export function TabletClient({
     initialButton?: ActionPadButtonTarget,
     source = actionPadStore.getState()
   ) => {
-    if (openingActionPadEditor.current || editingActionPadRef.current) return
+    if (openingActionPadEditor.current || editingActionPadRef.current ||
+      workspacePickerOpenRef.current || configPickerOpenRef.current || repositoryCloneBusyRef.current) return
     const openOperation = diagnosticLogger.operation({
       category: 'action-pad',
       event: 'action_pad.editor_open',
@@ -1087,7 +1107,7 @@ export function TabletClient({
         </View>
         <View style={styles.directoryControls} testID="local-workspace-controls">
           <Pressable
-            accessibilityHint={`Current workspace: ${workspacePath}. Opens the directory browser.`}
+            accessibilityHint={`Current workspace: ${workspacePath}. Choose an existing folder or clone a GitHub repository.`}
             accessibilityLabel="Set Workspace"
             accessibilityRole="button"
             accessibilityState={{ disabled: workspaceBrowseDisabled }}
@@ -1122,7 +1142,8 @@ export function TabletClient({
         </View>
         <Pressable
           accessibilityRole="button"
-          disabled={!connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0 ||
+          disabled={workspacePickerOpen || configPickerOpen || repositoryCloneBusy || preparingLocalStart ||
+            !connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0 ||
             (localConfigMissing && !localNeedsFilesAccess)}
           onPress={toggleConnection}
           style={({ pressed }) => [
@@ -1130,7 +1151,8 @@ export function TabletClient({
             !expanded && styles.condensedConnectionButton,
             connected && styles.disconnectButton,
             pressed && styles.pressed,
-            (!connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0 ||
+            (workspacePickerOpen || configPickerOpen || repositoryCloneBusy || preparingLocalStart ||
+              !connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0 ||
               (localConfigMissing && !localNeedsFilesAccess)) && styles.disabled
           ]}
         >
@@ -1169,8 +1191,9 @@ export function TabletClient({
       </View>
 
       {workspacePickerOpen ? (
-        <WorkspaceDirectoryPicker
+        <WorkspacePicker
           initialPath={workspacePath}
+          onBusyChange={setCloneBusy}
           onCancel={() => setWorkspacePickerOpen(false)}
           onOpenLogs={openLogsFromWorkspacePicker}
           onSelect={selectWorkspaceDirectory}
@@ -1265,10 +1288,12 @@ export function TabletClient({
             accessibilityLabel={selectingActionPad ? 'Done editing' : 'Edit Action Pad'}
             accessibilityState={{
               selected: selectingActionPad,
-              disabled: !connectionSettingsLoaded || configDirectory.trim().length === 0
+              disabled: workspacePickerOpen || configPickerOpen || repositoryCloneBusy ||
+                !connectionSettingsLoaded || configDirectory.trim().length === 0
             }}
-            delayLongPress={ACTION_PAD_LONG_PRESS_MS}
-            disabled={!connectionSettingsLoaded || configDirectory.trim().length === 0}
+            delayLongPress={ACTION_PAD_EDIT_LONG_PRESS_MS}
+            disabled={workspacePickerOpen || configPickerOpen || repositoryCloneBusy ||
+              !connectionSettingsLoaded || configDirectory.trim().length === 0}
             onAccessibilityAction={(event) => {
               if (event.nativeEvent.actionName === 'openEditor') void openActionPadEditor()
             }}
@@ -1288,7 +1313,8 @@ export function TabletClient({
               styles.actionPadControlButton,
               styles.editActionPadButton,
               selectingActionPad && styles.editActionPadSelected,
-              (!connectionSettingsLoaded || configDirectory.trim().length === 0) && styles.disabled,
+              (workspacePickerOpen || configPickerOpen || repositoryCloneBusy ||
+                !connectionSettingsLoaded || configDirectory.trim().length === 0) && styles.disabled,
               pressed && styles.pressed
             ]}
           >
@@ -1317,12 +1343,14 @@ export function TabletClient({
                 accessibilityLabel={localNeedsFilesAccess
                   ? 'Grant local workspace file access'
                   : 'Start local Neovim'}
-                disabled={!connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0}
+                disabled={workspacePickerOpen || configPickerOpen || repositoryCloneBusy || preparingLocalStart ||
+                  !connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0}
                 onPress={startActionPadNeovim}
                 style={[
                   styles.actionPadControlButton,
                   styles.connectActionPadButton,
-                  (!connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0) && styles.disabled
+                  (workspacePickerOpen || configPickerOpen || repositoryCloneBusy || preparingLocalStart ||
+                    !connectionSettingsLoaded || nativeNvimStatusLoading || connecting || localUnavailable.length > 0) && styles.disabled
                 ]}
               >
                 <Text style={styles.editActionPadText}>

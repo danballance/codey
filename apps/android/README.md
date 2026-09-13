@@ -35,13 +35,39 @@ directories:
 - **Workspace** is a writable absolute path used as Neovim's working directory.
 - **Neovim config folder** is a readable, writable, non-root absolute path.
 
-The **Set Workspace** and **Set Config Directory** controls open the directory
-browser at the saved location; when no config directory is set, its browser
-starts at the workspace. Selection is browser-only and enumerates directories
+**Set Workspace** offers **Choose existing folder** and **Clone GitHub
+repository**. **Set Config Directory** opens the directory browser directly.
+Browsers open at the saved location; when no config directory is set, its browser
+starts at the workspace. Directory selection enumerates directories
 under primary shared storage. The browser does not translate Storage Access
 Framework `content://` URIs, enumerate cloud document providers, or browse
 removable volumes. Choosing a directory saves the form; pressing **Start**
 launches Neovim as a separate operation.
+
+### Clone a GitHub workspace
+
+Choose **Clone GitHub repository**, enter a public GitHub HTTPS repository URL
+or `owner/repo`, and choose an existing writable parent folder. The new folder
+name defaults to the repository name and can be edited. Review the full path,
+then press **Clone**. Codey checks out the default branch with full Git history
+and selects the completed folder as the workspace, preserving your Neovim
+config selection. Press **Start** when ready to open it.
+
+Progress and cancellation are available during the download. Existing
+destinations are never replaced. Failed or cancelled clones do not change the
+selected workspace; a failed clone keeps the form available for retry. Codey stops the Git
+process group before cleaning its temporary download. Interrupted downloads
+with uncertain process state are retained rather than deleted automatically.
+Cloning is an in-app operation and is cancelled when the app leaves the
+foreground, with no background download service or resume.
+
+This flow supports public repositories on `github.com` only. It has no sign-in,
+private-repository authentication, SSH, branch picker, pull, or push controls.
+Submodules are not initialized and Git LFS objects are not downloaded; LFS
+pointer files remain in the checkout. Shared storage uses Git's filesystem
+capability detection for symbolic links and executable bits, so a checkout can
+differ from one on a desktop filesystem. Further Git operations can be run
+deliberately through Neovim using the bundled tools.
 
 The config folder can contain `init.lua` and the normal `lua/`, `plugin/`, and
 `after/` children. If `init.lua` is absent, Neovim starts with `--clean`. If it

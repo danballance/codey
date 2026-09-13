@@ -1,4 +1,5 @@
-export const ACTION_PAD_LONG_PRESS_MS = 450
+export const ACTION_PAD_ACTION_LONG_PRESS_MS = 300
+export const ACTION_PAD_EDIT_LONG_PRESS_MS = 450
 
 export type ActionAfter = 'root' | 'stay'
 
@@ -24,6 +25,17 @@ export interface ActionButtonStyles {
   readonly appearance?: ActionButtonAppearance
   readonly backgroundColor?: string
   readonly outlineColor?: string
+}
+
+export interface ActionButtonLongPressDisplayStyles {
+  readonly appearance?: ActionButtonAppearance
+  readonly backgroundColor?: string
+  readonly outlineColor?: string
+}
+
+export interface ActionButtonLongPressDisplay {
+  readonly label?: ActionButtonLabel
+  readonly styles?: ActionButtonLongPressDisplayStyles
 }
 
 export type ActionInteraction =
@@ -58,6 +70,7 @@ interface ActionButtonBase {
   readonly accessibilityLabel?: string
   readonly accessibilityHint?: string
   readonly styles: ActionButtonStyles
+  readonly longPressDisplay?: ActionButtonLongPressDisplay
 }
 
 export type ActionButton = ActionButtonBase & (

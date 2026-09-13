@@ -11,6 +11,7 @@ import type {
   ActionAfter,
   ActionButton,
   ActionButtonLabel,
+  ActionButtonLongPressDisplay,
   ActionButtonStyles,
   ActionInteraction,
   ActionMenu
@@ -39,6 +40,7 @@ export interface ActionMenuDefinitionButton {
   readonly accessibilityLabel?: string
   readonly accessibilityHint?: string
   readonly styles: ActionButtonStyles
+  readonly longPressDisplay?: ActionButtonLongPressDisplay
   readonly tap?: ActionMenuDefinitionInteraction
   readonly longPress?: ActionMenuDefinitionInteraction
 }
@@ -200,6 +202,36 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
     }
   }
 
+  function longPressDisplay(candidate: unknown, path: string) {
+    if (!object(candidate, path, ['label', 'styles'])) return
+    let hasOverride = false
+    if (candidate.label !== undefined) {
+      hasOverride = true
+      buttonLabel(candidate.label, `${path}.label`)
+    }
+    if (candidate.styles !== undefined && object(candidate.styles, `${path}.styles`, [
+      'appearance', 'backgroundColor', 'outlineColor'
+    ])) {
+      if (candidate.styles.appearance !== undefined) {
+        hasOverride = true
+        if (!isActionButtonAppearance(candidate.styles.appearance)) {
+          issue(`${path}.styles.appearance`, 'Expected "filled" or "outline".')
+        }
+      }
+      if (candidate.styles.backgroundColor !== undefined) {
+        hasOverride = true
+        color(candidate.styles.backgroundColor, `${path}.styles.backgroundColor`, true)
+      }
+      if (candidate.styles.outlineColor !== undefined) {
+        hasOverride = true
+        color(candidate.styles.outlineColor, `${path}.styles.outlineColor`, true)
+      }
+    }
+    if (semantic && !hasOverride) {
+      issue(path, 'Must define a label or style override.')
+    }
+  }
+
   function interaction(candidate: unknown, path: string) {
     if (!object(candidate, path, ['type', 'after', 'nvimInput', 'menuId', 'groupId'])) return
     if (candidate.after !== 'root' && candidate.after !== 'stay') {
@@ -256,7 +288,7 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
       group.buttons.forEach((button, buttonIndex) => {
         const buttonPath = `${groupPath}.buttons[${buttonIndex}]`
         if (!object(button, buttonPath, [
-          'id', 'label', 'accessibilityLabel', 'accessibilityHint', 'styles', 'tap', 'longPress'
+          'id', 'label', 'accessibilityLabel', 'accessibilityHint', 'styles', 'longPressDisplay', 'tap', 'longPress'
         ])) return
         identifier(button.id, `${buttonPath}.id`, buttonIds)
         buttonLabel(button.label, `${buttonPath}.label`)
@@ -283,6 +315,12 @@ function inspectConfig(value: unknown, semantic: boolean): readonly ConfigIssue[
         }
         if (button.tap !== undefined) interaction(button.tap, `${buttonPath}.tap`)
         if (button.longPress !== undefined) interaction(button.longPress, `${buttonPath}.longPress`)
+        if (button.longPressDisplay !== undefined) {
+          longPressDisplay(button.longPressDisplay, `${buttonPath}.longPressDisplay`)
+          if (semantic && button.longPress === undefined) {
+            issue(`${buttonPath}.longPressDisplay`, 'Requires a longPress action.')
+          }
+        }
       })
     })
   })
@@ -469,11 +507,28 @@ function normalizeConfig(config: ActionPadConfig): ActionPadConfig {
             ...(button.styles.backgroundColor === undefined ? {} : { backgroundColor: button.styles.backgroundColor }),
             ...(button.styles.outlineColor === undefined ? {} : { outlineColor: button.styles.outlineColor })
           },
+          ...(button.longPressDisplay === undefined
+            ? {}
+            : { longPressDisplay: normalizeLongPressDisplay(button.longPressDisplay) }),
           ...(button.tap === undefined ? {} : { tap: normalizeInteraction(button.tap) }),
           ...(button.longPress === undefined ? {} : { longPress: normalizeInteraction(button.longPress) })
         }))
       }))
     }))
+  }
+}
+
+function normalizeLongPressDisplay(display: ActionButtonLongPressDisplay): ActionButtonLongPressDisplay {
+  const styles = display.styles === undefined
+    ? undefined
+    : {
+        ...(display.styles.appearance === undefined ? {} : { appearance: display.styles.appearance }),
+        ...(display.styles.backgroundColor === undefined ? {} : { backgroundColor: display.styles.backgroundColor }),
+        ...(display.styles.outlineColor === undefined ? {} : { outlineColor: display.styles.outlineColor })
+      }
+  return {
+    ...(display.label === undefined ? {} : { label: normalizeButtonLabel(display.label) }),
+    ...(styles === undefined || Object.keys(styles).length === 0 ? {} : { styles })
   }
 }
 

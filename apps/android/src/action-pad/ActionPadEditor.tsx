@@ -40,6 +40,8 @@ import {
   type ActionButtonFontSize,
   type ActionButtonLabel as ActionButtonLabelValue,
   type ActionButtonLabelRun,
+  type ActionButtonLongPressDisplay,
+  type ActionButtonLongPressDisplayStyles,
   type ActionButtonStyles,
   type ActionPadButtonTarget
 } from './types'
@@ -128,6 +130,7 @@ const ACTION_BUTTON_COLOR_OPTIONS = [
   { value: '#73daca', label: 'Cyan' },
   { value: '#ff7b72', label: 'Red' }
 ] as const
+const DEFAULT_LONG_PRESS_DISPLAY_OUTLINE_COLOR = '#e0af68'
 
 export function ActionPadEditor({
   config,
@@ -387,6 +390,10 @@ export function ActionPadEditor({
 
   function updateButtonStyles(patch: Partial<ActionButtonStyles>, path: string) {
     updateButton({ styles: patch }, path)
+  }
+
+  function updateLongPressDisplay(display: ActionButtonLongPressDisplay | undefined, path: string) {
+    updateButton({ longPressDisplay: display }, path)
   }
 
   function dismissIconPicker() {
@@ -893,6 +900,21 @@ export function ActionPadEditor({
                   path={`${buttonPath}.longPress`}
                   testID="action-pad-interaction-longPress"
                 />
+                {button.longPress !== undefined ? (
+                  <LongPressDisplayEditor
+                    buttonLabel={button.label}
+                    buttonStyles={button.styles}
+                    disabled={busy}
+                    display={button.longPressDisplay}
+                    fontError={fontError}
+                    fontLoaded={fontLoaded}
+                    issues={displayedIssues}
+                    key={`${buttonIdentity}:longPressDisplay:${labelEditorRevision}`}
+                    onChange={updateLongPressDisplay}
+                    onInsertIcon={chooseNerdFontIcon}
+                    path={`${buttonPath}.longPressDisplay`}
+                  />
+                ) : null}
                 <ReorderControls busy={structuralBusy} count={group?.buttons.length ?? 0} index={buttonIndex} item="button" onMove={(direction) => apply({ type: 'reorder-button', location: buttonLocation, direction }, buttonPath, () => setButtonSelection(buttonIndex + direction))} />
                 {destinations.length > 0 ? (
                   <View style={styles.section}>
@@ -1181,16 +1203,40 @@ interface LabelRunInputState {
   selection?: LabelTextSelection
 }
 
-function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded, issues, label, onChange, onInsertIcon, path }: {
+function ActionButtonLabelEditor({
+  buttonStyles,
+  controlPrefix = 'Run',
+  disabled,
+  fieldLabel = 'Button label',
+  fontError,
+  fontLoaded,
+  issues,
+  label,
+  labelControlName = 'label',
+  onChange,
+  onInsertIcon,
+  path,
+  previewDensityLabel = 'Preview density',
+  previewTitle = 'Label preview',
+  showPreview = true,
+  testIDPrefix = 'action-button-label'
+}: {
   readonly buttonStyles: ActionButtonStyles
+  readonly controlPrefix?: string
   readonly disabled: boolean
+  readonly fieldLabel?: string
   readonly fontError: Error | null
   readonly fontLoaded: boolean
   readonly issues: readonly ConfigIssue[]
   readonly label: ActionButtonLabelValue
+  readonly labelControlName?: string
   readonly onChange: (label: ActionButtonLabelValue) => void
   readonly onInsertIcon: (insert: (icon: NerdFontIcon) => void) => void
   readonly path: string
+  readonly previewDensityLabel?: string
+  readonly previewTitle?: string
+  readonly showPreview?: boolean
+  readonly testIDPrefix?: string
 }) {
   const rich = typeof label !== 'string'
   const runs = actionButtonLabelRuns(label)
@@ -1209,7 +1255,6 @@ function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded
     readonly selection: LabelTextSelection
   }>()
   const [compactPreview, setCompactPreview] = useState(false)
-  const previewStyles = resolveActionButtonStyles(buttonStyles)
 
   useEffect(() => {
     if (focusRun === undefined) return
@@ -1289,24 +1334,25 @@ function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded
   }
 
   return (
-    <View style={styles.labelEditor} testID="action-button-label-editor">
+    <View style={styles.labelEditor} testID={`${testIDPrefix}-editor`}>
       <View style={styles.section}>
-        <Text style={styles.label}>Button label</Text>
-        <Text style={styles.muted}>Build the label from ordered runs. Each run can mix text and icons at one preset size and weight.</Text>
+        <Text style={styles.label}>{fieldLabel}</Text>
+        <Text style={styles.muted}>Build this label from ordered runs. Each run can mix text and icons at one preset size and weight.</Text>
       </View>
 
       {runs.map((run, index) => {
         const runPath = `${path}[${index}]`
         const runIssues = issues.filter((issue) => issue.path === runPath || issue.path.startsWith(`${runPath}.`))
-        const textLabel = index === 0 ? 'Button label' : `Button label run ${index + 1}`
+        const textLabel = index === 0 ? fieldLabel : `${fieldLabel} run ${index + 1}`
+        const runLabel = `${controlPrefix} ${index + 1}`
         const input = runInputs.current[index]!
         const pendingSelection = restoredSelection?.key === input.key && restoredSelection.text === run.text
           ? restoredSelection.selection : undefined
         const iconButtonLabel = fontLoaded ? 'Insert Nerd Font icon…' : fontError ? 'Nerd Font icons unavailable' : 'Loading Nerd Font icons…'
         return (
-          <View key={input.key} style={styles.labelRun} testID={`action-button-label-run-${index}`}>
+          <View key={input.key} style={styles.labelRun} testID={`${testIDPrefix}-run-${index}`}>
             <View style={styles.labelRunHeader}>
-              <Text accessibilityRole="header" style={styles.label}>Run {index + 1}</Text>
+              <Text accessibilityRole="header" style={styles.label}>{runLabel}</Text>
               <Text style={styles.muted}>{run.fontSize} · {run.bold ? 'Bold' : 'Regular'} · {run.color ?? 'Default color'}</Text>
             </View>
             <TextInput
@@ -1344,14 +1390,14 @@ function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded
             <FieldIssues issues={issues} path={runPath} />
             <FieldIssues issues={issues} path={`${runPath}.text`} />
             <EditorButton
-              accessibilityLabel={`Run ${index + 1}: ${iconButtonLabel}`}
+              accessibilityLabel={`${runLabel}: ${iconButtonLabel}`}
               disabled={disabled || !fontLoaded}
               label={iconButtonLabel}
               onPress={() => insertIcon(index)}
             />
             <Choices
               disabled={disabled}
-              label={`Run ${index + 1} font size`}
+              label={`${runLabel} font size`}
               onChange={(fontSize) => changeRun(index, { fontSize: Number(fontSize) as ActionButtonFontSize })}
               options={ACTION_BUTTON_FONT_SIZES.map((fontSize) => ({ value: String(fontSize), label: String(fontSize) }))}
               value={String(run.fontSize)}
@@ -1359,7 +1405,7 @@ function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded
             <FieldIssues issues={issues} path={`${runPath}.fontSize`} />
             <Choices
               disabled={disabled}
-              label={`Run ${index + 1} weight`}
+              label={`${runLabel} weight`}
               onChange={(weight) => changeRun(index, { bold: weight === 'bold' })}
               options={[{ value: 'regular', label: 'Regular' }, { value: 'bold', label: 'Bold' }]}
               value={run.bold ? 'bold' : 'regular'}
@@ -1368,15 +1414,15 @@ function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded
             <ColorControl
               disabled={disabled}
               issues={issues}
-              label={`Run ${index + 1} font color`}
+              label={`${runLabel} font color`}
               onChange={(color) => changeRun(index, { color })}
               path={`${runPath}.color`}
               value={run.color}
             />
             <View style={styles.actions}>
-              <EditorButton disabled={disabled || index === 0} label={`Move label run ${index + 1} earlier`} onPress={() => moveRun(index, -1)} />
-              <EditorButton disabled={disabled || index === runs.length - 1} label={`Move label run ${index + 1} later`} onPress={() => moveRun(index, 1)} />
-              <EditorButton danger disabled={disabled || runs.length === 1} label={`Delete label run ${index + 1}`} onPress={() => deleteRun(index)} />
+              <EditorButton disabled={disabled || index === 0} label={`Move ${labelControlName} run ${index + 1} earlier`} onPress={() => moveRun(index, -1)} />
+              <EditorButton disabled={disabled || index === runs.length - 1} label={`Move ${labelControlName} run ${index + 1} later`} onPress={() => moveRun(index, 1)} />
+              <EditorButton danger disabled={disabled || runs.length === 1} label={`Delete ${labelControlName} run ${index + 1}`} onPress={() => deleteRun(index)} />
             </View>
           </View>
         )
@@ -1384,52 +1430,265 @@ function ActionButtonLabelEditor({ buttonStyles, disabled, fontError, fontLoaded
 
       <FieldIssues issues={issues} path={path} />
       <View style={styles.actions}>
-        <EditorButton disabled={disabled || runs.length >= 64} label="Add run" onPress={addRun} />
-        {rich ? <EditorButton disabled={disabled} label="Remove label formatting" onPress={() => {
+        <EditorButton disabled={disabled || runs.length >= 64} label={labelControlName === 'label' ? 'Add run' : `Add ${labelControlName} run`} onPress={addRun} />
+        {rich ? <EditorButton disabled={disabled} label={`Remove ${labelControlName} formatting`} onPress={() => {
           runInputs.current = [{ key: nextRunKey.current++, input: null }]
           setRestoredSelection(undefined)
           setFocusRun(undefined)
           onChange(plainActionButtonLabel(label))
         }} /> : null}
       </View>
-      {runs.length >= 64 ? <Text style={styles.muted}>A label can contain at most 64 runs.</Text> : null}
+      {runs.length >= 64 ? <Text style={styles.muted}>{fieldLabel} can contain at most 64 runs.</Text> : null}
 
-      <View style={styles.labelPreviewSection}>
-        <Text style={styles.label}>Label preview</Text>
-        <Choices
+      {showPreview ? (
+        <ActionButtonLabelPreview
+          buttonStyles={buttonStyles}
+          compact={compactPreview}
+          densityLabel={previewDensityLabel}
           disabled={disabled}
-          label="Preview density"
-          onChange={(density) => setCompactPreview(density === 'compact')}
-          options={[{ value: 'normal', label: 'Normal' }, { value: 'compact', label: 'Compact' }]}
-          value={compactPreview ? 'compact' : 'normal'}
+          fontLoaded={fontLoaded}
+          label={label}
+          onCompactChange={setCompactPreview}
+          testIDPrefix={testIDPrefix}
+          title={previewTitle}
         />
-        <View
-          accessible={false}
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          style={[styles.labelPreviewStage, compactPreview && styles.compactLabelPreviewStage]}
-          testID="action-button-label-preview"
-        >
-          <View style={[
-            styles.labelPreviewButton,
-            compactPreview && styles.compactLabelPreviewButton,
-            {
-              width: previewStyles.width,
-              backgroundColor: previewStyles.backgroundColor,
-              borderColor: previewStyles.outlineColor
-            }
-          ]} testID="action-button-label-preview-button">
-            <ActionButtonLabel
-              compact={compactPreview}
-              fontFacesLoaded={fontLoaded}
-              label={label}
-              testID="action-button-label-preview-text"
-            />
-          </View>
+      ) : null}
+    </View>
+  )
+}
+
+function LongPressDisplayEditor({
+  buttonLabel,
+  buttonStyles,
+  disabled,
+  display,
+  fontError,
+  fontLoaded,
+  issues,
+  onChange,
+  onInsertIcon,
+  path
+}: {
+  readonly buttonLabel: ActionButtonLabelValue
+  readonly buttonStyles: ActionButtonStyles
+  readonly disabled: boolean
+  readonly display?: ActionButtonLongPressDisplay
+  readonly fontError: Error | null
+  readonly fontLoaded: boolean
+  readonly issues: readonly ConfigIssue[]
+  readonly onChange: (display: ActionButtonLongPressDisplay | undefined, path: string) => void
+  readonly onInsertIcon: (insert: (icon: NerdFontIcon) => void) => void
+  readonly path: string
+}) {
+  const [compactPreview, setCompactPreview] = useState(false)
+  const customLabel = display?.label !== undefined
+  const effectiveLabel = display?.label ?? buttonLabel
+  const effectiveStyles = longPressDisplayPreviewStyles(buttonStyles, display?.styles)
+
+  function changeLabelSource(source: string) {
+    if (source === 'custom') {
+      if (!customLabel) onChange(withLongPressDisplayLabel(display, cloneLabel(buttonLabel)), `${path}.label`)
+      return
+    }
+    if (customLabel) onChange(withLongPressDisplayLabel(display, undefined), `${path}.label`)
+  }
+
+  function changeStyles(patch: Partial<ActionButtonLongPressDisplayStyles>, fieldPath: string) {
+    onChange(withLongPressDisplayStyles(display, patch), fieldPath)
+  }
+
+  return (
+    <View style={styles.interaction} testID="action-button-long-press-display-editor">
+      <View style={styles.section}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>Hold display</Text>
+        <Text style={styles.muted}>Shown after the Hold delay while the button is armed. The Hold action still waits for release.</Text>
+      </View>
+      <Choices
+        disabled={disabled}
+        label="Hold display label source"
+        onChange={changeLabelSource}
+        options={[
+          { value: 'button', label: 'Use button label' },
+          { value: 'custom', label: 'Custom label' }
+        ]}
+        value={customLabel ? 'custom' : 'button'}
+      />
+      {customLabel ? (
+        <ActionButtonLabelEditor
+          buttonStyles={effectiveStyles}
+          controlPrefix="Hold display run"
+          disabled={disabled}
+          fieldLabel="Hold display label"
+          fontError={fontError}
+          fontLoaded={fontLoaded}
+          issues={issues}
+          label={display.label!}
+          labelControlName="hold display label"
+          onChange={(label) => onChange(withLongPressDisplayLabel(display, label), `${path}.label`)}
+          onInsertIcon={onInsertIcon}
+          path={`${path}.label`}
+          showPreview={false}
+          testIDPrefix="action-button-hold-display-label"
+        />
+      ) : null}
+      <Choices
+        disabled={disabled}
+        label="Hold display appearance"
+        onChange={(appearance) => changeStyles({
+          appearance: appearance === 'inherit' ? undefined : appearance as ActionButtonLongPressDisplayStyles['appearance']
+        }, `${path}.styles.appearance`)}
+        options={[
+          { value: 'inherit', label: 'Inherit' },
+          { value: 'filled', label: 'Filled' },
+          { value: 'outline', label: 'Outline' }
+        ]}
+        value={display?.styles?.appearance ?? 'inherit'}
+      />
+      <Text style={styles.muted}>Appearance and background inherit the normal button unless overridden.</Text>
+      <FieldIssues issues={issues} path={`${path}.styles.appearance`} />
+      <ColorControl
+        allowTransparent
+        disabled={disabled}
+        issues={issues}
+        label="Hold display background color"
+        onChange={(backgroundColor) => changeStyles({ backgroundColor }, `${path}.styles.backgroundColor`)}
+        path={`${path}.styles.backgroundColor`}
+        value={display?.styles?.backgroundColor}
+      />
+      <ColorControl
+        allowTransparent
+        disabled={disabled}
+        issues={issues}
+        label="Hold display outline color"
+        onChange={(outlineColor) => changeStyles({ outlineColor }, `${path}.styles.outlineColor`)}
+        path={`${path}.styles.outlineColor`}
+        value={display?.styles?.outlineColor}
+      />
+      <Text style={styles.muted}>Without an outline override, the armed button uses the default yellow ready outline.</Text>
+      <FieldIssues issues={issues} path={`${path}.styles`} />
+      <FieldIssues issues={issues} path={path} />
+      <View style={styles.actions}>
+        <EditorButton
+          disabled={disabled || display === undefined}
+          label="Reset hold display"
+          onPress={() => onChange(undefined, path)}
+        />
+      </View>
+      <ActionButtonLabelPreview
+        buttonStyles={effectiveStyles}
+        compact={compactPreview}
+        densityLabel="Hold display preview density"
+        disabled={disabled}
+        fontLoaded={fontLoaded}
+        label={effectiveLabel}
+        onCompactChange={setCompactPreview}
+        testIDPrefix="action-button-hold-display"
+        title="Hold display preview"
+      />
+    </View>
+  )
+}
+
+function ActionButtonLabelPreview({
+  buttonStyles,
+  compact,
+  densityLabel,
+  disabled,
+  fontLoaded,
+  label,
+  onCompactChange,
+  testIDPrefix,
+  title
+}: {
+  readonly buttonStyles: ActionButtonStyles
+  readonly compact: boolean
+  readonly densityLabel: string
+  readonly disabled: boolean
+  readonly fontLoaded: boolean
+  readonly label: ActionButtonLabelValue
+  readonly onCompactChange: (compact: boolean) => void
+  readonly testIDPrefix: string
+  readonly title: string
+}) {
+  const previewStyles = resolveActionButtonStyles(buttonStyles)
+  return (
+    <View style={styles.labelPreviewSection}>
+      <Text style={styles.label}>{title}</Text>
+      <Choices
+        disabled={disabled}
+        label={densityLabel}
+        onChange={(density) => onCompactChange(density === 'compact')}
+        options={[{ value: 'normal', label: 'Normal' }, { value: 'compact', label: 'Compact' }]}
+        value={compact ? 'compact' : 'normal'}
+      />
+      <View
+        accessible={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={[styles.labelPreviewStage, compact && styles.compactLabelPreviewStage]}
+        testID={`${testIDPrefix}-preview`}
+      >
+        <View style={[
+          styles.labelPreviewButton,
+          compact && styles.compactLabelPreviewButton,
+          {
+            width: previewStyles.width,
+            backgroundColor: previewStyles.backgroundColor,
+            borderColor: previewStyles.outlineColor
+          }
+        ]} testID={`${testIDPrefix}-preview-button`}>
+          <ActionButtonLabel
+            compact={compact}
+            fontFacesLoaded={fontLoaded}
+            label={label}
+            testID={`${testIDPrefix}-preview-text`}
+          />
         </View>
       </View>
     </View>
   )
+}
+
+function withLongPressDisplayLabel(
+  display: ActionButtonLongPressDisplay | undefined,
+  label: ActionButtonLabelValue | undefined
+): ActionButtonLongPressDisplay | undefined {
+  const next = { ...display }
+  if (label === undefined) delete next.label
+  else next.label = label
+  return next.label === undefined && next.styles === undefined ? undefined : next
+}
+
+function withLongPressDisplayStyles(
+  display: ActionButtonLongPressDisplay | undefined,
+  patch: Partial<ActionButtonLongPressDisplayStyles>
+): ActionButtonLongPressDisplay | undefined {
+  const styles = { ...display?.styles, ...patch }
+  for (const field of ['appearance', 'backgroundColor', 'outlineColor'] as const) {
+    if (styles[field] === undefined) delete styles[field]
+  }
+  const next = { ...display }
+  if (Object.keys(styles).length === 0) delete next.styles
+  else next.styles = styles
+  return next.label === undefined && next.styles === undefined ? undefined : next
+}
+
+function cloneLabel(label: ActionButtonLabelValue): ActionButtonLabelValue {
+  return typeof label === 'string' ? label : label.map((run) => ({ ...run }))
+}
+
+function longPressDisplayPreviewStyles(
+  buttonStyles: ActionButtonStyles,
+  displayStyles: ActionButtonLongPressDisplayStyles | undefined
+): ActionButtonStyles {
+  const appearance = displayStyles?.appearance ?? buttonStyles.appearance
+  const backgroundColor = displayStyles?.backgroundColor ?? buttonStyles.backgroundColor
+  return {
+    size: buttonStyles.size,
+    ...(appearance === undefined ? {} : { appearance }),
+    ...(backgroundColor === undefined ? {} : { backgroundColor }),
+    outlineColor: displayStyles?.outlineColor ?? DEFAULT_LONG_PRESS_DISPLAY_OUTLINE_COLOR
+  }
 }
 
 function OperationStatusCard({

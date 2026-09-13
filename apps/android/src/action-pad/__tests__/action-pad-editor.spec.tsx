@@ -1054,6 +1054,94 @@ describe('ActionPadEditor', () => {
     expect(screen.draft().menus[0]?.groups[0]?.buttons[0]?.longPress?.type).toBe('keyboard')
   })
 
+  it('creates independent Hold display overrides, previews the armed state, and resets them all', () => {
+    const screen = renderEditor()
+    const button = () => screen.draft().menus[0]?.groups[0]?.buttons[0]
+    const preview = () => StyleSheet.flatten(screen.getByTestId(
+      'action-button-hold-display-preview-button', { includeHiddenElements: true }
+    ).props.style)
+
+    expect(screen.getByTestId('action-button-long-press-display-editor')).toBeTruthy()
+    expect(button()).not.toHaveProperty('longPressDisplay')
+    expect(screen.props.onChange).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Hold display label source: Use button label' }).props.accessibilityState.selected).toBe(true)
+    expect(screen.getByRole('button', { name: 'Hold display appearance: Inherit' }).props.accessibilityState.selected).toBe(true)
+    expect(screen.getByRole('button', { name: 'Reset hold display' })).toBeDisabled()
+    expect(screen.queryByText('Hold display size')).toBeNull()
+    expect(preview()).toMatchObject({ width: '48%', height: 52, backgroundColor: '#24283b', borderColor: '#e0af68' })
+    expect(screen.getByTestId('action-button-hold-display-preview-text', { includeHiddenElements: true })).toHaveTextContent('Run input')
+
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display label source: Use button label' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display appearance: Inherit' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display background color: Default' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display outline color: Default' }))
+    expect(button()).not.toHaveProperty('longPressDisplay')
+
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display label source: Custom label' }))
+    expect(button()?.longPressDisplay).toEqual({ label: 'Run input' })
+    fireEvent.changeText(screen.getByLabelText('Hold display label'), 'Release to run')
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display run 1 font size: 18' }))
+    expect(button()?.longPressDisplay?.label).toEqual([
+      { text: 'Release to run', fontSize: 18, bold: false }
+    ])
+
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display appearance: Outline' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display background color: Transparent' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display outline color: Cyan' }))
+    expect(button()?.longPressDisplay).toEqual({
+      label: [{ text: 'Release to run', fontSize: 18, bold: false }],
+      styles: { appearance: 'outline', backgroundColor: 'transparent', outlineColor: '#73daca' }
+    })
+    expect(preview()).toMatchObject({ width: '48%', backgroundColor: 'transparent', borderColor: '#73daca' })
+    expect(screen.getByTestId('action-button-hold-display-preview-text', { includeHiddenElements: true }).props.runs[0].fontSize).toBe(18)
+
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display label source: Use button label' }))
+    expect(button()?.longPressDisplay).toEqual({
+      styles: { appearance: 'outline', backgroundColor: 'transparent', outlineColor: '#73daca' }
+    })
+    expect(screen.getByTestId('action-button-hold-display-preview-text', { includeHiddenElements: true })).toHaveTextContent('Run input')
+
+    fireEvent.press(screen.getByRole('button', { name: 'Hold display preview density: Compact' }))
+    expect(preview()).toMatchObject({ width: '48%', height: 48 })
+    fireEvent.press(screen.getByRole('button', { name: 'Reset hold display' }))
+    expect(button()).not.toHaveProperty('longPressDisplay')
+    expect(screen.getByRole('button', { name: 'Reset hold display' })).toBeDisabled()
+    expect(preview()).toMatchObject({ width: '48%', height: 48, backgroundColor: '#24283b', borderColor: '#e0af68' })
+  })
+
+  it('shows Hold display controls only for a Hold action and clears overrides when Hold is removed', () => {
+    const original = config()
+    const home = original.menus[0]!
+    const group = home.groups[0]!
+    const draft: ActionPadConfig = {
+      ...original,
+      menus: [{
+        ...home,
+        groups: [{
+          ...group,
+          buttons: group.buttons.map((button, index) => index === 0 ? {
+            ...button,
+            longPressDisplay: { label: 'Release' }
+          } : button)
+        }]
+      }, original.menus[1]!]
+    }
+    const screen = renderEditor({ config: draft })
+
+    expect(screen.getByTestId('action-button-long-press-display-editor')).toBeTruthy()
+    expect(screen.getByLabelText('Hold display label').props.value).toBe('Release')
+    fireEvent.press(screen.getByRole('button', { name: 'Hold action: None' }))
+
+    const button = screen.draft().menus[0]?.groups[0]?.buttons[0]
+    expect(button).not.toHaveProperty('longPress')
+    expect(button).not.toHaveProperty('longPressDisplay')
+    expect(screen.queryByTestId('action-button-long-press-display-editor')).toBeNull()
+
+    fireEvent.press(screen.getByRole('button', { name: 'Hold action: Back' }))
+    expect(screen.getByTestId('action-button-long-press-display-editor')).toBeTruthy()
+    expect(screen.draft().menus[0]?.groups[0]?.buttons[0]).not.toHaveProperty('longPressDisplay')
+  })
+
   it('creates tap and hold group actions with destination pickers and resets the group when the menu changes', () => {
     const base = config()
     const draft: ActionPadConfig = {

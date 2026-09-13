@@ -43,10 +43,21 @@ directories:
 - a writable workspace, used as Neovim's working directory; and
 - a readable, writable Neovim config directory.
 
+**Set Workspace** lets you choose an existing folder or clone a public GitHub
+repository. Enter a repository URL or `owner/repo`, choose a parent folder, and
+review the new folder name. A completed clone becomes the selected workspace;
+press **Start** separately to launch Neovim. Cloning does not require a config
+folder to have been selected yet.
+
 The config directory may contain `init.lua` and normal `lua/`, `plugin/`, and
 `after/` children. Codey starts Neovim with `--clean` when there is no readable
 `init.lua`. The Action Pad configuration has one fixed location:
 `<config-directory>/action-pad.yaml`.
+
+Action Pad buttons with a `longPress` action arm after `300ms` and run that
+action when the touch is released. An optional `longPressDisplay` section can
+replace the armed label, appearance, background, or outline while preserving
+the button's size; buttons without overrides use the standard armed outline.
 
 The optional single-file Codey Kickstart variant is paired with an APK-bundled
 toolchain: Git over HTTPS, ripgrep, StyLua, Lua Language Server, and a pinned

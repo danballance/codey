@@ -398,23 +398,58 @@ describe('Action Pad edits', () => {
       patch: {
         label: '001', accessibilityLabel: 'Run command', accessibilityHint: 'Hold for more',
         styles: { size: '1/4' }, tap: { type: 'input', nvimInput: input, after: 'root' },
-        longPress: { type: 'keyboard', after: 'stay' }
+        longPress: { type: 'keyboard', after: 'stay' },
+        longPressDisplay: {
+          label: [{ text: 'Ready', fontSize: 18, bold: true }],
+          styles: { appearance: 'outline', outlineColor: '#E0AF68' }
+        }
       }
     })
     expect(next.menus[0]?.groups[0]?.buttons[0]).toMatchObject({
       id: 'input', label: '001', styles: { size: '1/4' },
-      tap: { type: 'input', nvimInput: input, after: 'root' }, longPress: { type: 'keyboard', after: 'stay' }
+      tap: { type: 'input', nvimInput: input, after: 'root' }, longPress: { type: 'keyboard', after: 'stay' },
+      longPressDisplay: {
+        label: [{ text: 'Ready', fontSize: 18, bold: true }],
+        styles: { appearance: 'outline', outlineColor: '#E0AF68' }
+      }
     })
     next = editActionPad(next, {
       type: 'update-button', location,
       patch: { tap: undefined, styles: undefined, accessibilityLabel: undefined, accessibilityHint: undefined }
     })
     expect(next.menus[0]?.groups[0]?.buttons[0]).toEqual({
-      id: 'input', label: '001', styles: { size: '1/4' }, longPress: { type: 'keyboard', after: 'stay' }
+      id: 'input', label: '001', styles: { size: '1/4' }, longPress: { type: 'keyboard', after: 'stay' },
+      longPressDisplay: {
+        label: [{ text: 'Ready', fontSize: 18, bold: true }],
+        styles: { appearance: 'outline', outlineColor: '#E0AF68' }
+      }
     })
     expect(validateActionPadConfig(next)).toEqual([])
     next = editActionPad(next, { type: 'update-button', location, patch: { longPress: undefined } })
+    expect(next.menus[0]?.groups[0]?.buttons[0]).not.toHaveProperty('longPressDisplay')
     expect(validateActionPadConfig(next)).toContainEqual({ path: 'menus[0].groups[0].buttons[0].tap', message: 'A button must define tap or longPress.' })
+  })
+
+  it('removes all hold display overrides without changing the hold action', () => {
+    const location = { menuIndex: 0, groupIndex: 0, buttonIndex: 0 }
+    const original = editActionPad(config(), {
+      type: 'update-button', location,
+      patch: {
+        longPress: { type: 'keyboard', after: 'stay' },
+        longPressDisplay: {
+          label: 'Ready',
+          styles: { appearance: 'outline', backgroundColor: 'transparent', outlineColor: '#E0AF68' }
+        }
+      }
+    })
+
+    const next = editActionPad(original, {
+      type: 'update-button', location, patch: { longPressDisplay: undefined }
+    })
+
+    expect(next.menus[0]?.groups[0]?.buttons[0]?.longPress).toEqual({ type: 'keyboard', after: 'stay' })
+    expect(next.menus[0]?.groups[0]?.buttons[0]).not.toHaveProperty('longPressDisplay')
+    expect(validateActionPadConfig(next)).toEqual([])
   })
 
   it('merges style controls atomically without discarding sibling fields', () => {
@@ -440,7 +475,14 @@ describe('Action Pad edits', () => {
       type: 'update-button', location,
       patch: {
         accessibilityLabel: 'Run input', accessibilityHint: 'Hold to open the child menu',
-        styles: { size: '1/4' }, longPress: { type: 'menu', menuId: 'child', after: 'root' }
+        styles: { size: '1/4' }, longPress: { type: 'menu', menuId: 'child', after: 'root' },
+        longPressDisplay: {
+          label: [
+            { text: 'Open ', fontSize: 15, bold: false },
+            { text: 'child', fontSize: 18, bold: true, color: '#E0AF68' }
+          ],
+          styles: { appearance: 'outline', backgroundColor: 'transparent', outlineColor: '#E0AF68' }
+        }
       }
     })
     const source = original.menus[0]!.groups[0]!.buttons[0]!
@@ -456,6 +498,10 @@ describe('Action Pad edits', () => {
     expect(duplicate).not.toBe(source)
     expect(duplicate.tap).not.toBe(source.tap)
     expect(duplicate.longPress).not.toBe(source.longPress)
+    expect(duplicate.longPressDisplay).not.toBe(source.longPressDisplay)
+    expect(duplicate.longPressDisplay?.label).not.toBe(source.longPressDisplay?.label)
+    expect(duplicate.longPressDisplay?.label?.[0]).not.toBe(source.longPressDisplay?.label?.[0])
+    expect(duplicate.longPressDisplay?.styles).not.toBe(source.longPressDisplay?.styles)
     expect(duplicate.styles).not.toBe(source.styles)
     expect(JSON.stringify(original)).toBe(before)
   })

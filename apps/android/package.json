@@ -20,7 +20,7 @@
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit",
-    "native:test": "./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-action-label:testDebugUnitTest :codey-nvim:testDebugUnitTest",
+    "native:test": "python3 ./native-runtime/tests/test_clone_supervisor.py && ./android/gradlew -p android :codey-ime:testDebugUnitTest :codey-action-label:testDebugUnitTest :codey-nvim:testDebugUnitTest",
     "native:verify": "./scripts/verify-native.sh",
     "assemble:debug": "CODEY_BUILD_PROFILE=development pnpm run prebuild:clean && NODE_ENV=development ./android/gradlew -p android assembleDebug",
     "assemble:release": "CODEY_BUILD_PROFILE=standalone pnpm run prebuild:clean && NODE_ENV=production ./android/gradlew -p android assembleRelease"

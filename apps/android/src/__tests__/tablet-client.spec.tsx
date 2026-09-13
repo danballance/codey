@@ -27,7 +27,13 @@ import type { MobileSession } from '../controller'
 import { DiagnosticsModal } from '../diagnostics/DiagnosticsModal'
 import { diagnosticLogger } from '../diagnostics/logger'
 import { createRuntimeConnection } from '../runtime-connection'
-import { getNativeNvimStatus, openNativeNvimAllFilesSettings } from '../native/nvim'
+import {
+  getNativeNvimStatus,
+  getNativeRepositoryClone,
+  openNativeNvimAllFilesSettings,
+  type NativeRepositoryCloneModule,
+  type NativeRepositoryCloneResult
+} from '../native/nvim'
 import { tabletCapability } from '../tablet'
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -145,6 +151,7 @@ jest.mock('../runtime-connection', () => ({
 
 jest.mock('../native/nvim', () => ({
   getNativeNvimStatus: jest.fn(),
+  getNativeRepositoryClone: jest.fn(),
   openNativeNvimAllFilesSettings: jest.fn()
 }))
 
@@ -163,7 +170,7 @@ jest.mock('../workspace/WorkspaceDirectoryPicker', () => {
       onCancel: () => void
       onOpenLogs: () => void
       onSelect: (path: string) => void
-      purpose?: 'workspace' | 'config'
+      purpose?: 'workspace' | 'config' | 'clone-destination'
     }) => React.createElement(View, {
       initialPath,
       onCancel,
@@ -177,6 +184,12 @@ jest.mock('../workspace/WorkspaceDirectoryPicker', () => {
 
 const mockedConnectionFactory = jest.mocked(createRuntimeConnection)
 const mockedNativeNvimStatus = jest.mocked(getNativeNvimStatus)
+const mockedRepositoryClone = jest.mocked(getNativeRepositoryClone)
+const cloneModule: jest.Mocked<NativeRepositoryCloneModule> = {
+  cloneRepository: jest.fn(),
+  cancelRepositoryClone: jest.fn(),
+  addListener: jest.fn()
+}
 const mockedOpenAllFilesSettings = jest.mocked(openNativeNvimAllFilesSettings)
 const mockedAppStateAddEventListener = jest.mocked(AppState.addEventListener)
 const getItem = jest.mocked(AsyncStorage.getItem)
@@ -267,6 +280,17 @@ async function connectConfiguredLocal(screen: ReturnType<typeof render>) {
   await act(async () => { fireEvent.press(screen.getByText('Start')) })
 }
 
+async function openRepositoryCloneForm(screen: ReturnType<typeof render>) {
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Set Workspace' })).toBeEnabled())
+  fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+  fireEvent.press(screen.getByRole('button', { name: 'Clone GitHub repository' }))
+  fireEvent.changeText(screen.getByLabelText('GitHub repository'), 'octocat/Hello-World')
+  fireEvent.press(screen.getByRole('button', { name: 'Choose parent folder' }))
+  const picker = screen.getByTestId('mock-workspace-directory-picker')
+  expect(picker.props.purpose).toBe('clone-destination')
+  fireEvent(picker, 'select', '/storage/emulated/0/Projects')
+}
+
 function TabletLogsHarness() {
   const [logsVisible, setLogsVisible] = useState(false)
   return (
@@ -292,6 +316,10 @@ afterEach(async () => {
 })
 
 beforeEach(() => {
+  mockedRepositoryClone.mockReturnValue(cloneModule)
+  cloneModule.cloneRepository.mockReset()
+  cloneModule.cancelRepositoryClone.mockReset().mockResolvedValue(undefined)
+  cloneModule.addListener.mockReset().mockReturnValue({ remove: jest.fn() })
   mockedAppStateAddEventListener.mockReset()
   mockedAppStateAddEventListener.mockReturnValue({ remove: jest.fn() })
   getItem.mockImplementation(async (key) => key === CONNECTION_SETTINGS_STORAGE_KEY
@@ -428,6 +456,7 @@ describe('tablet client shell', () => {
       screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityState.disabled
     ).toBe(false))
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
 
     const picker = screen.getByTestId('mock-workspace-directory-picker')
     expect(picker.props.initialPath).toBe('/storage/emulated/0')
@@ -458,6 +487,7 @@ describe('tablet client shell', () => {
       screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityState.disabled
     ).toBe(false))
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
     fireEvent(
       screen.getByTestId('mock-workspace-directory-picker'),
       'select',
@@ -497,6 +527,7 @@ describe('tablet client shell', () => {
       screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityState.disabled
     ).toBe(false))
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
     fireEvent(
       screen.getByTestId('mock-workspace-directory-picker'),
       'select',
@@ -556,6 +587,7 @@ describe('tablet client shell', () => {
     }).props.accessibilityState.disabled).toBe(false))
 
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
     fireEvent(
       screen.getByTestId('mock-workspace-directory-picker'),
       'select',
@@ -618,6 +650,7 @@ describe('tablet client shell', () => {
       screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityState.disabled
     ).toBe(false))
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
     expect(screen.getByTestId('mock-workspace-directory-picker')).toBeTruthy()
 
     mockedNativeNvimStatus.mockResolvedValueOnce({
@@ -654,6 +687,7 @@ describe('tablet client shell', () => {
       screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityState.disabled
     ).toBe(false))
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
     expect(screen.getByTestId('mock-workspace-directory-picker')).toBeTruthy()
 
     mockedNativeNvimStatus.mockResolvedValueOnce({
@@ -1365,6 +1399,7 @@ describe('tablet client shell', () => {
     })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Set Workspace' })).toBeEnabled())
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
     fireEvent(
       screen.getByTestId('mock-workspace-directory-picker'),
       'select',
@@ -1638,7 +1673,17 @@ describe('tablet client shell', () => {
     await connectConfiguredLocal(screen)
     await waitFor(() => expect(screen.getByText('Stop')).toBeTruthy())
 
-    fireEvent(screen.getByTestId('action-pad-up'), 'longPress')
+    const up = screen.getByTestId('action-pad-up')
+    const activeTouch = { nativeEvent: { touches: [{}] } }
+    const releasedTouch = { nativeEvent: { touches: [] } }
+    fireEvent(up, 'touchStart', activeTouch)
+    fireEvent(up, 'pressIn', activeTouch)
+    fireEvent(up, 'longPress', activeTouch)
+    expect(screen.getByText('Navigation')).toBeTruthy()
+    expect(screen.queryByText('› Home · Up Arrow – Navigation')).toBeNull()
+
+    fireEvent(up, 'pressOut', releasedTouch)
+    fireEvent(up, 'touchEnd', releasedTouch)
     expect(screen.getByText('› Home · Up Arrow – Navigation')).toBeTruthy()
     expect(screen.getByText('gg Top')).toBeTruthy()
     expect(screen.queryByTestId('action-pad-back')).toBeNull()
@@ -1772,6 +1817,7 @@ describe('tablet client shell', () => {
       screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityState.disabled
     ).toBe(false))
     fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    fireEvent.press(screen.getByRole('button', { name: 'Choose existing folder' }))
     const picker = screen.getByTestId('mock-workspace-directory-picker')
     fireEvent(picker, 'openLogs')
 
@@ -1837,5 +1883,183 @@ describe('tablet client shell', () => {
     screen.unmount()
 
     await waitFor(() => expect(double.session.close).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('GitHub workspace cloning', () => {
+  it('offers both workspace sources without changing settings', async () => {
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Set Workspace' })).toBeEnabled())
+    fireEvent.press(screen.getByRole('button', { name: 'Set Workspace' }))
+    expect(screen.getByRole('button', { name: 'Choose existing folder' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Clone GitHub repository' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Cancel workspace selection' }))
+    expect(screen.queryByTestId('workspace-picker')).toBeNull()
+    expect(setItem).not.toHaveBeenCalled()
+  })
+
+  it('selects and persists the completed clone, preserves config, and waits for Start', async () => {
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const path = '/storage/emulated/0/Projects/Hello-World'
+    cloneModule.cloneRepository.mockResolvedValue({ status: 'success', path })
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await openRepositoryCloneForm(screen)
+    expect(setItem).not.toHaveBeenCalled()
+    expect(screen.getByTestId('repository-destination').props.children).toBe(path)
+    fireEvent.press(screen.getByRole('button', { name: 'Clone repository' }))
+    await waitFor(() => expect(screen.queryByTestId('workspace-picker') === null).toBe(true))
+    expect(cloneModule.cloneRepository).toHaveBeenCalledWith(
+      expect.any(String), 'https://github.com/octocat/Hello-World.git',
+      '/storage/emulated/0/Projects', 'Hello-World'
+    )
+    expect(setItem).toHaveBeenCalledWith(CONNECTION_SETTINGS_STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_TEST_SETTINGS, workspacePath: path
+    }))
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+    await connectConfiguredLocal(screen)
+    await waitFor(() => expect(mockedConnectionFactory).toHaveBeenCalledWith(
+      { ...DEFAULT_TEST_SETTINGS, workspacePath: path }, expect.anything()
+    ))
+  })
+
+  it('can clone before selecting a config directory', async () => {
+    getItem.mockResolvedValue(null)
+    const path = '/storage/emulated/0/Projects/Hello-World'
+    cloneModule.cloneRepository.mockResolvedValue({ status: 'success', path })
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await openRepositoryCloneForm(screen)
+    fireEvent.press(screen.getByRole('button', { name: 'Clone repository' }))
+    await waitFor(() => expect(screen.queryByTestId('workspace-picker') === null).toBe(true))
+    expect(setItem).toHaveBeenCalledWith(CONNECTION_SETTINGS_STORAGE_KEY, JSON.stringify({
+      version: 1, workspacePath: path, configDirectory: null
+    }))
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+  })
+
+  it('keeps failed clone settings unchanged and retries with the same form', async () => {
+    cloneModule.cloneRepository.mockResolvedValueOnce({
+      status: 'error', code: 'E_CLONE', message: 'Repository unavailable or private.'
+    })
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await openRepositoryCloneForm(screen)
+    fireEvent.press(screen.getByRole('button', { name: 'Clone repository' }))
+    await waitFor(() => expect(screen.getByText('Repository unavailable or private.')).toBeTruthy())
+    expect(setItem).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('GitHub repository').props.value).toBe('octocat/Hello-World')
+    cloneModule.cloneRepository.mockResolvedValueOnce({
+      status: 'success', path: '/storage/emulated/0/Projects/Hello-World'
+    })
+    fireEvent.press(screen.getByRole('button', { name: 'Retry clone' }))
+    await waitFor(() => expect(screen.queryByTestId('workspace-picker') === null).toBe(true))
+    expect(cloneModule.cloneRepository).toHaveBeenCalledTimes(2)
+  })
+
+  it('blocks conflicting actions through cancellation and ignores a late successful result', async () => {
+    const result = deferred<NativeRepositoryCloneResult>()
+    const cancellation = deferred<void>()
+    cloneModule.cloneRepository.mockReturnValue(result.promise)
+    cloneModule.cancelRepositoryClone.mockReturnValue(cancellation.promise)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await openRepositoryCloneForm(screen)
+    fireEvent.press(screen.getByRole('button', { name: 'Clone repository' }))
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Set Config Directory' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Edit Action Pad' })).toBeDisabled()
+    fireEvent.press(screen.getByRole('button', { name: 'Start' }))
+    expect(mockedConnectionFactory).not.toHaveBeenCalled()
+    fireEvent.press(screen.getByRole('button', { name: 'Cancel repository clone' }))
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    const operationId = cloneModule.cloneRepository.mock.calls[0]![0]
+    expect(cloneModule.cancelRepositoryClone).toHaveBeenCalledWith(operationId)
+    await act(async () => { cancellation.resolve() })
+    await waitFor(() => expect(screen.queryByTestId('workspace-picker') === null).toBe(true))
+    await act(async () => {
+      result.resolve({ status: 'success', path: '/storage/emulated/0/Projects/Hello-World' })
+    })
+    expect(setItem).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityHint)
+      .toContain('Current workspace: /storage/emulated/0.')
+  })
+
+  it('cancels on revoked file access and suppresses stale workspace selection', async () => {
+    let appStateListener: ((state: AppStateStatus) => void) | undefined
+    mockedAppStateAddEventListener.mockImplementation((type, listener) => {
+      if (type === 'change') appStateListener = listener
+      return { remove: jest.fn() }
+    })
+    const result = deferred<NativeRepositoryCloneResult>()
+    cloneModule.cloneRepository.mockReturnValue(result.promise)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await openRepositoryCloneForm(screen)
+    fireEvent.press(screen.getByRole('button', { name: 'Clone repository' }))
+    mockedNativeNvimStatus.mockResolvedValueOnce({ supported: true, running: false, allFilesAccess: false })
+    await act(async () => { appStateListener?.('active') })
+    await waitFor(() => expect(screen.queryByTestId('workspace-picker') === null).toBe(true))
+    expect(cloneModule.cancelRepositoryClone).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      result.resolve({ status: 'success', path: '/storage/emulated/0/Projects/Hello-World' })
+    })
+    expect(setItem).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Set Workspace' })).toBeDisabled()
+  })
+
+  it.each(['background', 'inactive'] as const)('cancels an active clone when the app becomes %s', async (state) => {
+    let appStateListener: ((state: AppStateStatus) => void) | undefined
+    mockedAppStateAddEventListener.mockImplementation((type, listener) => {
+      if (type === 'change') appStateListener = listener
+      return { remove: jest.fn() }
+    })
+    const result = deferred<NativeRepositoryCloneResult>()
+    const cancelled = deferred<void>()
+    cloneModule.cloneRepository.mockReturnValue(result.promise)
+    cloneModule.cancelRepositoryClone.mockReturnValue(cancelled.promise)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await openRepositoryCloneForm(screen)
+    fireEvent.press(screen.getByRole('button', { name: 'Clone repository' }))
+    await act(async () => { appStateListener?.(state) })
+    expect(screen.queryByTestId('workspace-picker')).toBeNull()
+    expect(cloneModule.cancelRepositoryClone).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    await act(async () => {
+      result.resolve({ status: 'cancelled', message: 'Clone cancelled' })
+      cancelled.resolve()
+    })
+    expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()
+    expect(setItem).not.toHaveBeenCalled()
+  })
+
+  it('reports a settings-save failure without discarding the completed checkout', async () => {
+    cloneModule.cloneRepository.mockResolvedValue({
+      status: 'success', path: '/storage/emulated/0/Projects/Hello-World'
+    })
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await openRepositoryCloneForm(screen)
+    setItem.mockRejectedValueOnce(new Error('Storage unavailable'))
+    fireEvent.press(screen.getByRole('button', { name: 'Clone repository' }))
+    await waitFor(() => expect(screen.getByText(
+      'The workspace is selected for this run, but the local settings could not be saved.'
+    )).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Set Workspace' }).props.accessibilityHint)
+      .toContain('/storage/emulated/0/Projects/Hello-World')
+    expect(cloneModule.cancelRepositoryClone).not.toHaveBeenCalled()
+  })
+
+  it('blocks workspace selection while Start is still saving settings', async () => {
+    const saved = deferred<void>()
+    const double = connectionDouble()
+    mockedConnectionFactory.mockReturnValue(double)
+    const screen = render(<TabletClient capability={tabletCapability(1_280, 800)} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled())
+    setItem.mockReturnValueOnce(saved.promise)
+    fireEvent.press(screen.getByRole('button', { name: 'Start' }))
+    expect(screen.getByRole('button', { name: 'Set Workspace' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled()
+    await act(async () => { saved.resolve() })
+    await waitFor(() => expect(screen.getByText('Stop')).toBeTruthy())
+    expect(mockedConnectionFactory).toHaveBeenCalledTimes(1)
   })
 })

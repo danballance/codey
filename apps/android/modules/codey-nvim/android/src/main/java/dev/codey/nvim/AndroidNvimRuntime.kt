@@ -89,6 +89,12 @@ internal data class InstalledNvimBundle(
     get() = resolve(metadata.data.luaLsBootstrap)
 }
 
+internal data class PreparedBundledTools(
+  val bundle: InstalledNvimBundle,
+  val nativeDirectory: File,
+  val commandDirectory: File
+)
+
 internal fun resolveLocalNvimConfiguration(path: String): LocalNvimConfiguration {
   require(path.isNotBlank()) { "Choose a local config folder" }
   val requested = File(path)
@@ -193,6 +199,37 @@ internal class AndroidNvimRuntime(private val context: Context) {
   fun listWorkspaceDirectory(path: String): WorkspaceListing =
     workspaceBrowser.listDirectory(path)
 
+  fun cloneJournalDirectory(): File =
+    File(applicationContext.filesDir, "$PRIVATE_ROOT/repository-clones").ensureDirectory()
+
+  fun prepareRepositoryClone(parentPath: String): RepositoryCloneRuntime {
+    val runtimeStatus = status(running = false)
+    check(runtimeStatus.supported) {
+      runtimeStatus.unavailableReason ?: "Bundled Git is unavailable"
+    }
+    check(runtimeStatus.allFilesAccess) {
+      "All-files access must be granted before cloning a repository"
+    }
+    val parent = workspaceBrowser.requireWritableDirectory(parentPath)
+    val tools = prepareBundledTools()
+    val home = File(applicationContext.filesDir, "$PRIVATE_ROOT/clone-home").ensureDirectory()
+    val temp = File(applicationContext.cacheDir, "$PRIVATE_ROOT/tmp").ensureDirectory()
+    return RepositoryCloneRuntime(
+      parentDirectory = parent,
+      dispatcher = File(tools.nativeDirectory, tools.bundle.metadata.dispatcher).absolutePath,
+      // The dispatcher selects its command using argv[0], so preserve this alias.
+      gitAlias = File(tools.commandDirectory, "git").absolutePath,
+      environment = gitCloneEnvironment(tools, home, temp)
+    )
+  }
+
+  private fun prepareBundledTools(): PreparedBundledTools {
+    val bundle = installer.installIfNeeded()
+    val nativeDirectory = File(applicationContext.applicationInfo.nativeLibraryDir).canonicalFile
+    val commandDirectory = aliasInstaller.installIfNeeded(bundle, nativeDirectory)
+    return PreparedBundledTools(bundle, nativeDirectory, commandDirectory)
+  }
+
   fun prepare(cwd: String, configDirectory: String): NvimLaunchSpec {
     val runtimeStatus = status(running = false)
     check(runtimeStatus.supported) {
@@ -204,7 +241,8 @@ internal class AndroidNvimRuntime(private val context: Context) {
 
     val workspace = workspaceDirectoryValidator.requireWritableDirectory(cwd)
     val configuration = resolveLocalNvimConfiguration(configDirectory)
-    val bundle = installer.installIfNeeded()
+    val tools = prepareBundledTools()
+    val bundle = tools.bundle
     val privateRoot = File(applicationContext.filesDir, PRIVATE_ROOT).ensureDirectory()
     val home = File(privateRoot, "home").ensureDirectory()
     val xdgRoot = File(privateRoot, "xdg").ensureDirectory()
@@ -224,8 +262,8 @@ internal class AndroidNvimRuntime(private val context: Context) {
     val xdgCache = File(storageRoot, "cache").ensureDirectory()
     val xdgRuntime = File(applicationContext.cacheDir, "$PRIVATE_ROOT/xdg-runtime").ensureDirectory()
     val temp = File(applicationContext.cacheDir, "$PRIVATE_ROOT/tmp").ensureDirectory()
-    val nativeDirectory = File(applicationContext.applicationInfo.nativeLibraryDir).canonicalFile
-    val commandDirectory = aliasInstaller.installIfNeeded(bundle, nativeDirectory)
+    val nativeDirectory = tools.nativeDirectory
+    val commandDirectory = tools.commandDirectory
 
     val command = nvimCommand(nativeExecutable().canonicalPath, activeConfiguration != null)
     val environment = nvimEnvironment(
@@ -264,6 +302,43 @@ internal class AndroidNvimRuntime(private val context: Context) {
     const val NVIM_LIBRARY_NAME = "libcodey_nvim.so"
     const val LUAJIT_LIBRARY_NAME = "libluajit-5.1.so"
   }
+}
+
+/** App-owned cloning has no inherited credentials, configuration, hooks or preload. */
+internal fun gitCloneEnvironment(
+  tools: PreparedBundledTools,
+  home: File,
+  temp: File
+): Map<String, String> {
+  val bundle = tools.bundle
+  val caBundle = bundle.resolve(bundle.metadata.data.caBundle).canonicalPath
+  return mapOf(
+    "HOME" to home.canonicalPath,
+    "XDG_CONFIG_HOME" to home.canonicalPath,
+    "TMPDIR" to temp.canonicalPath,
+    "PATH" to "${tools.commandDirectory.canonicalPath}:/system/bin:/system/xbin",
+    "LD_LIBRARY_PATH" to tools.nativeDirectory.canonicalPath,
+    "SHELL" to "/system/bin/sh",
+    "LANG" to "C.UTF-8",
+    "CODEY_NVIM_NATIVE_DIR" to tools.nativeDirectory.canonicalPath,
+    "CODEY_NVIM_DATA_DIR" to bundle.runtimeDirectory.canonicalPath,
+    "GIT_EXEC_PATH" to tools.commandDirectory.canonicalPath,
+    "GIT_TEMPLATE_DIR" to bundle.resolve(bundle.metadata.data.gitTemplates).canonicalPath,
+    "GIT_SSL_CAINFO" to caBundle,
+    "SSL_CERT_FILE" to caBundle,
+    "CURL_CA_BUNDLE" to caBundle,
+    "OPENSSL_CONF" to bundle.resolve(bundle.metadata.data.opensslConfig).canonicalPath,
+    "GIT_CONFIG_NOSYSTEM" to "1",
+    "GIT_CONFIG_GLOBAL" to "/dev/null",
+    "GIT_ATTR_NOSYSTEM" to "1",
+    "GIT_TERMINAL_PROMPT" to "0",
+    "GIT_ALLOW_PROTOCOL" to "https",
+    "GIT_CONFIG_COUNT" to "1",
+    "GIT_CONFIG_KEY_0" to "core.hooksPath",
+    "GIT_CONFIG_VALUE_0" to "/dev/null",
+    "GIT_PAGER" to "cat",
+    "PAGER" to "cat"
+  )
 }
 
 internal fun nvimEnvironment(
